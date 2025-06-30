@@ -243,3 +243,20 @@ Decoupled Components: Individual components like PlayerChip don't need hard refe
 Centralized Access: You have a single, reliable point of access (`Services.Get<T>()`) for all global systems.
 
 Reactive Singletons: Because `SetListeners` is called on registered services, your global managers can fully participate in the reactive data-binding of the MMVC framework.
+
+
+Here the example how you can add new types:
+```csharp
+    public class ExtObservable {
+        internal static class ObservableTypeRegistrar {
+            [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+            private static void RegisterCustomObservableTypes() {                   
+                Observable.ObservableTypes.types.Add(typeof(ObservableAtaxxPlayerColorEnum), typeof(AtaxxAIEngine.PlayerColor));
+                
+            }
+        }
+
+        [Serializable] public class ObservableAtaxxPlayerColorEnum : ObservableVariable<AtaxxAIEngine.PlayerColor> { public ObservableAtaxxPlayerColorEnum(string name) : base(name) { } }
+    }
+}
+```
