@@ -24,7 +24,7 @@ namespace SavableObservable {
         //public virtual void LoadState(object state) { throw new NotImplementedException(); }
   
         public virtual void LoadState(object state) {
-            Extensions.SetListeners(GetComponent(typeof(BaseObservablePresenter<M>)));
+            SavableObservable.SavableObservableExtensions.SetListeners(GetComponent(typeof(BaseObservablePresenter<M>)));
             typeof(M).GetMethod("LoadDataFromModel").Invoke(GetComponent<M>(), new object[] { state });
             //SaveLoadSystem.SaveLoadSystem.loadedFromSaveObjects.Add(this.gameObject.GetComponent<SaveableEntity>().GetID());
         }
