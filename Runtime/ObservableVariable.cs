@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
+using System.Linq;
 
 namespace SavableObservable {
 
@@ -27,7 +28,7 @@ namespace SavableObservable {
         /// <returns>
         ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
         public static bool IsSupportedFieldType(FieldInfo field) {
-            return ObservableTypes.types.Keys.AsValueEnumerable().Contains(field.FieldType);
+            return ObservableTypes.types.Keys.Contains(field.FieldType);
         }      
 
         public static class ObservableTypes {
