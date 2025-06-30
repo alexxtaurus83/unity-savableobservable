@@ -3,8 +3,11 @@
   "displayName": "SavableObservable",
   "version": "1.0.0",
   "description": "MVVM/MVVC framework for Unity with built-in saving/loading support",
-  "unity": "2021.3",
-  "documentation": "https://github.com/alexxtaurus83/unity-savableobservable",
+  "unity": "2021.3",  
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexxtaurus83/unity-savableobservable.git"
+  },
   "keywords": ["unity", "mvvm", "mvvc", "observable", "save", "load"],
   "author": {
     "name": "evialdev",
