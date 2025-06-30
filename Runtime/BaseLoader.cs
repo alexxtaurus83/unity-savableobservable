@@ -1,18 +1,16 @@
-﻿using Assets.ThirdPaty.Flexiblesavesystem.Scripts.Runtime;
-using System.Linq;
+﻿using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using ZLinq;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
 
 
     /// <summary>Aabstract presenter class with model and save methods.</summary>
     /// <typeparam name="M">Regular class or mode of type <see cref="BaseObservableDataModel" /></typeparam>
 
     [DisallowMultipleComponent]
-    [UnityEngine.RequireComponent(typeof(SaveableEntity))]
-    public abstract class BaseLoader<M> : MonoBehaviour, ISaveable {
+    //[UnityEngine.RequireComponent(typeof(SaveableEntity))]
+    public abstract class BaseLoader<M> : MonoBehaviour  { //ISaveable
 
 
         /// <summary>Derived from Saving engine: Return the serializable data structure which shuld be stored</summary>

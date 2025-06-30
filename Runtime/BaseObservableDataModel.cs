@@ -2,7 +2,7 @@
 using System.Reflection;
 using UnityEngine;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
 
     /// <summary>Abstract DataModel class to keep observable keep data with ObservableVariable types</summary>
     [DisallowMultipleComponent]

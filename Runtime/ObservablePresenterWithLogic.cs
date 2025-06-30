@@ -1,6 +1,6 @@
 ﻿using UnityEngine;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
 
     [DisallowMultipleComponent]
     public class ObservablePresenterWithLogic<M, LO> : BaseObservablePresenter<M> {        

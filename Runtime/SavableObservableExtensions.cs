@@ -2,9 +2,8 @@ using UnityEngine;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using Assets.Scripts.Base.SavableObservable;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
     public static class SavableObservableExtensions {
         /// <summary>
         /// Automatically sets up listeners for all observable variables in a component

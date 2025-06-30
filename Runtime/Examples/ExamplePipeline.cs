@@ -2,9 +2,9 @@ using UnityEngine;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Assets.Scripts.Base.SavableObservable;
+using SavableObservable;
 
-namespace Assets.Scripts.Base.SavableObservable.Examples {
+namespace SavableObservable.Examples {
 
     [Serializable]
     public class PipelineDataModel : BaseObservableDataModel {

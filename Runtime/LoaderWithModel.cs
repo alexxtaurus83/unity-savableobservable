@@ -1,10 +1,8 @@
-﻿using Assets.ThirdPaty.Flexiblesavesystem.Scripts.Runtime;
-using System.Linq;
+﻿using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using ZLinq;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
 
 
     public abstract class LoaderWithModel<M> : BaseLoader<M> {

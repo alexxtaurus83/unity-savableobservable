@@ -2,20 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-using ZLinq;
-using static Assets.Scripts.Base.JsonEnums;
 
-namespace Assets.Scripts.Base.SavableObservable {
+namespace SavableObservable {
 
     public class Observable {
         
-
-        [Serializable] public class ObservableAtaxxPlayerColorEnum : ObservableVariable<AtaxxAIEngine.PlayerColor> { public ObservableAtaxxPlayerColorEnum(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableLanguageNameEnum : ObservableVariable<LanguageNameEnum> { public ObservableLanguageNameEnum(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableBlockTechWikiNamesEnum : ObservableVariable<BlockTechWikiNamesEnum> { public ObservableBlockTechWikiNamesEnum(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableInt32 : ObservableVariable<int> { public ObservableInt32(string name) : base(name) { } }
 
@@ -45,10 +36,7 @@ namespace Assets.Scripts.Base.SavableObservable {
             { typeof(ObservableDouble), typeof(double) },
             { typeof(ObservableBoolean), typeof(bool) },
             { typeof(ObservableSingle), typeof(float) },
-            { typeof(ObservableString), typeof(string) },
-            { typeof(ObservableBlockTechWikiNamesEnum), typeof(JsonEnums.BlockTechWikiNamesEnum) },
-            { typeof(ObservableLanguageNameEnum), typeof(JsonEnums.LanguageNameEnum) },
-            { typeof(ObservableAtaxxPlayerColorEnum), typeof(AtaxxAIEngine.PlayerColor) }
+            { typeof(ObservableString), typeof(string) }
         };
         }
     }
