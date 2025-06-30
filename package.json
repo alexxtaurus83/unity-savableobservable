@@ -1,5 +1,5 @@
 {
-  "name": "evial.dev.SavableObservable",
+  "name": "com.evialdev.savableobservable",
   "displayName": "SavableObservable",
   "version": "1.0.0",
   "description": "MVVM/MVVC framework for Unity with built-in saving/loading support",
@@ -7,7 +7,7 @@
   "documentation": "https://github.com/alexxtaurus83/unity-savableobservable",
   "keywords": ["unity", "mvvm", "mvvc", "observable", "save", "load"],
   "author": {
-    "name": "evial.dev",
+    "name": "evialdev",
     "email": "alexxtaurus@gmail.com",
     "url": "https://github.com/alexxtaurus83"
   },
