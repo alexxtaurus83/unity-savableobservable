@@ -5,7 +5,6 @@
 *.controller
 *.asset
 *.shader
-*.asmdef
 *.csproj
 *.sln
 *.userprefs
