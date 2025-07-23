@@ -33,13 +33,47 @@ namespace SavableObservable {
 
         public static class ObservableTypes {
             public static Dictionary<Type, Type> types = new() {
-            { typeof(ObservableInt32), typeof(int) },
-            { typeof(ObservableDouble), typeof(double) },
-            { typeof(ObservableBoolean), typeof(bool) },
-            { typeof(ObservableSingle), typeof(float) },
-            { typeof(ObservableString), typeof(string) }
-        };
+                { typeof(ObservableInt32), typeof(int) },
+                { typeof(ObservableDouble), typeof(double) },
+                { typeof(ObservableBoolean), typeof(bool) },
+                { typeof(ObservableSingle), typeof(float) },
+                { typeof(ObservableString), typeof(string) }
+            };
         }
+
+        public static void SetListeners(object obj) {
+            var dataModel = ((MonoBehaviour)obj).GetComponent<BaseObservableDataModel>();
+            if (dataModel == null) return;
+
+            var initMethod = dataModel.GetType().GetMethod("InitFields");
+            initMethod?.Invoke(dataModel, null);
+
+            foreach (MemberInfo memberInfo in dataModel.GetType().GetMembers()) {
+                if (memberInfo.MemberType == MemberTypes.Field) {
+                    FieldInfo field = (FieldInfo)memberInfo;
+
+                    if (!Observable.IsSupportedFieldType(field)) continue;
+
+                    // Get the value type only once per supported field
+                    if (Observable.ObservableTypes.types.TryGetValue(field.FieldType, out Type valueType)) {
+                        SetOnValueChangedHandler(obj, valueType, field, dataModel);
+                    }
+                }
+            }
+        }
+
+        private static void SetOnValueChangedHandler(object obj, Type valueType, FieldInfo field, BaseObservableDataModel dataModel) {
+            // Look for the correct OnModelValueChanged(T previous, T current, string name)
+            var method = obj.GetType().GetMethod("OnModelValueChanged", new Type[] { valueType, valueType, typeof(string) });
+            if (method == null) {
+                throw new Exception($"Can't find 'OnModelValueChanged' method for observable variable with {field.FieldType.Name} type for field {field.Name}.");
+            }
+
+            var eventInfo = field.FieldType.GetEvent("OnValueChanged");
+            var handler = Delegate.CreateDelegate(eventInfo.EventHandlerType, obj, method);
+            eventInfo.AddEventHandler(field.GetValue(dataModel), handler);
+        }
+        
     }
 
     public interface IObservableValue {
