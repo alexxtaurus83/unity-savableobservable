@@ -19,6 +19,7 @@
 *.userosx
 *.usermacos
 *.userwin
+!/Assets/
 *.DS_Store
 __MACOSX
 *.log
