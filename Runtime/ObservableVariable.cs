@@ -18,6 +18,9 @@ namespace SavableObservable {
         [Serializable] public class ObservableBoolean : ObservableVariable<bool> { public ObservableBoolean(string name) : base(name) { } }
 
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableNullableBoolean : ObservableVariable<bool?> { public ObservableNullableBoolean(string name) : base(name) { } }
+
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableSingle : ObservableVariable<float> { public ObservableSingle(string name) : base(name) { } }
 
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
@@ -36,6 +39,7 @@ namespace SavableObservable {
                 { typeof(ObservableInt32), typeof(int) },
                 { typeof(ObservableDouble), typeof(double) },
                 { typeof(ObservableBoolean), typeof(bool) },
+                { typeof(ObservableNullableBoolean), typeof(bool?) },
                 { typeof(ObservableSingle), typeof(float) },
                 { typeof(ObservableString), typeof(string) }
             };
@@ -76,7 +80,7 @@ namespace SavableObservable {
         
     }
 
-    public interface IObservableValue {
+    /*public interface IObservableValue {
         string Name { get; }
         Type ValueType { get; }
         object GetValue();
@@ -84,7 +88,7 @@ namespace SavableObservable {
         string GetValueAsString();
         void NotifyObservers();
         event Action<object> OnValueChangedRaw;
-    }
+    }*/
 
     [Serializable]
     public abstract class ObservableVariable<T> : ISerializationCallbackReceiver {
@@ -102,7 +106,7 @@ namespace SavableObservable {
         /// If true, enables runtime detection of Inspector changes.
         /// Useful only when editing values at runtime via the Inspector.
         /// </summary>
-        [SerializeField] private bool detectInspectorChanges = false;
+        //[SerializeField] private bool detectInspectorChanges = false;
 
         /// <summary>
         /// Fired whenever the Value is changed via property setter or detected from Inspector.
@@ -132,7 +136,7 @@ namespace SavableObservable {
                     T old = _value;
                     _value = value;
                     OnValueChanged?.Invoke(old, _value, Name);
-                    _previousValue = _value; // Update cached value to prevent duplicate triggering
+                    //_previousValue = _value; // Update cached value to prevent duplicate triggering
                 //}
             }
         }
@@ -140,7 +144,7 @@ namespace SavableObservable {
         public override string ToString() => _value?.ToString();
 
         // Called by Unity AFTER this object is deserialized (e.g., after inspector change)
-        public void OnAfterDeserialize() {
+        /*public void OnAfterDeserialize() {
             // Only react when explicitly allowed
             if (!detectInspectorChanges) return; //!Application.isPlaying ||
 
@@ -150,12 +154,12 @@ namespace SavableObservable {
                 _previousValue = _value;
                 OnValueChanged?.Invoke(old, _value, Name);
             }
-        }
+        }*/
 
         // Called by Unity BEFORE this object is serialized (usually not needed here)
-        public void OnBeforeSerialize() {
+        /*public void OnBeforeSerialize() {
             // Could be used for pre-save cleanup, but not needed in this case
-        }
+        }*/
     }
 
 
