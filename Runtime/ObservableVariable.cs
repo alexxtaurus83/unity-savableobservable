@@ -92,16 +92,6 @@ namespace SavableObservable {
         /// The underlying type of the stored value (e.g., typeof(string)).
         /// </summary>
         Type ValueType { get; }
-
-        /// <summary>
-        /// Gets the current value as an object.
-        /// </summary>
-        object GetValueAsObject();
-
-        /// <summary>
-        /// Gets the previous value as an object.
-        /// </summary>
-        object GetPreviousValueAsObject();
     }
  
     [Serializable]
@@ -117,20 +107,14 @@ namespace SavableObservable {
         [SerializeField] public string Name;
  
         /// <summary>
-        /// If true, enables runtime detection of Inspector changes.
-        /// Useful only when editing values at runtime via the Inspector.
-        /// </summary>
-        //[SerializeField] private bool detectInspectorChanges = false;
- 
-        /// <summary>
         /// Fired whenever the Value is changed via property setter or detected from Inspector.
         /// </summary>
         public event Action<IObservableVariable> OnValueChanged;
  
         /// <summary>
-        /// Keeps the last known value to detect changes caused by Unity Inspector.
+        /// Stores the previous value of the variable.
         /// </summary>
-        private T _previousValue;
+        public T PreviousValue { get; private set; }
  
         /// <summary>
         /// Constructor that sets the observable field name.
@@ -147,7 +131,7 @@ namespace SavableObservable {
             get => _value;
             set {
                 //if (!EqualityComparer<T>.Default.Equals(_value, value)) { TODO enable after test with pipleine class as it has current block is running
-                    _previousValue = _value;
+                    PreviousValue = _value;
                     _value = value;
                     OnValueChanged?.Invoke(this);
                 //}
@@ -155,10 +139,6 @@ namespace SavableObservable {
         }
 
         public Type ValueType => typeof(T);
-        public object GetValueAsObject() => _value;
-        public object GetPreviousValueAsObject() => _previousValue;
-        public T GetValue() => _value;
-        public T GetPreviousValue() => _previousValue;
  
         public override string ToString() => _value?.ToString();
  

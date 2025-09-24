@@ -15,9 +15,6 @@ namespace SavableObservable.Examples {
         [SerializeReference] public Observable.ObservableBoolean isActive = new("isActive");
         [SerializeReference] public Observable.ObservableInt32 tokenCount = new("tokenCount");
         
-        [SerializeField] public Dictionary<string, int> blockStatuses = new();
-        [SerializeField] public ObservableCollection<string> logEntries = new ObservableCollection<string>();
-        
         public void AddLogEntry(string entry) {
             logEntries.Add(entry);
         }
