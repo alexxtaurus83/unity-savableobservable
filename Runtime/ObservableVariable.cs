@@ -67,12 +67,14 @@ namespace SavableObservable {
         }
 
         private static void SetOnValueChangedHandler(object obj, Type valueType, FieldInfo field, BaseObservableDataModel dataModel) {
-            // Look for the correct OnModelValueChanged(T previous, T current, string name)
-            var method = obj.GetType().GetMethod("OnModelValueChanged", new Type[] { valueType, valueType, typeof(string) });
+            // Look for the new OnModelValueChanged(IObservableVariable variable) method
+            var method = obj.GetType().GetMethod("OnModelValueChanged", new Type[] { typeof(IObservableVariable) });
             if (method == null) {
-                throw new Exception($"Can't find 'OnModelValueChanged' method for observable variable with {field.FieldType.Name} type for field {field.Name}.");
+                // Method is not found, which is fine for classes like BaseLogic
+                // that don't need to react to model changes.
+                return;
             }
-
+ 
             var eventInfo = field.FieldType.GetEvent("OnValueChanged");
             var handler = Delegate.CreateDelegate(eventInfo.EventHandlerType, obj, method);
             eventInfo.AddEventHandler(field.GetValue(dataModel), handler);
@@ -80,51 +82,63 @@ namespace SavableObservable {
         
     }
 
-    /*public interface IObservableValue {
+    public interface IObservableVariable {
+        /// <summary>
+        /// The name of the variable (e.g., "pipelineName").
+        /// </summary>
         string Name { get; }
-        Type ValueType { get; }
-        object GetValue();
-        void SetValue(object value);
-        string GetValueAsString();
-        void NotifyObservers();
-        event Action<object> OnValueChangedRaw;
-    }*/
 
+        /// <summary>
+        /// The underlying type of the stored value (e.g., typeof(string)).
+        /// </summary>
+        Type ValueType { get; }
+
+        /// <summary>
+        /// Gets the current value as an object.
+        /// </summary>
+        object GetValueAsObject();
+
+        /// <summary>
+        /// Gets the previous value as an object.
+        /// </summary>
+        object GetPreviousValueAsObject();
+    }
+ 
     [Serializable]
-    public abstract class ObservableVariable<T>  { //: ISerializationCallbackReceiver
+    public abstract class ObservableVariable<T> : IObservableVariable  { //: ISerializationCallbackReceiver
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
         [SerializeField] private T _value;
-
+ 
         /// <summary>
         /// Optional name for debugging, data binding, or event filtering.
         /// </summary>
         [SerializeField] public string Name;
-
+ 
         /// <summary>
         /// If true, enables runtime detection of Inspector changes.
         /// Useful only when editing values at runtime via the Inspector.
         /// </summary>
         //[SerializeField] private bool detectInspectorChanges = false;
-
+ 
         /// <summary>
         /// Fired whenever the Value is changed via property setter or detected from Inspector.
         /// </summary>
-        public event Action<T, T, string> OnValueChanged;
-
+        public event Action<IObservableVariable> OnValueChanged;
+ 
         /// <summary>
         /// Keeps the last known value to detect changes caused by Unity Inspector.
         /// </summary>
         private T _previousValue;
-
+ 
         /// <summary>
         /// Constructor that sets the observable field name.
         /// </summary>
         public ObservableVariable(string name = null) {
             Name = name;
         }
-
+ 
         /// <summary>
         /// Main access point for getting and setting the variable.
         /// Triggers change events when value is updated via code.
@@ -133,29 +147,34 @@ namespace SavableObservable {
             get => _value;
             set {
                 //if (!EqualityComparer<T>.Default.Equals(_value, value)) { TODO enable after test with pipleine class as it has current block is running
-                    T old = _value;
+                    _previousValue = _value;
                     _value = value;
-                    OnValueChanged?.Invoke(old, _value, Name);
-                    //_previousValue = _value; // Update cached value to prevent duplicate triggering
+                    OnValueChanged?.Invoke(this);
                 //}
             }
         }
 
+        public Type ValueType => typeof(T);
+        public object GetValueAsObject() => _value;
+        public object GetPreviousValueAsObject() => _previousValue;
+        public T GetValue() => _value;
+        public T GetPreviousValue() => _previousValue;
+ 
         public override string ToString() => _value?.ToString();
-
+ 
         // Called by Unity AFTER this object is deserialized (e.g., after inspector change)
         /*public void OnAfterDeserialize() {
             // Only react when explicitly allowed
             if (!detectInspectorChanges) return; //!Application.isPlaying ||
-
+ 
             // Compare deserialized value with previous runtime value
             if (!EqualityComparer<T>.Default.Equals(_value, _previousValue)) {
                 T old = _previousValue;
                 _previousValue = _value;
-                OnValueChanged?.Invoke(old, _value, Name);
+                OnValueChanged?.Invoke(this);
             }
         }*/
-
+ 
         // Called by Unity BEFORE this object is serialized (usually not needed here)
         /*public void OnBeforeSerialize() {
             // Could be used for pre-save cleanup, but not needed in this case

@@ -1,18 +1,19 @@
-/*
+#if UNITY_EDITOR // This directive prevents the example script from being included in a build
+
 using UnityEngine;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using SavableObservable;
-
+ 
 namespace SavableObservable.Examples {
-
+ 
     [Serializable]
     public class PipelineDataModel : BaseObservableDataModel {
-        [SerializeReference] public Observable.ObservableString pipelineName;
-        [SerializeReference] public Observable.ObservableDouble progress;
-        [SerializeReference] public Observable.ObservableBoolean isActive;
-        [SerializeReference] public Observable.ObservableInt32 tokenCount;
+        [SerializeReference] public Observable.ObservableString pipelineName = new("pipelineName");
+        [SerializeReference] public Observable.ObservableDouble progress = new("progress");
+        [SerializeReference] public Observable.ObservableBoolean isActive = new("isActive");
+        [SerializeReference] public Observable.ObservableInt32 tokenCount = new("tokenCount");
         
         [SerializeField] public Dictionary<string, int> blockStatuses = new();
         [SerializeField] public ObservableCollection<string> logEntries = new ObservableCollection<string>();
@@ -21,81 +22,74 @@ namespace SavableObservable.Examples {
             logEntries.Add(entry);
         }
     }
-
+ 
+    // Logic class no longer needs to handle OnModelValueChanged,
+    // as this responsibility is now enforced on the Presenter.
     public class PipelineLogic : BaseLogic<PipelineDataModel> {
-        private PipelineDataModel _model;
         
-        public override void Initialize(PipelineDataModel model) {
-            _model = model;
-            Extensions.SetListeners(this);
-        }
-
-        public void OnModelValueChanged(string previous, string current, string name) {
-            if (name == nameof(PipelineDataModel.pipelineName)) {
-                Debug.Log($"Pipeline name changed from {previous} to {current}");
+        public void StartPipeline() {
+            if (!GetModel().isActive.GetValue()) {
+                GetModel().isActive.Value = true;
+                Debug.Log("Pipeline started!");
             }
         }
 
-        public void OnModelValueChanged(double previous, double current, string name) {
-            if (name == nameof(PipelineDataModel.progress)) {
-                Debug.Log($"Progress changed from {previous} to {current}");
-            }
-        }
-
-        public void OnModelValueChanged(bool previous, bool current, string name) {
-            if (name == nameof(PipelineDataModel.isActive)) {
-                Debug.Log($"Active state changed from {previous} to {current}");
-            }
-        }
-
-        public void OnModelValueChanged(int previous, int current, string name) {
-            if (name == nameof(PipelineDataModel.tokenCount)) {
-                Debug.Log($"Token count changed from {previous} to {current}");
+        public void StopPipeline() {
+            if (GetModel().isActive.GetValue()) {
+                GetModel().isActive.Value = false;
+                Debug.Log("Pipeline stopped!");
             }
         }
     }
-
+ 
     public class PipelinePresenter : BaseObservablePresenter<PipelineDataModel> {
-        private PipelineLogic _logic;
-        
-        public override void Initialize(PipelineDataModel model) {
-            _logic = new PipelineLogic();
-            _logic.Initialize(model);
-        }
+        // The 'override' keyword is now required because the base class method is abstract.
+        // This ensures at compile time that the Presenter will handle model changes.
+        public override void OnModelValueChanged(IObservableVariable variable) {
+            Debug.Log($"Presenter received change from '{variable.Name}'");
 
-        public void UpdateUI() {
-            // Update UI elements based on model state
-            if (_model != null) {
-                Debug.Log($"Updating UI for pipeline: {_model.pipelineName.Value}");
+            if (variable.Name == nameof(PipelineDataModel.pipelineName)) {
+                // Example: Update a Text component with the new name
+                // myTextComponent.text = ((Observable.ObservableString)variable).GetValue();
+                Debug.Log($"UI would be updated with new pipeline name: {variable.GetValueAsObject()}");
+            }
+
+            if (variable.Name == nameof(PipelineDataModel.isActive)) {
+                Debug.Log($"UI would be updated with new active state: {variable.GetValueAsObject()}");
             }
         }
     }
-
-    public class PipelineLoader : BaseLoader {
-        public PipelineDataModel PipelineData { get; private set; }
-        public PipelineLogic PipelineLogic { get; private set; }
-        public PipelinePresenter PipelinePresenter { get; private set; }
-
-        private void Awake() {
-            // Create instances
-            PipelineData = new PipelineDataModel();
-            PipelineLogic = new PipelineLogic();
-            PipelinePresenter = new PipelinePresenter();
-
-            // Initialize pipeline
-            PipelineData.InitFields();
-            PipelineLogic.Initialize(PipelineData);
-            PipelinePresenter.Initialize(PipelineData);
+ 
+    // This component would be attached to a GameObject in the scene,
+    // along with PipelineDataModel, PipelineLogic, and PipelinePresenter.
+    public class PipelineLoader : LoaderWithModelAndLogic<PipelineDataModel, PipelineLogic> {
+ 
+        private void Start() {
+            // The BaseLoader will automatically handle finding the components
+            // and the SavableObservable system will call SetListeners on the Presenter.
+            // We can initialize some default values here.
+            GetModel().pipelineName.Value = "Initial Pipeline";
+            GetModel().progress.Value = 0.0;
+            GetModel().tokenCount.Value = 10;
         }
-
+ 
         private void Update() {
-            // Example of updating the pipeline
+            // Example of updating the pipeline's data model
             if (Input.GetKeyDown(KeyCode.Space)) {
-                PipelineData.pipelineName.Value = "New Pipeline Name";
-                PipelineData.progress.Value += 0.1f;
-                PipelineData.tokenCount.Value++;
+                GetModel().pipelineName.Value = "Updated Pipeline Name " + Time.frameCount;
+            }
+            if (Input.GetKeyDown(KeyCode.UpArrow)) {
+                GetModel().progress.Value += 0.1;
+            }
+            if (Input.GetKeyDown(KeyCode.RightArrow)) {
+                GetModel().tokenCount.Value++;
+            }
+            if (Input.GetKeyDown(KeyCode.S)) {
+                // Example of calling logic
+                GetLogic().StartPipeline();
             }
         }
     }
 }
-*/
+
+#endif // UNITY_EDITOR
