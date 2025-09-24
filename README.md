@@ -34,17 +34,46 @@ The `Logic` component acts as the "Controller" or "ViewModel." It contains the b
 **Key Features:**
 
 * It inherits from `BaseLogic<M>`, where `M` is the type of the `Model`.
-* It can implement `OnModelValueChanged` methods, which are automatically registered as listeners for the `Model`)'s `ObservableVariable` fields by the `SavableObservableExtensions` class.
+* Its primary role is to contain business logic that manipulates the `Model`.
 
-### 3. Presenter
+### 3. Presenter Hierarchy
 
-The `Presenter` is the "View" component of the framework. It's responsible for displaying the data from the `Model` to the user and handling user input. It observes the `Model` for changes and updates the UI accordingly.
+The framework provides two base classes for presenters, allowing you to choose the right one for your needs.
 
-**Key Features: **
+#### `BasePresenter<M>`
 
-* It inherits from `BaseObservablePresenter<M>` or `ObservablePresenterWithLogic<M, LO>`. 
-* It has references to UI elements (e.g., `Button`, `TextMeshProUGUI`).
-* It implements `OnModelValueChanged` methods to update the UI when the `Model` changes.
+This is the simplest presenter. It should be used when you have a `Model` that does **not** contain any `ObservableVariable` fields. It provides a `GetModel()` method but does not have any built-in reactivity.
+
+#### `BaseObservablePresenter<M>`
+
+This is the reactive presenter, which inherits from `BasePresenter<M>`. It's designed to work with a `Model` that uses `ObservableVariable` fields.
+
+**Key Features:**
+
+*   It inherits from `BasePresenter<M>`.
+*   It has references to UI elements (e.g., `Button`, `TextMeshProUGUI`).
+*   It **must** implement the `public override void OnModelValueChanged(IObservableVariable variable)` method. This is enforced at compile time.
+*   **Automatic Setup Validation**: It includes a check in `Start()` that will log an error if `Observable.SetListeners()` was not called for it. This helps prevent configuration errors where the UI does not update because event subscriptions are missing.
+
+##### **Important Note on `Start()`**
+
+Because `BaseObservablePresenter` uses `Start()` for its internal validation, if you need to use the `Start()` method in your own presenter, you **must** declare it as `protected override` and call `base.Start()`.
+
+```csharp
+public class MyPresenter : BaseObservablePresenter<MyModel>
+{
+    protected override void Start()
+    {
+        // 1. This call is crucial for the framework's validation to run.
+        base.Start();
+
+        // 2. Add your own Start() logic here.
+        Debug.Log("My custom Start logic.");
+    }
+
+    // ... other methods
+}
+```
 
 ### 4. Loader
 
@@ -69,12 +98,11 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
 2.  **Create the Logic**:
     * Create a new C' script that inherits from `BaseLogic<YourModel>`. 
     * Implement methods to handle your game's business logic.
-    * Create `OnModelValueChanged` methods to react to changes in the `Model`.
-
+ 
 3.  **Create the Presenter**:
-    * Create a new C# script that inherits from `BaseObservablePresenter<YourModel>`. 
+    * Create a new C# script that inherits from `BaseObservablePresenter<YourModel>`.
     * Add references to your UI elements in the script.
-    * Implement `OnModelValueChanged` methods to update the UI when the `Model` changes.
+    * Implement the required `public override void OnModelValueChanged(IObservableVariable variable)` method to update the UI. Inside this method, use a `switch` on `variable.Name` to handle changes for different fields.
 
 4.  **Create the Loader**:
     * Create a new C# script that inherits from `BaseLoader<YourModel>`. 
@@ -86,26 +114,64 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
     * If you're using a save/load system, also attach a `SaveableEntity` component, as required by `BaseLoader`. 
     * In the Inspector, connect the UI element references in your `Presenter`.
 
-	## Usage Examples
-
-Here are some examples of how the MMVC framework is used in the provided code:
-
-### Pipeline Example
-
-The `Pipeline` set of scripts (`PipelineDataModel`, `PipelineLogic`, `PipelinePresenter`, `PipelineLoader`) demonstrates a complete implementation of the framework for managing a CI/CD-like pipeline in the game.
-
-* **`PipelineDataModel.cs`**: Defines the data for a pipeline, such as its status, CPU-RAM usage, and logs.
-* **`PipelineLogic.cs`**: Contains the logic for starting, stopping, and managing the pipeline's execution. It also handles the generation of logs and the calculation of resource usage.
-* **`PipelinePresenter.cs`**: Updates the UI to reflect the pipeline's state, including the push button text, resource usage displays, and timer. 
-* **`PipelineLoader.cs`**: Manages the saving and loading of the pipeline components. The `PostInstantiation` method is used to restore the pipeline's state after loading, including the progress of any running blocks and timers.
-
-### Socket Example
-
-The `Socket` scripts (`SocketDataModel`, `SocketLogic`, `SocketPresenter`) show how the framework can be used for smaller, reusable components.
-
-* **`SocketDataModel.cs`**: Holds the data for a socket, such as the currently installed block and its status.
-* **`SocketLogic.cs`**: Handles the logic for installing and removing blocks from the socket when buttons are clicked.
-* **`SocketPresenter.cs`**: Updates the UI to show the installed block, its name, and status indicators.
+	## Usage Example
+	
+Here is a complete example of a simple component that displays a status and a timer.
+	
+### 1. The Model (`ComponentDataModel.cs`)
+	
+The model defines the data. Note that you don't need to initialize the variables; the `InitFields()` method in the base class will handle this automatically using reflection.
+	
+	```csharp
+	[Serializable]
+	public class ComponentDataModel : BaseObservableDataModel {
+	    [SerializeReference] public Observable.ObservableString status;
+	    [SerializeReference] public Observable.ObservableBoolean newVersionTimerEnabled;
+	}
+	```
+	
+### 2. The Logic (`ComponentLogic.cs`)
+	
+The logic contains the methods that change the model's state.
+	
+	```csharp
+	public class ComponentLogic : BaseLogic<ComponentDataModel> {
+	
+	    public void TimerStarts() {
+	        GetModel().status.Value = "InDevelopment";
+	        GetModel().newVersionTimerEnabled.Value = true;
+	    }
+	}
+	```
+	
+### 3. The Presenter (`ComponentPresenter.cs`)
+	
+The presenter listens for changes in the model and updates the UI. Note that `OnModelValueChanged` is now required due to the base class being abstract.
+	
+	```csharp
+	public class ComponentPresenter : ObservablePresenterWithLogic<ComponentDataModel,ComponentLogic> {
+	    
+	    [SerializeField] private TextMeshProUGUI versionTextTMP;
+	    [SerializeField] private TextMeshProUGUI newVersionTimerTextTMP;
+	
+	    public override void OnModelValueChanged(IObservableVariable variable) {
+	        switch (variable.Name) {
+	            case var name when name == GetModel().newVersionTimerEnabled.Name:
+	                // Use the bool value to format the text
+	                versionTextTMP.text = GetModel().newVersionTimerEnabled.Value ? "Timer: ON" : "Timer: OFF";
+	                break;
+	            case var name when name == GetModel().status.Name:
+	                // Use the string value to control a boolean property
+	                newVersionTimerTextTMP.enabled = GetModel().status.Value == "InDevelopment";
+	                break;
+	            default:
+	                break;
+	        }
+	    }
+	 }
+	```
+	
+	This example demonstrates the core principle of the framework: the `Presenter` listens for notifications via `OnModelValueChanged` and then reads the strongly-typed data directly from the `Model` to update the view, completely avoiding casting.
 
 
 # Integrating Singletons with the MMVC Framework
@@ -150,7 +216,7 @@ private void InitSingletones() {
             if (Services.Add(service) != null) { 
                 
                 // 5. If successful, integrate with the MMVC framework by setting up listeners.
-                Extensions.SetListeners(service);
+                SavableObservable.Observable.SetListeners(service);
             } else {
                 // 6. If a service of this type is already registered, enforce the Singleton pattern by quitting.
                 Debug.Log($"You have more than 1 instannce of {service.GetType()} with {Type.GetType(typeof(ISharedSingleton).FullName)} interface.");
@@ -165,74 +231,51 @@ private void InitSingletones() {
 ```
 This process creates a robust, auto-registering system for your global managers.
 
-### Step 1: Create Your Manager with MMVC
-
-First, build your manager class as you normally would using the MMVC pattern. For example, you might create an `AtaxxGameManager` with its own `AtaxxGameManagerDataModel`, `AtaxxGameManagerLogic`, and `AtaxxGameManagerPresenter`.
-
-### Step 2: Mark it as a Singleton
-
-In the primary `MonoBehaviour` class for your manager (e.g., `AtaxxGameManagerPresenter`), implement the `ISharedSingleton` interface.
-
+### Step 1: Create Your Component with MMVC
+ 
+First, build your component as you normally would using the MMVC pattern. We will use the `Component` example from the previous section.
+ 
+### Step 2: Mark the Presenter as a Singleton
+ 
+In the `ComponentPresenter`, implement the `ISharedSingleton` interface. This marks it for automatic registration on startup.
+ 
 ```csharp
-public class AtaxxGameManagerPresenter 
-    : ObservablePresenterWithLogic<AtaxxGameManagerDataModel, AtaxxGameManagerLogic>, ISharedSingleton 
+public class ComponentPresenter
+    : ObservablePresenterWithLogic<ComponentDataModel, ComponentLogic>, ISharedSingleton
 {
-    // ... all your normal presenter code
+    // ... all your normal presenter code from the example above
 }
 ```
-
+ 
 ### Step 3: Place it in Your Scene
-
-Ernsure that the `GameObject` with your `Presenter` (and its related Model and Logic components) is present in your game's initial scene. The `InitSingletones` method will find it on startup.
-
+ 
+Ensure that the `GameObject` with your `ComponentPresenter` (and its related `ComponentDataModel` and `ComponentLogic` scripts) is present in your game's initial scene. The `InitSingletones` method will find and register it on startup.
+ 
 ### Step 4: Access the Service from Other Components
-
-Now, any other component can easily access this global manager through the `Services` locator. This is demonstrated in the `Presenter` components.
-
-**Example: `PlayerChipLogic.cs`**
-
-The `PlayerChipLogic` needs to communicate with the central game manager to get game state and execute moves. Instead of requiring a manual link, it simply requests the manager from the `Services` registry in its `Awake` method.
-
+ 
+Now, any other component in your project can easily access this global `Component` and interact with its `Logic`.
+ 
+**Example: `AnotherComponent.cs`**
+ 
+Imagine you have another `MonoBehaviour` in your scene. It can retrieve the `ComponentLogic` from the `Services` registry and call its methods.
+ 
 ```csharp
-public class PlayerChipLogic : BaseLogic<PlayerChipDataModel> {
-
-    public AtaxxGameManagerLogic managerLogic;
-
-    private void Awake() {
-        // Retrieve the globally registered game manager's logic.
-        managerLogic = Services.Get<AtaxxGameManagerPresenter>().GetLogic();
-        GetComponent<Button>()?.onClick.AddListener(OnClick);
-    }
-
-    private void OnClick() {
-        // Now it can use the manager's logic to check game state.
-        if (managerLogic.GetModel().isGameOver.Value) return;
-
-        // ...
-    }
-}
-```
-
-**Example: `PlayerChipPresenter.cs`**
-
-Similarly, the `PlayerChipPresenter` can access the service to get resources, like the correct sprites for the player colors.
-
-```csharp
-public class PlayerChipPresenter : ObservablePresenterWithLogic<PlayerChipDataModel, PlayerChipLogic> {    
-
-    public void OnModelValueChanged(AtaxxAIEngine.PlayerColor previous, AtaxxAIEngine.PlayerColor current, string name) {
-        if (name == GetModel().owner.Name) {
-            // ...
-            var managerLogic = Services.Get<AtaxxGameManagerPresenter>().GetLogic();
-            // ...
-
-            switch (current) {
-                case AtaxxAIEngine.PlayerColor.Red:
-                    SetImageAndColor(image, managerLogic.red, color);
-                    break;
-                //...
-            }
-        }        
+using UnityEngine;
+ 
+public class AnotherComponent : MonoBehaviour {
+ 
+    void Start() {
+        // 1. Retrieve the globally registered ComponentPresenter.
+        var componentPresenter = Services.Get<ComponentPresenter>();
+ 
+        if (componentPresenter != null) {
+            // 2. Get its Logic component.
+            var componentLogic = componentPresenter.GetLogic();
+ 
+            // 3. Call a method on the Logic to change the model's state.
+            // The ComponentPresenter will automatically react to this change and update its UI.
+            componentLogic.TimerStarts();
+        }
     }
 }
 ```

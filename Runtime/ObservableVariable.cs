@@ -7,6 +7,13 @@ using System.Linq;
 namespace SavableObservable {
 
     public class Observable {
+
+        private static readonly HashSet<object> _initializedListeners = new HashSet<object>();
+
+        /// <summary>
+        /// Checks if SetListeners has been called for a specific object (typically a Presenter or Logic).
+        /// </summary>
+        public static bool AreListenersInitialized(object obj) => _initializedListeners.Contains(obj);
         
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableInt32 : ObservableVariable<int> { public ObservableInt32(string name) : base(name) { } }
@@ -46,6 +53,7 @@ namespace SavableObservable {
         }
 
         public static void SetListeners(object obj) {
+            _initializedListeners.Add(obj);
             var dataModel = ((MonoBehaviour)obj).GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
