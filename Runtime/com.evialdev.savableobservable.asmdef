@@ -1,3 +1,9 @@
 {
-	"name": "com.evialdev.savableobservable"
+  "name": "com.evialdev.savableobservable",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true
 }
