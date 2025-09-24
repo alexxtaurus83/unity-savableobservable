@@ -104,7 +104,7 @@ namespace SavableObservable {
         /// <summary>
         /// Optional name for debugging, data binding, or event filtering.
         /// </summary>
-        [SerializeField] public string Name;
+        [field: SerializeField] public string Name { get; set; }
  
         /// <summary>
         /// Fired whenever the Value is changed via property setter or detected from Inspector.
