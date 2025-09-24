@@ -87,11 +87,6 @@ namespace SavableObservable {
         /// The name of the variable (e.g., "pipelineName").
         /// </summary>
         string Name { get; }
-
-        /// <summary>
-        /// The underlying type of the stored value (e.g., typeof(string)).
-        /// </summary>
-        Type ValueType { get; }
     }
  
     [Serializable]
@@ -137,8 +132,6 @@ namespace SavableObservable {
                 //}
             }
         }
-
-        public Type ValueType => typeof(T);
  
         public override string ToString() => _value?.ToString();
  

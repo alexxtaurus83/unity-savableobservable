@@ -1,7 +1,7 @@
 {
   "name": "com.evialdev.savableobservable",
   "displayName": "SavableObservable",
-  "version": "1.0.4-alpha-3",
+  "version": "1.0.4-alpha-4",
   "description": "MVVM/MVVC framework for Unity with built-in saving/loading support",
   "unity": "2021.3",  
   "repository": {
