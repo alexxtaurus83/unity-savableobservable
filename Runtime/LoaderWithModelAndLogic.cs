@@ -1,18 +1,11 @@
-﻿using System.Linq;
-using UnityEditor;
-using UnityEngine;
-
+﻿using UnityEngine;
 
 namespace SavableObservable {
 
-    public abstract class LoaderWithModelAndLogic<M, LO> : BaseLoader<M> {
-
+    public abstract class LoaderWithModelAndLogic<M, LO> : LoaderWithModel<M> 
+    {
         public LO GetLogic() {
             return GetComponent<LO>();
-        }
-
-        public M GetModel() {
-            return GetComponent<M>();
         }
     }
 }

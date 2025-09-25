@@ -75,17 +75,60 @@ public class MyPresenter : BaseObservablePresenter<MyModel>
 }
 ```
 
-### 4. Loader
+### 4. Loader (Save/Load Integration)
 
-The `Loader` is a unique and powerful component that acts as the composition root. It's responsible for wiring together the `Model`, `Logic`, and `Presenter`. It also handles the saving and loading of the `Model`)'s state.
+The framework is designed to be **agnostic of any specific save/load system**. Instead of providing a concrete implementation, it offers base classes that you can inherit from to easily integrate with your own save/load solution.
 
-**Key Features:**
+#### Base Classes
 
-* It inherits from `BaseLoader<M>`. 
-* It implements the `ISaveable` to integrate with a save/load system. 
-* The `PostInstantiation` method is used to restore references and state after loading a saved game. 
+*   **`LoaderWithModel<M>`**: The base class for a loader that is associated with a `Model`.
+*   **`LoaderWithModelAndLogic<M, LO>`**: Inherits from `LoaderWithModel<M>` and adds a `GetLogic()` method for convenience.
 
-**Example: `PipelineLoader.cs`**
+These classes provide two key methods for integration:
+
+*   **`public M GetModelToSave()`**: Call this from your save system to get the strongly-typed model component whose data you want to serialize and save.
+*   **`public virtual void LoadDataFromModel(object state)`**: Call this from your save system after loading and deserializing data. This method applies the state to the model and crucially, sets up the reactive event listeners for the `Presenter`.
+
+#### Example Implementation
+
+Here is how you would create your own loader that integrates with your own save system interface (e.g., `ISaveable`).
+
+**1. Your Save System Interface (Example)**
+
+This is an interface from **your** project, not from the framework.
+
+```csharp
+public interface ISaveable
+{
+    object SaveState();
+    void LoadState(object state);
+}
+```
+
+**2. Your Concrete Loader**
+
+You create a class that inherits from `LoaderWithModel` (or `LoaderWithModelAndLogic`) and also implements **your** `ISaveable` interface.
+
+```csharp
+public class MyPlayerLoader : LoaderWithModel<PlayerDataModel>, ISaveable
+{
+    // Implement the SaveState method from your ISaveable interface
+    public object SaveState()
+    {
+        // Call the helper method from the framework's base class
+        return GetModelToSave();
+    }
+
+    // Implement the LoadState method from your ISaveable interface
+    public void LoadState(object state)
+    {
+        // Call the helper method from the framework's base class
+        LoadDataFromModel(state);
+    }
+}
+```
+
+This approach gives you full control over how and when you save/load data, while the framework's base classes handle the complex work of connecting the `Model` and `Presenter`.
 
 ## How to Use the Framework
 
@@ -104,14 +147,14 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
     * Add references to your UI elements in the script.
     * Implement the required `public override void OnModelValueChanged(IObservableVariable variable)` method to update the UI. Inside this method, use a `switch` on `variable.Name` to handle changes for different fields.
 
-4.  **Create the Loader**:
-    * Create a new C# script that inherits from `BaseLoader<YourModel>`. 
-    * If your `Presenter` also has `Logic`, you can use `LoaderWithModelAndLogic<YourModel, YourLogic>`. 
-
+4.  **Create Your Loader**:
+    * Create a new C# script that inherits from `LoaderWithModel<YourModel>` or `LoaderWithModelAndLogic<YourModel, YourLogic>`.
+    * Implement the interface of **your** save/load system (e.g., `ISaveable`).
+    * In your implementation, call the `GetModelToSave()` and `LoadDataFromModel(state)` methods from the base class.
+ 
 5.  **Set Up the GameObject**:
     * In the Unity Editor, create a new `GameObject`.
-    * Attach your `Model`, `Logic`, `Presenter`, and `Loader` scripts to the `GameObject`.
-    * If you're using a save/load system, also attach a `SaveableEntity` component, as required by `BaseLoader`. 
+    * Attach your `Model`, `Logic`, `Presenter`, and your new `Loader` script to the `GameObject`.
     * In the Inspector, connect the UI element references in your `Presenter`.
 
 	## Usage Example
@@ -122,19 +165,19 @@ Here is a complete example of a simple component that displays a status and a ti
 	
 The model defines the data. Note that you don't need to initialize the variables; the `InitFields()` method in the base class will handle this automatically using reflection.
 	
-	```csharp
+```csharp
 	[Serializable]
 	public class ComponentDataModel : BaseObservableDataModel {
 	    [SerializeReference] public Observable.ObservableString status;
 	    [SerializeReference] public Observable.ObservableBoolean newVersionTimerEnabled;
 	}
-	```
+```
 	
 ### 2. The Logic (`ComponentLogic.cs`)
 	
 The logic contains the methods that change the model's state.
 	
-	```csharp
+```csharp
 	public class ComponentLogic : BaseLogic<ComponentDataModel> {
 	
 	    public void TimerStarts() {
@@ -142,13 +185,13 @@ The logic contains the methods that change the model's state.
 	        GetModel().newVersionTimerEnabled.Value = true;
 	    }
 	}
-	```
+```
 	
 ### 3. The Presenter (`ComponentPresenter.cs`)
 	
 The presenter listens for changes in the model and updates the UI. Note that `OnModelValueChanged` is now required due to the base class being abstract.
 	
-	```csharp
+```csharp
 	public class ComponentPresenter : ObservablePresenterWithLogic<ComponentDataModel,ComponentLogic> {
 	    
 	    [SerializeField] private TextMeshProUGUI versionTextTMP;
@@ -169,10 +212,44 @@ The presenter listens for changes in the model and updates the UI. Note that `On
 	        }
 	    }
 	 }
-	```
+```
 	
-	This example demonstrates the core principle of the framework: the `Presenter` listens for notifications via `OnModelValueChanged` and then reads the strongly-typed data directly from the `Model` to update the view, completely avoiding casting.
+This example demonstrates the core principle of the framework: the `Presenter` listens for notifications via `OnModelValueChanged` and then reads the strongly-typed data directly from the `Model` to update the view, completely avoiding casting.
 
+### Manual Event Subscription
+
+In addition to the automatic subscription in `BaseObservablePresenter`, you can manually subscribe to the `OnValueChanged` event of any `ObservableVariable` from any class. This is useful for cross-component communication.
+
+The event handler method must accept a single argument of type `IObservableVariable`. Inside the method, you can use pattern matching (`is`) to safely cast the variable to its concrete type and access its `Value`.
+
+```csharp
+public class SomeOtherClass : MonoBehaviour
+{
+	   [SerializeField] private PlayerDataModel playerDataModel; // Reference to a model
+
+	   private void Start()
+	   {
+	       // Subscribe to the event
+	       playerDataModel.level.OnValueChanged += LevelChanged;
+	   }
+
+	   private void OnDestroy()
+	   {
+	       // Don't forget to unsubscribe!
+	       playerDataModel.level.OnValueChanged -= LevelChanged;
+	   }
+
+	   public void LevelChanged(IObservableVariable variable)
+	   {
+	       // Use pattern matching to safely get the concrete type and value
+	       if (variable is ObservableVariable<int> levelVariable)
+	       {
+	           int newLevel = levelVariable.Value;
+	           Debug.Log($"Player level changed to: {newLevel}");
+	       }
+	   }
+}
+```
 
 # Integrating Singletons with the MMVC Framework
 
