@@ -3,10 +3,21 @@
 namespace SavableObservable {
 
     [DisallowMultipleComponent]
-    public class BaseObservablePresenter<M> : MonoBehaviour {
-        
-        public M GetModel() {
-            return GetComponent<M>();
-        }            
-    }        
+    public abstract class BaseObservablePresenter<M> : BasePresenter<M> {
+
+        protected virtual void Start() {
+            // This check ensures that a Loader or some other initialization script has called SetListeners.
+            // If this error appears, it means the Presenter is in the scene but its event subscriptions
+            // have not been set up, and it will not react to Model changes.
+            if (!Observable.AreListenersInitialized(this)) {
+                Debug.LogError($"[SavableObservable] Listeners for {this.GetType().Name} on GameObject '{this.gameObject.name}' were not initialized. Ensure a Loader component is correctly configured to call Observable.SetListeners().", this.gameObject);
+            }
+        }
+
+        /// <summary>
+        /// This method will be automatically subscribed to all ObservableVariable changes in the model.
+        /// It must be implemented by any concrete presenter class.
+        /// </summary>
+        public abstract void OnModelValueChanged(IObservableVariable variable);
+    }
 }

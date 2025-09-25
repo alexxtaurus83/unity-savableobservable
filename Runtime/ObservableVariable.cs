@@ -2,12 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-using System.Linq;
 
 namespace SavableObservable {
 
     public class Observable {
-        
+
+        private static readonly HashSet<object> _initializedListeners = new HashSet<object>();
+
+        /// <summary>
+        /// Checks if SetListeners has been called for a specific object (typically a Presenter or Logic).
+        /// </summary>
+        public static bool AreListenersInitialized(object obj) => _initializedListeners.Contains(obj);
+
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableInt32 : ObservableVariable<int> { public ObservableInt32(string name) : base(name) { } }
 
@@ -25,14 +31,28 @@ namespace SavableObservable {
 
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableDouble : ObservableVariable<double> { public ObservableDouble(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableInt64 : ObservableVariable<long> { public ObservableInt64(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableByte : ObservableVariable<byte> { public ObservableByte(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableInt16 : ObservableVariable<short> { public ObservableInt16(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableVector2 : ObservableVariable<Vector2> { public ObservableVector2(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableVector3 : ObservableVariable<Vector3> { public ObservableVector3(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableVector4 : ObservableVariable<Vector4> { public ObservableVector4(string name) : base(name) { } }
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
+        [Serializable] public class ObservableQuaternion : ObservableVariable<Quaternion> { public ObservableQuaternion(string name) : base(name) { } }
 
         /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
         /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
         /// <returns>
         ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
         public static bool IsSupportedFieldType(FieldInfo field) {
-            return ObservableTypes.types.Keys.Contains(field.FieldType);
-        }      
+            return ObservableTypes.types.ContainsKey(field.FieldType);
+        }
 
         public static class ObservableTypes {
             public static Dictionary<Type, Type> types = new() {
@@ -41,11 +61,19 @@ namespace SavableObservable {
                 { typeof(ObservableBoolean), typeof(bool) },
                 { typeof(ObservableNullableBoolean), typeof(bool?) },
                 { typeof(ObservableSingle), typeof(float) },
-                { typeof(ObservableString), typeof(string) }
+                { typeof(ObservableString), typeof(string) },
+                { typeof(ObservableInt64), typeof(long) },
+                { typeof(ObservableByte), typeof(byte) },
+                { typeof(ObservableInt16), typeof(short) },
+                { typeof(ObservableVector2), typeof(Vector2) },
+                { typeof(ObservableVector3), typeof(Vector3) },
+                { typeof(ObservableVector4), typeof(Vector4) },
+                { typeof(ObservableQuaternion), typeof(Quaternion) }
             };
         }
 
         public static void SetListeners(object obj) {
+            _initializedListeners.Add(obj);
             var dataModel = ((MonoBehaviour)obj).GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
@@ -67,31 +95,30 @@ namespace SavableObservable {
         }
 
         private static void SetOnValueChangedHandler(object obj, Type valueType, FieldInfo field, BaseObservableDataModel dataModel) {
-            // Look for the correct OnModelValueChanged(T previous, T current, string name)
-            var method = obj.GetType().GetMethod("OnModelValueChanged", new Type[] { valueType, valueType, typeof(string) });
+            // Look for the new OnModelValueChanged(IObservableVariable variable) method
+            var method = obj.GetType().GetMethod("OnModelValueChanged", new Type[] { typeof(IObservableVariable) });
             if (method == null) {
-                throw new Exception($"Can't find 'OnModelValueChanged' method for observable variable with {field.FieldType.Name} type for field {field.Name}.");
+                // Method is not found, which is fine for classes like BaseLogic
+                // that don't need to react to model changes.
+                return;
             }
 
             var eventInfo = field.FieldType.GetEvent("OnValueChanged");
             var handler = Delegate.CreateDelegate(eventInfo.EventHandlerType, obj, method);
             eventInfo.AddEventHandler(field.GetValue(dataModel), handler);
         }
-        
+
     }
 
-    /*public interface IObservableValue {
+    public interface IObservableVariable {
+        /// <summary>
+        /// The name of the variable (e.g., "pipelineName").
+        /// </summary>
         string Name { get; }
-        Type ValueType { get; }
-        object GetValue();
-        void SetValue(object value);
-        string GetValueAsString();
-        void NotifyObservers();
-        event Action<object> OnValueChangedRaw;
-    }*/
+    }
 
     [Serializable]
-    public abstract class ObservableVariable<T>  { //: ISerializationCallbackReceiver
+    public abstract class ObservableVariable<T> : IObservableVariable {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
@@ -100,23 +127,17 @@ namespace SavableObservable {
         /// <summary>
         /// Optional name for debugging, data binding, or event filtering.
         /// </summary>
-        [SerializeField] public string Name;
-
-        /// <summary>
-        /// If true, enables runtime detection of Inspector changes.
-        /// Useful only when editing values at runtime via the Inspector.
-        /// </summary>
-        //[SerializeField] private bool detectInspectorChanges = false;
+        [field: SerializeField] public string Name { get; set; }
 
         /// <summary>
         /// Fired whenever the Value is changed via property setter or detected from Inspector.
         /// </summary>
-        public event Action<T, T, string> OnValueChanged;
+        public event Action<IObservableVariable> OnValueChanged;
 
         /// <summary>
-        /// Keeps the last known value to detect changes caused by Unity Inspector.
+        /// Stores the previous value of the variable.
         /// </summary>
-        private T _previousValue;
+        public T PreviousValue { get; private set; }
 
         /// <summary>
         /// Constructor that sets the observable field name.
@@ -133,35 +154,15 @@ namespace SavableObservable {
             get => _value;
             set {
                 //if (!EqualityComparer<T>.Default.Equals(_value, value)) { TODO enable after test with pipleine class as it has current block is running
-                    T old = _value;
-                    _value = value;
-                    OnValueChanged?.Invoke(old, _value, Name);
-                    //_previousValue = _value; // Update cached value to prevent duplicate triggering
+                PreviousValue = _value;
+                _value = value;
+                OnValueChanged?.Invoke(this);
                 //}
             }
         }
 
-        public override string ToString() => _value?.ToString();
-
-        // Called by Unity AFTER this object is deserialized (e.g., after inspector change)
-        /*public void OnAfterDeserialize() {
-            // Only react when explicitly allowed
-            if (!detectInspectorChanges) return; //!Application.isPlaying ||
-
-            // Compare deserialized value with previous runtime value
-            if (!EqualityComparer<T>.Default.Equals(_value, _previousValue)) {
-                T old = _previousValue;
-                _previousValue = _value;
-                OnValueChanged?.Invoke(old, _value, Name);
-            }
-        }*/
-
-        // Called by Unity BEFORE this object is serialized (usually not needed here)
-        /*public void OnBeforeSerialize() {
-            // Could be used for pre-save cleanup, but not needed in this case
-        }*/
+        public override string ToString() => _value?.ToString();       
+        
     }
-
-
 
 }

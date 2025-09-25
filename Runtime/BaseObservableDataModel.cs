@@ -6,7 +6,7 @@ namespace SavableObservable {
 
     /// <summary>Abstract DataModel class to keep observable keep data with ObservableVariable types</summary>
     [DisallowMultipleComponent]
-
+    [Serializable]
     public abstract class BaseObservableDataModel : MonoBehaviour {
 
         /// <summary>
@@ -39,8 +39,8 @@ namespace SavableObservable {
                         break;
                     case MemberTypes.Field:
                         var field = (FieldInfo)memberInfo;
-                        if (Observable.IsSupportedFieldType(field)) { 
-                            var fieldProp = field.FieldType.GetProperty("Value");                            
+                        if (Observable.IsSupportedFieldType(field)) {
+                            var fieldProp = field.FieldType.GetProperty("Value");
                             fieldProp.SetValue(field.GetValue(this), fieldProp.GetValue(field.GetValue(model)));
                         } else {
                             field.SetValue(this, field.GetValue(model));
@@ -48,7 +48,7 @@ namespace SavableObservable {
                         break;
                 }
             }
-        }        
-        
+        }
+
     }
 }
