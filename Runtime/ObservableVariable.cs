@@ -18,19 +18,14 @@ namespace SavableObservable {
         
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableInt32 : ObservableVariable<int> { public ObservableInt32(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableString : ObservableVariable<string> { public ObservableString(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableBoolean : ObservableVariable<bool> { public ObservableBoolean(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableNullableBoolean : ObservableVariable<bool?> { public ObservableNullableBoolean(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableSingle : ObservableVariable<float> { public ObservableSingle(string name) : base(name) { } }
-
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableDouble : ObservableVariable<double> { public ObservableDouble(string name) : base(name) { } }
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
@@ -47,8 +42,9 @@ namespace SavableObservable {
         [Serializable] public class ObservableVector4 : ObservableVariable<Vector4> { public ObservableVector4(string name) : base(name) { } }
         /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableQuaternion : ObservableVariable<Quaternion> { public ObservableQuaternion(string name) : base(name) { } }        
+        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
         [Serializable] public class ObservableShort : ObservableVariable<ushort> { public ObservableShort(string name) : base(name) { } }
-        [Serializable] public class ObservableByte : ObservableVariable<byte> { public ObservableByte(string name) : base(name) { } }
+        
  
         /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
         /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
@@ -73,7 +69,6 @@ namespace SavableObservable {
                 { typeof(ObservableVector3), typeof(Vector3) },
                 { typeof(ObservableVector4), typeof(Vector4) },
                 { typeof(ObservableShort), typeof(ushort) },
-                { typeof(ObservableByte), typeof(byte) },
                 { typeof(ObservableQuaternion), typeof(Quaternion) }
             };
         }
