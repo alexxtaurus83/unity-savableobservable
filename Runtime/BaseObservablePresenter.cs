@@ -10,14 +10,14 @@ namespace SavableObservable {
             // If this error appears, it means the Presenter is in the scene but its event subscriptions
             // have not been set up, and it will not react to Model changes.
             if (!Observable.AreListenersInitialized(this)) {
-                Debug.LogError($"[SavableObservable] Listeners for {this.GetType().Name} on GameObject '{this.gameObject.name}' were not initialized. Ensure a Loader component is correctly configured to call Observable.SetListeners().", this.gameObject);
+                Debug.Log($"[SavableObservable] Listeners for {this.GetType().Name} on GameObject '{this.gameObject.name}' were not initialized. Ensure a Loader component is correctly configured to call Observable.SetListeners().", this.gameObject);
             }
         }
 
         /// <summary>
-        /// This method will be automatically subscribed to all ObservableVariable changes in the model.
-        /// It must be implemented by any concrete presenter class.
+        /// A single handler that can be overridden to listen to all variable changes.
+        /// If this method is overridden, individual [ObservableHandler] attributes will be ignored.
         /// </summary>
-        public abstract void OnModelValueChanged(IObservableVariable variable);
+        protected virtual void OnModelValueChanged(IObservableVariable variable) { }
     }
 }
