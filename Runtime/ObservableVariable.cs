@@ -83,32 +83,37 @@ namespace SavableObservable {
 
             // --- New Logic Starts Here ---
 
-            // 1. Check for a single, overridden universal handler
+            // --- New Logic Starts Here ---
+
             var universalHandler = obj.GetType().GetMethod("OnModelValueChanged", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (universalHandler != null && universalHandler.DeclaringType == obj.GetType())
-            {
-                // Universal handler is overridden, subscribe all variables to it.
+            bool isUniversalHandlerOverridden = universalHandler != null && universalHandler.DeclaringType == obj.GetType();
+
+            var individualHandlers = obj.GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+                .Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null)
+                .ToList();
+
+            // Warn if a universal handler and attribute-based handlers are used together.
+            if (isUniversalHandlerOverridden && individualHandlers.Any()) {
+                Debug.LogError($"[SavableObservable] Presenter '{obj.GetType().Name}' uses both a universal 'OnModelValueChanged' handler and specific [ObservableHandler] attributes. This is not supported. The universal handler will be used, and attribute-based handlers will be ignored.", (MonoBehaviour)obj);
+            }
+
+            // If a universal handler is overridden, subscribe all variables to it and stop processing.
+            if (isUniversalHandlerOverridden) {
                 foreach (var field in GetObservableFields(dataModel)) {
                     SubscribeUniversalHandler(obj, universalHandler, field, dataModel);
                 }
-                return; // Stop processing
+                return;
             }
 
-            // 2. If no universal handler, look for individual handlers with attributes
-            var individualHandlers = obj.GetType()
-                .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-                .Select(m => new { Method = m, Attribute = m.GetCustomAttribute<ObservableHandlerAttribute>() })
-                .Where(x => x.Attribute != null)
-                .ToDictionary(x => x.Attribute.VariableName, x => x.Method);
+            // If no universal handler, look for individual handlers with attributes.
+            var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
 
-            foreach (var field in GetObservableFields(dataModel))
-            {
-                if (individualHandlers.TryGetValue(field.Name, out var handlerMethod))
-                {
+            foreach (var field in GetObservableFields(dataModel)) {
+                if (individualHandlerMap.TryGetValue(field.Name, out var handlerMethod)) {
                     SubscribeIndividualHandler(obj, handlerMethod, field, dataModel);
-                }
-                else
-                {
+                } else {
+                    // Warn if an observable variable has no corresponding handler.
                     Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {dataModel.GetType().Name} has no corresponding [ObservableHandler] method in {obj.GetType().Name}.", (MonoBehaviour)obj);
                 }
             }
