@@ -12,12 +12,6 @@ namespace SavableObservable {
             if (!Observable.AreListenersInitialized(this)) {
                 Debug.Log($"[SavableObservable] Listeners for {this.GetType().Name} on GameObject '{this.gameObject.name}' were not initialized. Ensure a Loader component is correctly configured to call Observable.SetListeners().", this.gameObject);
             }
-        }
-
-        /// <summary>
-        /// A single handler that can be overridden to listen to all variable changes.
-        /// If this method is overridden, individual [ObservableHandler] attributes will be ignored.
-        /// </summary>
-        protected virtual void OnModelValueChanged(IObservableVariable variable) { }
+        }        
     }
 }
