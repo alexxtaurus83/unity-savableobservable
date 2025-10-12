@@ -80,11 +80,7 @@ namespace SavableObservable {
 
             var initMethod = dataModel.GetType().GetMethod("InitFields");
             initMethod?.Invoke(dataModel, null);
-
-            // --- New Logic Starts Here ---
-
-            // --- New Logic Starts Here ---
-
+            
             var universalHandler = obj.GetType().GetMethod("OnModelValueChanged", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
             bool isUniversalHandlerOverridden = universalHandler != null && universalHandler.DeclaringType == obj.GetType();
 
@@ -178,7 +174,7 @@ namespace SavableObservable {
     }
  
     [Serializable]
-    public abstract class ObservableVariable<T> : IObservableVariable  { //: ISerializationCallbackReceiver
+    public abstract class ObservableVariable<T> : IObservableVariable  { 
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
@@ -213,11 +209,11 @@ namespace SavableObservable {
         public T Value {
             get => _value;
             set {
-                //if (!EqualityComparer<T>.Default.Equals(_value, value)) { TODO enable after test with pipleine class as it has current block is running
+                if (!EqualityComparer<T>.Default.Equals(_value, value)) {
                     PreviousValue = _value;
                     _value = value;
                     OnValueChanged?.Invoke(this);
-                //}
+                }
             }
         }
  
