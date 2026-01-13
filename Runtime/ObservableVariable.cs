@@ -209,11 +209,9 @@ namespace SavableObservable {
         public T Value {
             get => _value;
             set {
-                if (!EqualityComparer<T>.Default.Equals(_value, value)) {
-                    PreviousValue = _value;
-                    _value = value;
-                    OnValueChanged?.Invoke(this);
-                }
+                PreviousValue = _value;
+                _value = value;
+                OnValueChanged?.Invoke(this);               
             }
         }
  
