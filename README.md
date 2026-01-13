@@ -24,7 +24,8 @@ The `Model` is the data layer of your application. It holds the state and is res
 **Key Features:**
 
 * It uses `ObservableVariable` fields to store data, which automatically notify any listeners when their value changes.
-* The `InitFields` method uses reflection to initialize all `ObservableVariable` fields, so you don't have to do it manually. 
+* The `InitFields` method uses reflection to initialize all `ObservableVariable` fields, so you don't have to do it manually.
+* **Mixed Data Types**: You can include regular, non-observable fields (like `int`, `string`, `List<T>`) alongside `ObservableVariable` fields in your model. The save/load system will correctly handle both.
 
 
 ### 2. Logic
@@ -52,7 +53,7 @@ This is the reactive presenter, which inherits from `BasePresenter<M>`. It's des
 
 *   It inherits from `BasePresenter<M>`.
 *   It has references to UI elements (e.g., `Button`, `TextMeshProUGUI`).
-*   It **must** implement the `public override void OnModelValueChanged(IObservableVariable variable)` method. This is enforced at compile time.
+*   It provides two ways to handle model changes: a single universal handler or individual methods marked with an `[ObservableHandler]` attribute. See the "Event Handling in Presenters" section below for details.
 *   **Automatic Setup Validation**: It includes a check in `Start()` that will log an error if `Observable.SetListeners()` was not called for it. This helps prevent configuration errors where the UI does not update because event subscriptions are missing.
 
 ##### **Important Note on `Start()`**
@@ -75,7 +76,71 @@ public class MyPresenter : BaseObservablePresenter<MyModel>
 }
 ```
 
-### 4. Loader (Save/Load Integration)
+### 4. Event Handling in Presenters
+
+The framework offers two powerful, mutually exclusive ways to handle `ObservableVariable` changes in your presenters.
+
+#### Approach 1: The Universal Handler (High Priority)
+
+You can override the `OnModelValueChanged` method in your presenter. If this method is overridden, it will receive **all** change events from the model. This is useful for simple components or for debugging.
+
+**If this method is overridden, the framework will ignore any `[ObservableHandler]` attributes in the class.**
+
+```csharp
+public class MyPresenter : BaseObservablePresenter<MyModel>
+{
+    // Override the single handler
+    protected override void OnModelValueChanged(IObservableVariable variable)
+    {
+        Debug.Log($"'{variable.Name}' changed!");
+        // Use a switch to handle different variables
+        switch (variable.Name) {
+            // ...
+        }
+    }
+}
+```
+
+#### Approach 2: Individual Handlers (Recommended)
+
+If you do **not** override `OnModelValueChanged`, the framework will instead look for individual methods marked with the `[ObservableHandler("VariableName")]` attribute. This is the recommended approach as it leads to cleaner, more organized code.
+
+*   The framework will scan your presenter for these attributes on startup.
+*   If an `ObservableVariable` exists in the model but no corresponding `[ObservableHandler]` is found in the presenter, a warning will be logged in the console.
+
+**Flexible Method Signatures:**
+
+You can define the handler method with the arguments you need. The framework will automatically provide them.
+
+```csharp
+public class PlayerStatsPresenter : BaseObservablePresenter<PlayerStatsModel>
+{
+    // 1. Get only the new value (most common)
+    [ObservableHandler(nameof(PlayerStatsModel.Level))]
+    private void OnLevelChanged(int newLevel)
+    {
+        levelText.text = $"Level: {newLevel}";
+    }
+
+    // 2. Get the new and old values
+    [ObservableHandler(nameof(PlayerStatsModel.Health))]
+    private void OnHealthChanged(int newHealth, int oldHealth)
+    {
+        Debug.Log($"Health changed from {oldHealth} to {newHealth}");
+        healthBar.fillAmount = newHealth / 100f;
+    }
+
+    // 3. Get the raw variable object for more complex scenarios
+    [ObservableHandler(nameof(PlayerStatsModel.PlayerName))]
+    private void OnNameChanged(IObservableVariable variable)
+    {
+        var nameVar = (Observable.ObservableString)variable;
+        nameplateText.text = nameVar.Value;
+    }
+}
+```
+
+### 5. Loader (Save/Load Integration)
 
 The framework is designed to be **agnostic of any specific save/load system**. Instead of providing a concrete implementation, it offers base classes that you can inherit from to easily integrate with your own save/load solution.
 
@@ -145,7 +210,7 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
 3.  **Create the Presenter**:
     * Create a new C# script that inherits from `BaseObservablePresenter<YourModel>`.
     * Add references to your UI elements in the script.
-    * Implement the required `public override void OnModelValueChanged(IObservableVariable variable)` method to update the UI. Inside this method, use a `switch` on `variable.Name` to handle changes for different fields.
+    * Choose your event handling strategy: either override the single `OnModelValueChanged` method, or create individual methods marked with the `[ObservableHandler]` attribute.
 
 4.  **Create Your Loader**:
     * Create a new C# script that inherits from `LoaderWithModel<YourModel>` or `LoaderWithModelAndLogic<YourModel, YourLogic>`.
@@ -248,6 +313,28 @@ public class SomeOtherClass : MonoBehaviour
 	           Debug.Log($"Player level changed to: {newLevel}");
 	       }
 	   }
+}
+```
+
+## Performance & Best Practices
+
+### Boxing and Value Types
+
+The framework is designed to be efficient and avoid common performance pitfalls in Unity.
+
+*   **No Boxing for Value Types**: Because `ObservableVariable<T>` is a generic class, when you use it with value types (`int`, `float`, `bool`, `Vector3`, etc.), no boxing occurs when the value is set or retrieved. This prevents unnecessary memory allocations and garbage collection.
+*   **Efficient Event Handling**: The automatic subscription system uses compiled expressions or delegates, which are highly performant after the initial setup.
+
+### Memory Management and Unsubscribing
+
+*   **Automatic Subscriptions**: For events subscribed automatically via `BaseObservablePresenter` (either through `OnModelValueChanged` or `[ObservableHandler]` attributes), the framework manages the lifetime of the subscription. You do not need to manually unsubscribe.
+*   **Manual Subscriptions**: If you manually subscribe to an `OnValueChanged` event from another class (as shown in the "Manual Event Subscription" section), it is **crucial** that you unsubscribe from the event when your listening object is destroyed, typically in the `OnDestroy()` method. Failure to do so can lead to memory leaks, as the `ObservableVariable` will hold a reference to your destroyed object, preventing it from being garbage collected.
+
+```csharp
+private void OnDestroy()
+{
+    // Always match a subscription with an unsubscription!
+    playerDataModel.level.OnValueChanged -= LevelChanged;
 }
 ```
 
