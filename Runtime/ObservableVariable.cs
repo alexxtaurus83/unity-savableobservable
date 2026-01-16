@@ -4,6 +4,11 @@ using System.Reflection;
 using UnityEngine;
 using System.Linq;
 using System.Linq.Expressions;
+#if UNITY_EDITOR
+using UnityEditor;
+using System.Text.RegularExpressions;
+using System.Collections;
+#endif
 
 namespace SavableObservable {
 
@@ -190,16 +195,12 @@ namespace SavableObservable {
         public override string ToString() => _value?.ToString();
     }
     
-    #if UNITY_EDITOR
-    using UnityEditor;
-    using System.Text.RegularExpressions;
-    using System.Collections;
     
-    namespace SavableObservable
+    
+    #if UNITY_EDITOR
+    [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]
+    public class ObservableVariableDrawer : PropertyDrawer
     {
-        [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]
-        public class ObservableVariableDrawer : PropertyDrawer
-        {
             public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
             {
                 EditorGUI.BeginProperty(position, label, property);
