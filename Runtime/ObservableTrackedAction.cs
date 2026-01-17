@@ -17,11 +17,6 @@ namespace SavableObservable
         internal BaseObservableDataModel ParentDataModel { get; set; }
         
         /// <summary>
-        /// The subscriber object for this subscription.
-        /// </summary>
-        internal object Subscriber { get; set; }
-        
-        /// <summary>
         /// Adds a handler to the tracked action.
         /// </summary>
         public void Add(Action<T> handler, object subscriber)

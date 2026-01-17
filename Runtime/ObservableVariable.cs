@@ -49,10 +49,7 @@ namespace SavableObservable {
             set {
                 PreviousValue = _value;
                 _value = value;
-
-                if (OnValueChanged != null) {
-                    OnValueChanged.Invoke(this);
-                }
+                OnValueChanged?.Invoke(this)
             }
         }
 
@@ -60,9 +57,7 @@ namespace SavableObservable {
         /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
         /// </summary>
         public void ForceNotify() {
-            if (OnValueChanged != null) {
-                OnValueChanged.Invoke(this);
-            }
+            OnValueChanged?.Invoke(this);
         }
 
         public override string ToString() => _value?.ToString();

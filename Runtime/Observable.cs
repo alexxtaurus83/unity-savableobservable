@@ -44,12 +44,10 @@ namespace SavableObservable {
             initMethod?.Invoke(dataModel, null);
 
             var universalHandler = obj.GetType().GetMethod("OnModelValueChanged", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            
             bool isUniversalHandlerOverridden = universalHandler != null && universalHandler.DeclaringType == obj.GetType();
 
-            var individualHandlers = obj.GetType()
-                .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-                .Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null)
-                .ToList();
+            var individualHandlers = obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null).ToList();
 
             // Warn if a universal handler and attribute-based handlers are used together.
             if (isUniversalHandlerOverridden && individualHandlers.Any()) {
@@ -169,7 +167,7 @@ namespace SavableObservable {
         /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
         /// <returns>
         ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
-        private static bool IsSupportedFieldType(FieldInfo field) {
+        internal static bool IsSupportedFieldType(FieldInfo field) {
             return field.FieldType.IsGenericType &&
                    field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
         }
@@ -258,17 +256,6 @@ namespace SavableObservable {
                     }
                     instanceData.Subscriptions.Remove(subscriber);
                 }
-            }
-        }
-
-        /// <summary>
-        /// Removes all subscriptions for a specific data model.
-        /// </summary>
-        /// <param name="dataModel">The data model instance to remove all subscriptions for</param>
-        public static void RemoveAllSubscriptionsForModel(BaseObservableDataModel dataModel) {
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                instanceData.Subscriptions.Clear();
             }
         }
 
