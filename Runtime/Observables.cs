@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -13,6 +14,18 @@ using System.Collections;
 namespace SavableObservable {
 
     public class Observable {
+        
+        // Storage for per-instance data using ConditionalWeakTable to avoid memory leaks
+        private static readonly ConditionalWeakTable<BaseObservableDataModel, InstanceData> _instanceData =
+            new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
+            
+        // Helper class to hold per-instance data
+        private class InstanceData
+        {
+            public Dictionary<object, List<Delegate>> Subscriptions { get; } = new Dictionary<object, List<Delegate>>();
+            public FieldInfo[] CachedObservableFields { get; set; }
+            public readonly object Lock = new object(); // For thread safety
+        }
 
         private static readonly HashSet<object> _initializedListeners = new HashSet<object>();
 
@@ -159,69 +172,135 @@ namespace SavableObservable {
         {
             if (dataModel is BaseObservableDataModel model)
             {
-                model.RemoveAllSubscriptions(subscriber);
+                RemoveAllSubscriptions(model, subscriber);
             }
         }
         
-        /*
-        /// <summary>
-        /// Allows manual registration of a subscription for automatic cleanup.
-        /// Use this when manually subscribing to OnValueChanged events outside of SetListeners.
-        /// </summary>
-        /// <param name="obj">The subscriber object</param>
-        /// <param name="subscription">The delegate subscription to register</param>
-        public static void RegisterManualSubscription(object obj, Delegate subscription)
-        {
-            var dataModel = (obj as MonoBehaviour)?.GetComponent<BaseObservableDataModel>();
-            if (dataModel != null)
-            {
-                dataModel.RegisterSubscription(obj, subscription);
-            }
-            else
-            {
-                Debug.LogWarning($"[SavableObservable] Could not register manual subscription for {obj.GetType().Name}: No BaseObservableDataModel found on the same GameObject.");
-            }
-        }
-        
+    /// <summary>
+    /// Determines whether field type is <see cref="ObservableVariable" /> field
+    /// </summary>
+    /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
+    /// <returns>
+    ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
+    private static bool IsSupportedFieldType(FieldInfo field) {
+        return field.FieldType.IsGenericType &&
+               field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
+    }
 
-        /// <summary>
-        /// Extension to ObservableVariable to allow direct registration of subscriptions to specific variables.
-        /// This enables automatic cleanup when the associated data model is destroyed.
-        /// </summary>
-        /// <param name="observableVar">The ObservableVariable being subscribed to</param>
-        /// <param name="subscriber">The subscriber object</param>
-        /// <param name="subscription">The delegate subscription to register</param>
-        public static void RegisterSubscriptionToVariable(IObservableVariable observableVar, object subscriber, Delegate subscription)
-        {
-            // Find the data model that contains this observable variable
-            // Since we can't easily trace back from the variable to the model, we'll rely on the subscriber's model
-            var dataModel = (subscriber as MonoBehaviour)?.GetComponent<BaseObservableDataModel>();
-            if (dataModel != null)
-            {
-                dataModel.RegisterSubscription(subscriber, subscription);
+    /// <summary>
+    /// Gets the cached observable fields for a data model instance.
+    /// </summary>
+    public static FieldInfo[] GetCachedObservableFields(BaseObservableDataModel dataModel) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        if (instanceData.CachedObservableFields == null) {
+            instanceData.CachedObservableFields = dataModel.GetType()
+                .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(f => IsSupportedFieldType(f))
+                .ToArray();
+        }
+        return instanceData.CachedObservableFields;
+    }
+
+    /// <summary>
+    /// Registers a subscription for automatic cleanup when the GameObject is destroyed.
+    /// </summary>
+    /// <param name="dataModel">The data model instance</param>
+    /// <param name="subscriber">The subscriber object (e.g., Presenter or Logic)</param>
+    /// <param name="subscription">The delegate subscription to be cleaned up</param>
+    public static void RegisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        lock (instanceData.Lock) {
+            if (!instanceData.Subscriptions.ContainsKey(subscriber)) {
+                instanceData.Subscriptions[subscriber] = new List<Delegate>();
             }
-            else
-            {
-                Debug.LogWarning($"[SavableObservable] Could not register subscription to variable for {subscriber.GetType().Name}: No BaseObservableDataModel found on the same GameObject.");
+            instanceData.Subscriptions[subscriber].Add(subscription);
+        }
+    }
+
+    /// <summary>
+    /// Removes a subscription from the tracking list.
+    /// </summary>
+    /// <param name="dataModel">The data model instance</param>
+    /// <param name="subscriber">The subscriber object</param>
+    /// <param name="subscription">The delegate subscription to remove</param>
+    public static void UnregisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        lock (instanceData.Lock) {
+            if (instanceData.Subscriptions.ContainsKey(subscriber)) {
+                instanceData.Subscriptions[subscriber].Remove(subscription);
+                if (instanceData.Subscriptions[subscriber].Count == 0) {
+                    instanceData.Subscriptions.Remove(subscriber);
+                }
             }
         }
-        
-        /// <summary>
-        /// Internal method to unsubscribe all registered subscriptions for a specific subscriber.
-        /// </summary>
-        /// <param name="dataModel">The data model containing the observables</param>
-        /// <param name="subscriber">The subscriber object</param>
-        /// <param name="subscription">The specific subscription to remove</param>
-        internal static void UnsubscribeFromAll(BaseObservableDataModel dataModel, object subscriber, Delegate subscription)
-        {
-            // This method is called from the data model's OnDestroy to clean up subscriptions
-            // We need to find all ObservableVariable instances in the model and unsubscribe
-            var observableFields = GetObservableFields(dataModel);
+    }
+
+    /// <summary>
+    /// Removes all subscriptions for a specific subscriber.
+    /// </summary>
+    /// <param name="dataModel">The data model instance</param>
+    /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
+    public static void RemoveAllSubscriptions(BaseObservableDataModel dataModel, object subscriber) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        lock (instanceData.Lock) {
+            if (instanceData.Subscriptions.ContainsKey(subscriber)) {
+                var subscriptions = instanceData.Subscriptions[subscriber];
+                // Actually unsubscribe from each observable variable
+                var observableFields = GetCachedObservableFields(dataModel);
+                foreach (var field in observableFields) {
+                    var observableVar = field.GetValue(dataModel);
+                    if (observableVar != null) {
+                        // Use reflection to get the OnValueChanged ObservableTrackedAction property and remove the handler
+                        var onValueChangedProperty = field.FieldType.GetProperty("OnValueChanged");
+                        if (onValueChangedProperty != null) {
+                            var trackedAction = onValueChangedProperty.GetValue(observableVar);
+                            if (trackedAction != null) {
+                                var removeMethod = trackedAction.GetType().GetMethod("Remove");
+                                if (removeMethod != null) {
+                                    foreach (var subscription in subscriptions) {
+                                        try {
+                                            removeMethod.Invoke(trackedAction, new object[] { subscription });
+                                        }
+                                        catch (System.ArgumentException) {
+                                            // Subscription was not found on this event, continue
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                instanceData.Subscriptions.Remove(subscriber);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Removes all subscriptions for a specific data model.
+    /// </summary>
+    /// <param name="dataModel">The data model instance to remove all subscriptions for</param>
+    public static void RemoveAllSubscriptionsForModel(BaseObservableDataModel dataModel) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        lock (instanceData.Lock) {
+            instanceData.Subscriptions.Clear();
+        }
+    }
+    
+    /// <summary>
+    /// Cleans up all tracked subscriptions for a data model when it's destroyed.
+    /// </summary>
+    /// <param name="dataModel">The data model being destroyed</param>
+    public static void CleanupSubscriptions(BaseObservableDataModel dataModel) {
+        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+        lock (instanceData.Lock) {
+            // Clean up tracked subscriptions by iterating through each observable variable once
+            var observableFields = GetCachedObservableFields(dataModel);
             foreach (var field in observableFields)
             {
                 var observableVar = field.GetValue(dataModel);
                 if (observableVar != null)
                 {
+                    // Use reflection to get the OnValueChanged ObservableTrackedAction property and remove all handlers
                     var onValueChangedProperty = field.FieldType.GetProperty("OnValueChanged");
                     if (onValueChangedProperty != null)
                     {
@@ -231,20 +310,28 @@ namespace SavableObservable {
                             var removeMethod = trackedAction.GetType().GetMethod("Remove");
                             if (removeMethod != null)
                             {
-                                try
+                                // Remove all subscriptions for this observable variable
+                                foreach (var kvp in instanceData.Subscriptions)
                                 {
-                                    removeMethod.Invoke(trackedAction, new object[] { subscription });
-                                }
-                                catch (System.ArgumentException)
-                                {
-                                    // Subscription was not found on this event, continue
+                                    var subscriptions = kvp.Value;
+                                    foreach (var subscription in subscriptions)
+                                    {
+                                        try
+                                        {
+                                            removeMethod.Invoke(trackedAction, new object[] { subscription });
+                                        }
+                                        catch (System.ArgumentException)
+                                        {
+                                            // Subscription was not found on this event, continue
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            instanceData.Subscriptions.Clear();
         }
-        */
     }
 }

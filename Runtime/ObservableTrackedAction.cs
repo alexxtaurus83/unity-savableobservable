@@ -35,7 +35,7 @@ namespace SavableObservable
                     // Register this subscription for automatic cleanup if possible
                     if (ParentDataModel != null && subscriber != null)
                     {
-                        ParentDataModel.RegisterSubscription(subscriber, handler);
+                        Observable.RegisterSubscription(ParentDataModel, subscriber, handler);
                     }
                 }
             }

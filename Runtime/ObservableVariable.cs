@@ -10,7 +10,7 @@ using System.Collections;
 namespace SavableObservable 
 {
     [Serializable]
-    public class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver 
+    public class ObservableVariable<T> : IObservableVariable
     {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
@@ -67,16 +67,6 @@ namespace SavableObservable
             {
                 OnValueChanged.Invoke(this);
             }
-        }
-      
-        void ISerializationCallbackReceiver.OnBeforeSerialize() {
-            // Store current value in serialized field
-        }
-      
-        void ISerializationCallbackReceiver.OnAfterDeserialize() {
-            // Do NOT trigger events during serialization/deserialization - this leads to UnityExceptions
-            // The property drawer will handle inspector changes via ForceNotify after serialization completes
-            // We only need to ensure the internal state is consistent
         }
       
         public override string ToString() => _value?.ToString();
