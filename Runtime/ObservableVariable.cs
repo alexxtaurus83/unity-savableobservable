@@ -184,12 +184,9 @@ namespace SavableObservable {
         }
       
         void ISerializationCallbackReceiver.OnAfterDeserialize() {
-            // Ensure the property value is set after deserialization
-            // This ensures that the internal state is synchronized after loading
-            if (_value != null || typeof(T) == typeof(string) || !EqualityComparer<T>.Default.Equals(_value, default(T))) {
-                // Only trigger if there's a meaningful value
-                OnValueChanged?.Invoke(this);
-            }
+            // Do NOT trigger events during serialization/deserialization - this leads to UnityExceptions
+            // The property drawer will handle inspector changes via ForceNotify after serialization completes
+            // We only need to ensure the internal state is consistent
         }
       
         public override string ToString() => _value?.ToString();
@@ -224,6 +221,7 @@ namespace SavableObservable {
                         if (targetObject != null && targetObject is IObservableVariable observableVar)
                         {
                             // Call ForceNotify to trigger the OnValueChanged event
+                            // Use reflection to call ForceNotify to avoid generic type issues
                             var forceNotifyMethod = targetObject.GetType().GetMethod("ForceNotify",
                                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                             
