@@ -1,137 +1,17 @@
 using System;
-using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-using System.Linq;
-using System.Linq.Expressions;
 #if UNITY_EDITOR
 using UnityEditor;
 using System.Text.RegularExpressions;
 using System.Collections;
 #endif
 
-namespace SavableObservable {
-
-    public class Observable {
-
-        private static readonly HashSet<object> _initializedListeners = new HashSet<object>();
-
-        /// <summary>
-        /// Checks if SetListeners has been called for a specific object (typically a Presenter or Logic).
-        /// </summary>
-        public static bool AreListenersInitialized(object obj) => _initializedListeners.Contains(obj);
-        
-        /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
-        /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
-        /// <returns>
-        ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
-        public static bool IsSupportedFieldType(FieldInfo field) {
-            return field.FieldType.IsGenericType &&
-                   field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
-        }
-
-        public static void SetListeners(object obj) {
-            _initializedListeners.Add(obj);
-            var dataModel = ((MonoBehaviour)obj).GetComponent<BaseObservableDataModel>();
-            if (dataModel == null) return;
-
-            var initMethod = dataModel.GetType().GetMethod("InitFields");
-            initMethod?.Invoke(dataModel, null);
-            
-            var universalHandler = obj.GetType().GetMethod("OnModelValueChanged", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            bool isUniversalHandlerOverridden = universalHandler != null && universalHandler.DeclaringType == obj.GetType();
-
-            var individualHandlers = obj.GetType()
-                .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
-                .Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null)
-                .ToList();
-
-            // Warn if a universal handler and attribute-based handlers are used together.
-            if (isUniversalHandlerOverridden && individualHandlers.Any()) {
-                Debug.LogError($"[SavableObservable] Presenter '{obj.GetType().Name}' uses both a universal 'OnModelValueChanged' handler and specific [ObservableHandler] attributes. This is not supported. The universal handler will be used, and attribute-based handlers will be ignored.", (MonoBehaviour)obj);
-            }
-
-            // If a universal handler is overridden, subscribe all variables to it and stop processing.
-            if (isUniversalHandlerOverridden) {
-                foreach (var field in GetObservableFields(dataModel)) {
-                    SubscribeUniversalHandler(obj, universalHandler, field, dataModel);
-                }
-                return;
-            }
-
-            // If no universal handler, look for individual handlers with attributes.
-            var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
-
-            foreach (var field in GetObservableFields(dataModel)) {
-                if (individualHandlerMap.TryGetValue(field.Name, out var handlerMethod)) {
-                    SubscribeIndividualHandler(obj, handlerMethod, field, dataModel);
-                } else {
-                    // Warn if an observable variable has no corresponding handler.
-                    Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {dataModel.GetType().Name} has no corresponding [ObservableHandler] method in {obj.GetType().Name}.", (MonoBehaviour)obj);
-                }
-            }
-        }
-
-        private static IEnumerable<FieldInfo> GetObservableFields(BaseObservableDataModel dataModel)
-        {
-            return dataModel.GetType()
-                .GetFields(BindingFlags.Instance | BindingFlags.Public)
-                .Where(IsSupportedFieldType);
-        }
-
-        private static void SubscribeUniversalHandler(object obj, MethodInfo universalHandler, FieldInfo field, BaseObservableDataModel dataModel) {
-            var eventInfo = field.FieldType.GetEvent("OnValueChanged");
-            var handler = Delegate.CreateDelegate(eventInfo.EventHandlerType, obj, universalHandler);
-            eventInfo.AddEventHandler(field.GetValue(dataModel), handler);
-        }
-
-        private static void SubscribeIndividualHandler(object obj, MethodInfo handlerMethod, FieldInfo field, BaseObservableDataModel dataModel)
-        {
-            var eventInfo = field.FieldType.GetEvent("OnValueChanged");
-            var observableVar = field.GetValue(dataModel) as IObservableVariable;
-            if (observableVar == null) return;
-
-            var handlerParams = handlerMethod.GetParameters();
-            var eventParams = new[] { Expression.Parameter(typeof(IObservableVariable), "variable") };
-
-            Expression body;
-            var concreteObservableType = typeof(ObservableVariable<>).MakeGenericType(field.FieldType.GetGenericArguments()[0]);
-
-            if (handlerParams.Length == 0)
-            {
-                body = Expression.Call(Expression.Constant(obj), handlerMethod);
-            }
-            else if (handlerParams.Length == 1)
-            {
-                var arg1 = Expression.Property(Expression.Convert(eventParams[0], concreteObservableType), "Value");
-                body = Expression.Call(Expression.Constant(obj), handlerMethod, arg1);
-            }
-            else if (handlerParams.Length == 2)
-            {
-                var arg1 = Expression.Property(Expression.Convert(eventParams[0], concreteObservableType), "Value");
-                var arg2 = Expression.Property(Expression.Convert(eventParams[0], concreteObservableType), "PreviousValue");
-                body = Expression.Call(Expression.Constant(obj), handlerMethod, arg1, arg2);
-            }
-            else
-            {
-                Debug.LogError($"[SavableObservable] Method '{handlerMethod.Name}' has an invalid number of parameters for [ObservableHandler].", (MonoBehaviour)obj);
-                return;
-            }
-
-            var lambda = Expression.Lambda(eventInfo.EventHandlerType, body, eventParams);
-            eventInfo.AddEventHandler(observableVar, lambda.Compile());
-        }
-    }
-
-    public interface IObservableVariable {
-        /// <summary>
-        /// The name of the variable (e.g., "pipelineName").
-        /// </summary>
-        string Name { get; }
-    }
- 
+namespace SavableObservable 
+{
     [Serializable]
-    public class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver {
+    public class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver 
+    {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
@@ -143,9 +23,12 @@ namespace SavableObservable {
         [field: SerializeField] public string Name { get; set; }
  
         /// <summary>
-        /// Fired whenever the Value is changed via property setter or detected from Inspector.
+        /// Custom tracked action that automatically manages subscriptions.
         /// </summary>
-        public event Action<IObservableVariable> OnValueChanged;
+        /// <summary>
+        /// Public access to the tracked action for subscription management.
+        /// </summary>
+        public ObservableTrackedAction<ObservableVariable<T>> OnValueChanged { get; } = new ObservableTrackedAction<ObservableVariable<T>>();
  
         /// <summary>
         /// Stores the previous value of the variable.
@@ -168,7 +51,11 @@ namespace SavableObservable {
             set {
                 PreviousValue = _value;
                 _value = value;
-                OnValueChanged?.Invoke(this);               
+                
+                if (OnValueChanged != null)
+                {
+                    OnValueChanged.Invoke(this);
+                }
             }
         }
       
@@ -176,7 +63,10 @@ namespace SavableObservable {
         /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
         /// </summary>
         public void ForceNotify() {
-            OnValueChanged?.Invoke(this);
+            if (OnValueChanged != null)
+            {
+                OnValueChanged.Invoke(this);
+            }
         }
       
         void ISerializationCallbackReceiver.OnBeforeSerialize() {
@@ -190,9 +80,19 @@ namespace SavableObservable {
         }
       
         public override string ToString() => _value?.ToString();
+        
+        /// <summary>
+        /// Sets the parent data model for cleanup purposes.
+        /// </summary>
+        /// <param name="dataModel">The parent data model</param>
+        void IObservableVariable.SetParentDataModel(BaseObservableDataModel dataModel)
+        {
+            if (OnValueChanged != null)
+            {
+                OnValueChanged.ParentDataModel = dataModel;
+            }
+        }
     }
-    
-    
     
     #if UNITY_EDITOR
     [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]

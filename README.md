@@ -327,16 +327,24 @@ The framework is designed to be efficient and avoid common performance pitfalls 
 
 ### Memory Management and Unsubscribing
 
-*   **Automatic Subscriptions**: For events subscribed automatically via `BaseObservablePresenter` (either through `OnModelValueChanged` or `[ObservableHandler]` attributes), the framework manages the lifetime of the subscription. You do not need to manually unsubscribe.
-*   **Manual Subscriptions**: If you manually subscribe to an `OnValueChanged` event from another class (as shown in the "Manual Event Subscription" section), it is **crucial** that you unsubscribe from the event when your listening object is destroyed, typically in the `OnDestroy()` method. Failure to do so can lead to memory leaks, as the `ObservableVariable` will hold a reference to your destroyed object, preventing it from being garbage collected.
+*   **Automatic Subscriptions**: For events subscribed automatically via `BaseObservablePresenter` (either through `OnModelValueChanged` or `[ObservableHandler]` attributes), the framework manages the lifetime of the subscription. You do not need to manually unsubscribe. An `ObservableTracker` component is automatically added to manage cleanup when the GameObject is destroyed.
 
-```csharp
-private void OnDestroy()
-{
-    // Always match a subscription with an unsubscription!
-    playerDataModel.level.OnValueChanged -= LevelChanged;
-}
-```
+*   **Manual Subscriptions**: If you manually subscribe to an `OnValueChanged` event from another class (as shown in the "Manual Event Subscription" section), you have two options:
+    1. **Automatic Cleanup**: Use the `ObservableTrackedAction.Add()` method which automatically registers your subscription for cleanup:
+    ```csharp
+    // Subscribe to the event with automatic cleanup
+    playerDataModel.level.OnValueChanged.Add(LevelChanged, this);
+    ```
+    2. **Manual Cleanup**: Continue to manually unsubscribe in `OnDestroy()` as before:
+    ```csharp
+    private void OnDestroy()
+    {
+        // Always match a subscription with an unsubscription!
+        playerDataModel.level.OnValueChanged.Remove(LevelChanged);
+    }
+    ```
+
+The enhanced memory management system automatically handles cleanup for all subscriptions when the GameObject containing the `BaseObservableDataModel` is destroyed, preventing memory leaks and simplifying development.
 
 # Integrating Singletons with the MMVC Framework
 
