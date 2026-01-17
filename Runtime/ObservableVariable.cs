@@ -321,7 +321,7 @@ namespace SavableObservable {
     
                 return fieldInfo;
             }
-        }
+        
     }
     #endif
 }
