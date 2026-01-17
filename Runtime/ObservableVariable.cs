@@ -4,6 +4,11 @@ using System.Reflection;
 using UnityEngine;
 using System.Linq;
 using System.Linq.Expressions;
+#if UNITY_EDITOR
+using UnityEditor;
+using System.Text.RegularExpressions;
+using System.Collections;
+#endif
 
 namespace SavableObservable {
 
@@ -16,61 +21,13 @@ namespace SavableObservable {
         /// </summary>
         public static bool AreListenersInitialized(object obj) => _initializedListeners.Contains(obj);
         
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableInt32 : ObservableVariable<int> { public ObservableInt32(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableString : ObservableVariable<string> { public ObservableString(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableBoolean : ObservableVariable<bool> { public ObservableBoolean(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableNullableBoolean : ObservableVariable<bool?> { public ObservableNullableBoolean(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableSingle : ObservableVariable<float> { public ObservableSingle(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableDouble : ObservableVariable<double> { public ObservableDouble(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableInt64 : ObservableVariable<long> { public ObservableInt64(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableByte : ObservableVariable<byte> { public ObservableByte(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableInt16 : ObservableVariable<short> { public ObservableInt16(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableVector2 : ObservableVariable<Vector2> { public ObservableVector2(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableVector3 : ObservableVariable<Vector3> { public ObservableVector3(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableVector4 : ObservableVariable<Vector4> { public ObservableVector4(string name) : base(name) { } }
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableQuaternion : ObservableVariable<Quaternion> { public ObservableQuaternion(string name) : base(name) { } }        
-        /// <summary>Predefined observable type (without generic) required for Unity field serialization</summary>
-        [Serializable] public class ObservableShort : ObservableVariable<ushort> { public ObservableShort(string name) : base(name) { } }
-        
- 
         /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
         /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
         /// <returns>
         ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
         public static bool IsSupportedFieldType(FieldInfo field) {
-            return ObservableTypes.types.Keys.Contains(field.FieldType);
-        }      
-
-        public static class ObservableTypes {
-            public static Dictionary<Type, Type> types = new() {
-                { typeof(ObservableInt32), typeof(int) },
-                { typeof(ObservableDouble), typeof(double) },
-                { typeof(ObservableBoolean), typeof(bool) },
-                { typeof(ObservableNullableBoolean), typeof(bool?) },
-                { typeof(ObservableSingle), typeof(float) },
-                { typeof(ObservableString), typeof(string) },
-                { typeof(ObservableInt64), typeof(long) },
-                { typeof(ObservableByte), typeof(byte) },
-                { typeof(ObservableInt16), typeof(short) },
-                { typeof(ObservableVector2), typeof(Vector2) },
-                { typeof(ObservableVector3), typeof(Vector3) },
-                { typeof(ObservableVector4), typeof(Vector4) },
-                { typeof(ObservableShort), typeof(ushort) },
-                { typeof(ObservableQuaternion), typeof(Quaternion) }
-            };
+            return field.FieldType.IsGenericType &&
+                   field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
         }
 
         public static void SetListeners(object obj) {
@@ -138,7 +95,7 @@ namespace SavableObservable {
             var eventParams = new[] { Expression.Parameter(typeof(IObservableVariable), "variable") };
 
             Expression body;
-            var concreteObservableType = typeof(ObservableVariable<>).MakeGenericType(ObservableTypes.types[field.FieldType]);
+            var concreteObservableType = typeof(ObservableVariable<>).MakeGenericType(field.FieldType.GetGenericArguments()[0]);
 
             if (handlerParams.Length == 0)
             {
@@ -174,7 +131,7 @@ namespace SavableObservable {
     }
  
     [Serializable]
-    public abstract class ObservableVariable<T> : IObservableVariable  { 
+    public class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
@@ -214,7 +171,155 @@ namespace SavableObservable {
                 OnValueChanged?.Invoke(this);               
             }
         }
- 
+      
+        /// <summary>
+        /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
+        /// </summary>
+        public void ForceNotify() {
+            OnValueChanged?.Invoke(this);
+        }
+      
+        void ISerializationCallbackReceiver.OnBeforeSerialize() {
+            // Store current value in serialized field
+        }
+      
+        void ISerializationCallbackReceiver.OnAfterDeserialize() {
+            // Do NOT trigger events during serialization/deserialization - this leads to UnityExceptions
+            // The property drawer will handle inspector changes via ForceNotify after serialization completes
+            // We only need to ensure the internal state is consistent
+        }
+      
         public override string ToString() => _value?.ToString();
     }
+    
+    
+    
+    #if UNITY_EDITOR
+    [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]
+    public class ObservableVariableDrawer : PropertyDrawer
+    {
+            public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
+            {
+                EditorGUI.BeginProperty(position, label, property);
+    
+                // Find the actual value field (which is _value)
+                var valueProperty = property.FindPropertyRelative("_value");
+                
+                if (valueProperty != null)
+                {
+                    // Draw the value field with the original label
+                    EditorGUI.PropertyField(position, valueProperty, label, true);
+                    
+                    // Check if the value has changed in the editor
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        // Apply the changes to ensure the serialized data is updated
+                        property.serializedObject.ApplyModifiedProperties();
+                        
+                        // Find the target object to call ForceNotify
+                        var targetObject = GetTargetObject(property);
+                        if (targetObject != null && targetObject is IObservableVariable observableVar)
+                        {
+                            // Call ForceNotify to trigger the OnValueChanged event
+                            // Use reflection to call ForceNotify to avoid generic type issues
+                            var forceNotifyMethod = targetObject.GetType().GetMethod("ForceNotify",
+                                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            
+                            if (forceNotifyMethod != null)
+                            {
+                                forceNotifyMethod.Invoke(targetObject, null);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback: draw the default property field if _value is not found
+                    EditorGUI.PropertyField(position, property, label, true);
+                }
+    
+                EditorGUI.EndProperty();
+            }
+    
+            public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+            {
+                var valueProperty = property.FindPropertyRelative("_value");
+                if (valueProperty != null)
+                {
+                    // Return the height required for drawing the value property
+                    return EditorGUI.GetPropertyHeight(valueProperty, label, true);
+                }
+                // Default height if the property isn't found
+                return EditorGUIUtility.singleLineHeight;
+            }
+    
+            private object GetTargetObject(SerializedProperty property)
+            {
+                // Navigate to the target object using reflection
+                string propertyPath = property.propertyPath;
+                object obj = property.serializedObject.targetObject;
+    
+                // Split the path and traverse the object hierarchy
+                var paths = propertyPath.Split('.');
+                for (int i = 0; i < paths.Length; i++)
+                {
+                    string path = paths[i];
+                    
+                    // Handle array elements
+                    if (path == "Array")
+                    {
+                        i++; // Move to the element part: data[index]
+                        if (i < paths.Length)
+                        {
+                            var match = Regex.Match(paths[i], @"data\[([0-9]+)\]");
+                            if (match.Success)
+                            {
+                                int index = int.Parse(match.Groups[1].Value);
+                                if (obj is IList list)
+                                {
+                                    obj = list[index];
+                                }
+                            }
+                        }
+                        continue;
+                    }
+    
+                    // Get the field info
+                    FieldInfo fieldInfo = GetFieldInfo(obj.GetType(), path);
+                    if (fieldInfo != null)
+                    {
+                        obj = fieldInfo.GetValue(obj);
+                    }
+                    else
+                    {
+                        // If we can't find the field, break
+                        break;
+                    }
+                }
+    
+                return obj;
+            }
+    
+            private FieldInfo GetFieldInfo(System.Type type, string fieldName)
+            {
+                FieldInfo fieldInfo = null;
+                System.Type currentType = type;
+    
+                // Look in the current type and all base types
+                while (currentType != null && fieldInfo == null)
+                {
+                    fieldInfo = currentType.GetField(fieldName,
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    
+                    if (fieldInfo != null)
+                        break;
+                        
+                    currentType = currentType.BaseType;
+                }
+    
+                return fieldInfo;
+            }
+        
+    }
+    #endif
 }

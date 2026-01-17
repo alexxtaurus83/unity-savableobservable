@@ -134,7 +134,7 @@ public class PlayerStatsPresenter : BaseObservablePresenter<PlayerStatsModel>
     [ObservableHandler(nameof(PlayerStatsModel.PlayerName))]
     private void OnNameChanged(IObservableVariable variable)
     {
-        var nameVar = (Observable.ObservableString)variable;
+        var nameVar = (ObservableVariable<string>)variable;
         nameplateText.text = nameVar.Value;
     }
 }
@@ -233,8 +233,8 @@ The model defines the data. Note that you don't need to initialize the variables
 ```csharp
 	[Serializable]
 	public class ComponentDataModel : BaseObservableDataModel {
-	    [SerializeReference] public Observable.ObservableString status;
-	    [SerializeReference] public Observable.ObservableBoolean newVersionTimerEnabled;
+	    [SerializeReference] public ObservableVariable<string> status;
+	    [SerializeReference] public ObservableVariable<bool> newVersionTimerEnabled;
 	}
 ```
 	
@@ -453,18 +453,3 @@ Centralized Access: You have a single, reliable point of access (`Services.Get<T
 Reactive Singletons: Because `SetListeners` is called on registered services, your global managers can fully participate in the reactive data-binding of the MMVC framework.
 
 
-Here the example how you can add new types:
-```csharp
-    public class ExtObservable {
-        internal static class ObservableTypeRegistrar {
-            [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-            private static void RegisterCustomObservableTypes() {                   
-                Observable.ObservableTypes.types.Add(typeof(ObservableAtaxxPlayerColorEnum), typeof(AtaxxAIEngine.PlayerColor));
-                
-            }
-        }
-
-        [Serializable] public class ObservableAtaxxPlayerColorEnum : ObservableVariable<AtaxxAIEngine.PlayerColor> { public ObservableAtaxxPlayerColorEnum(string name) : base(name) { } }
-    }
-}
-```

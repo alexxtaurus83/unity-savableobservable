@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
 
@@ -14,14 +15,9 @@ namespace SavableObservable {
         /// Automatically creates instances of all fields with ObservableVariable type passing field name as parameter
         /// </summary>
         public void InitFields() {
-            foreach (MemberInfo memberInfo in this.GetType().GetMembers()) {
-                if (memberInfo.MemberType == MemberTypes.Field) {
-                    FieldInfo field = (FieldInfo)memberInfo;
-                    if (Observable.IsSupportedFieldType(field)) {
-                        var instance = Activator.CreateInstance(field.FieldType, new object[] { field.Name });
-                        field.SetValue(this, instance);
-                    }
-                }
+            foreach (var field in this.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Where(f => Observable.IsSupportedFieldType(f))) {
+                var instance = Activator.CreateInstance(field.FieldType, new object[] { field.Name });
+                field.SetValue(this, instance);
             }
         }
 
@@ -31,7 +27,7 @@ namespace SavableObservable {
         /// </summary>
         /// <param name="model">The model from save of the type <see cref="BaseObservableDataModel" /></param>
         public void LoadDataFromModel(object model) {
-            foreach (MemberInfo memberInfo in GetType().GetMembers()) {
+            /*foreach (MemberInfo memberInfo in GetType().GetMembers()) {
                 switch (memberInfo.MemberType) {
                     case MemberTypes.Property:
                         var prop = (PropertyInfo)memberInfo;
@@ -47,8 +43,29 @@ namespace SavableObservable {
                         }
                         break;
                 }
-            }
-        }
+            }*/
 
+            var type = GetType();
+            // Cache fields and properties once
+            var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var props  = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+            foreach (var prop in props) {
+                prop.SetValue(this, prop.GetValue(model));
+            }   
+
+            foreach (var field in fields) {
+                var modelValue = field.GetValue(model);
+                if (Observable.IsSupportedFieldType(field)) {                    
+                    var valueProp = field.FieldType.GetProperty("Value");
+                    var thisValue = field.GetValue(this);
+                    valueProp.SetValue(thisValue, valueProp.GetValue(modelValue));
+                }
+                else {
+                    field.SetValue(this, modelValue);
+                }
+            }
+
+        }
     }
 }

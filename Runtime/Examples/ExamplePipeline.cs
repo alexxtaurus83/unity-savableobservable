@@ -10,9 +10,8 @@ namespace SavableObservable.Examples {
  [Serializable]
 public class ComponentDataModel : BaseObservableDataModel {               
 
-    [SerializeReference] public Observable.ObservableString status;    
-    [SerializeReference] public Observable.ObservableBoolean newVersionTimerEnabled;
-    
+    public ObservableVariable<string> status;
+    public ObservableVariable<bool> newVersionTimerEnabled;    
 
 }
 
