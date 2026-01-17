@@ -7,21 +7,19 @@ using System.Text.RegularExpressions;
 using System.Collections;
 #endif
 
-namespace SavableObservable 
-{
+namespace SavableObservable {
     [Serializable]
-    public class ObservableVariable<T> : IObservableVariable
-    {
+    public class ObservableVariable<T> : IObservableVariable {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
         [SerializeField] private T _value;
- 
+
         /// <summary>
         /// Optional name for debugging, data binding, or event filtering.
         /// </summary>
         [field: SerializeField] public string Name { get; set; }
- 
+
         /// <summary>
         /// Custom tracked action that automatically manages subscriptions.
         /// </summary>
@@ -29,19 +27,19 @@ namespace SavableObservable
         /// Public access to the tracked action for subscription management.
         /// </summary>
         public ObservableTrackedAction<ObservableVariable<T>> OnValueChanged { get; } = new ObservableTrackedAction<ObservableVariable<T>>();
- 
+
         /// <summary>
         /// Stores the previous value of the variable.
         /// </summary>
         public T PreviousValue { get; private set; }
- 
+
         /// <summary>
         /// Constructor that sets the observable field name.
         /// </summary>
         public ObservableVariable(string name = null) {
             Name = name;
         }
- 
+
         /// <summary>
         /// Main access point for getting and setting the variable.
         /// Triggers change events when value is updated via code.
@@ -51,40 +49,36 @@ namespace SavableObservable
             set {
                 PreviousValue = _value;
                 _value = value;
-                
-                if (OnValueChanged != null)
-                {
+
+                if (OnValueChanged != null) {
                     OnValueChanged.Invoke(this);
                 }
             }
         }
-      
+
         /// <summary>
         /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
         /// </summary>
         public void ForceNotify() {
-            if (OnValueChanged != null)
-            {
+            if (OnValueChanged != null) {
                 OnValueChanged.Invoke(this);
             }
         }
-      
+
         public override string ToString() => _value?.ToString();
-        
+
         /// <summary>
         /// Sets the parent data model for cleanup purposes.
         /// </summary>
         /// <param name="dataModel">The parent data model</param>
-        public void SetParentDataModel(BaseObservableDataModel dataModel)
-        {
-            if (OnValueChanged != null)
-            {
+        public void SetParentDataModel(BaseObservableDataModel dataModel) {
+            if (OnValueChanged != null) {
                 OnValueChanged.ParentDataModel = dataModel;
             }
         }
     }
-    
-    #if UNITY_EDITOR
+
+#if UNITY_EDITOR
     [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]
     public class ObservableVariableDrawer : PropertyDrawer
     {
@@ -211,5 +205,5 @@ namespace SavableObservable
             }
         
     }
-    #endif
+#endif
 }
