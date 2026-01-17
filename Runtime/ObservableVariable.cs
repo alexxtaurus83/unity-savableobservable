@@ -85,7 +85,7 @@ namespace SavableObservable
         /// Sets the parent data model for cleanup purposes.
         /// </summary>
         /// <param name="dataModel">The parent data model</param>
-        void SetParentDataModel(BaseObservableDataModel dataModel)
+        public void SetParentDataModel(BaseObservableDataModel dataModel)
         {
             if (OnValueChanged != null)
             {
