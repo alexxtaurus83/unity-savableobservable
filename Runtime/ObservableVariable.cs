@@ -131,7 +131,7 @@ namespace SavableObservable {
     }
  
     [Serializable]
-    public abstract class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver {
+    public class ObservableVariable<T> : IObservableVariable, ISerializationCallbackReceiver {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
