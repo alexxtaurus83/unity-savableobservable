@@ -21,14 +21,7 @@ namespace SavableObservable {
         /// </summary>
         public static bool AreListenersInitialized(object obj) => _initializedListeners.Contains(obj);
         
-        /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
-        /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
-        /// <returns>
-        ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
-        public static bool IsSupportedFieldType(FieldInfo field) {
-            return field.FieldType.IsGenericType &&
-                   field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
-        }
+        
 
         public static void SetListeners(object obj) {
             _initializedListeners.Add(obj);
@@ -51,9 +44,12 @@ namespace SavableObservable {
                 Debug.LogError($"[SavableObservable] Presenter '{obj.GetType().Name}' uses both a universal 'OnModelValueChanged' handler and specific [ObservableHandler] attributes. This is not supported. The universal handler will be used, and attribute-based handlers will be ignored.", (MonoBehaviour)obj);
             }
 
+            // Get cached observable fields once to avoid repeated reflection calls
+            var observableFields = dataModel.GetCachedObservableFields();
+
             // If a universal handler is overridden, subscribe all variables to it and stop processing.
             if (isUniversalHandlerOverridden) {
-                foreach (var field in GetObservableFields(dataModel)) {
+                foreach (var field in observableFields) {
                     SubscribeUniversalHandler(obj, universalHandler, field, dataModel);
                 }
                 return;
@@ -62,7 +58,7 @@ namespace SavableObservable {
             // If no universal handler, look for individual handlers with attributes.
             var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
 
-            foreach (var field in GetObservableFields(dataModel)) {
+            foreach (var field in observableFields) {
                 if (individualHandlerMap.TryGetValue(field.Name, out var handlerMethod)) {
                     SubscribeIndividualHandler(obj, handlerMethod, field, dataModel);
                 } else {
@@ -70,13 +66,6 @@ namespace SavableObservable {
                     Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {dataModel.GetType().Name} has no corresponding [ObservableHandler] method in {obj.GetType().Name}.", (MonoBehaviour)obj);
                 }
             }
-        }
-
-        public static IEnumerable<FieldInfo> GetObservableFields(BaseObservableDataModel dataModel)
-        {
-            return dataModel.GetType()
-                .GetFields(BindingFlags.Instance | BindingFlags.Public)
-                .Where(IsSupportedFieldType);
         }
 
         private static void SubscribeUniversalHandler(object obj, MethodInfo universalHandler, FieldInfo field, BaseObservableDataModel dataModel) {

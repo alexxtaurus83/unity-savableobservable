@@ -12,12 +12,34 @@ namespace SavableObservable {
         // Dictionary to track subscriptions per subscriber for automatic cleanup
         private Dictionary<object, List<Delegate>> _subscriptions = new Dictionary<object, List<Delegate>>();
 
+        // Cached observable fields to avoid repeated reflection calls
+        private FieldInfo[] _cachedObservableFields;
+
+        /// <summary>Determines whether field type is <see cref="ObservableVariable" /> field</summary>
+        /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
+        /// <returns>
+        ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
+        private static bool IsSupportedFieldType(FieldInfo field) {
+            return field.FieldType.IsGenericType &&
+                   field.FieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>);
+        }
+
+        /// <summary>
+        /// Gets the cached observable fields for this data model.
+        /// </summary>
+        public FieldInfo[] GetCachedObservableFields() {
+            return _cachedObservableFields ??= this.GetType()
+                .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(f => Observable.IsSupportedFieldType(f))
+                .ToArray();
+        }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="BaseObservableDataModel" /> class.
         /// Automatically creates instances of all fields with ObservableVariable type passing field name as parameter
         /// </summary>
         public void InitFields() {
-            foreach (var field in this.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Where(f => Observable.IsSupportedFieldType(f))) {
+            foreach (var field in GetCachedObservableFields()) {
                 var instance = Activator.CreateInstance(field.FieldType, new object[] { field.Name });
                 field.SetValue(this, instance);
                 
@@ -77,8 +99,7 @@ namespace SavableObservable {
                 // Clear all subscriptions for each subscriber
                 foreach (var subscription in subscriptions) {
                     // Find all ObservableVariable instances in this model and unsubscribe
-                    //TODO we need to sava Observable fileds data to new disctionary at set listeres time. and reuse it later.
-                    var observableFields = Observable.GetObservableFields(this);
+                    var observableFields = GetCachedObservableFields();
                     foreach (var field in observableFields)
                     {
                         var observableVar = field.GetValue(this);
