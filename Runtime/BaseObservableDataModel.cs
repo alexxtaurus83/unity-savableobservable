@@ -30,7 +30,7 @@ namespace SavableObservable {
         public FieldInfo[] GetCachedObservableFields() {
             return _cachedObservableFields ??= this.GetType()
                 .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .Where(f => Observable.IsSupportedFieldType(f))
+                .Where(f => IsSupportedFieldType(f))
                 .ToArray();
         }
 
@@ -153,7 +153,7 @@ namespace SavableObservable {
 
             foreach (var field in fields) {
                 var modelValue = field.GetValue(model);
-                if (Observable.IsSupportedFieldType(field)) {                    
+                if (IsSupportedFieldType(field)) {                    
                     var valueProp = field.FieldType.GetProperty("Value");
                     var thisValue = field.GetValue(this);
                     valueProp.SetValue(thisValue, valueProp.GetValue(modelValue));
