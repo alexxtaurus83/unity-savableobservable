@@ -49,7 +49,7 @@ namespace SavableObservable {
             set {
                 PreviousValue = _value;
                 _value = value;
-                OnValueChanged?.Invoke(this)
+                OnValueChanged?.Invoke(this);
             }
         }
 
