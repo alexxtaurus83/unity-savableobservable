@@ -434,20 +434,72 @@ This example demonstrates the core principle of the framework: use declarative a
 
 ### Manual Event Subscription
 
-In addition to the automatic subscription via attributes, you can manually subscribe to the `OnValueChanged` event of any `ObservableVariable` from any class. This is useful for cross-component communication.
+In addition to the automatic subscription via attributes, you can manually subscribe to the `OnValueChanged` event of any `ObservableVariable` from any class. This is useful for cross-component communication. There are two ways to subscribe: using the **`+=` operator** or using the **`.Add()` method**. Each approach has different implications for memory management.
+
+#### ⚠️ Important: Understanding Subscription Cleanup
+
+The framework provides automatic cleanup of subscriptions **only when you use the `.Add(handler, subscriber)` method with a valid subscriber object**. Using `+=` creates an **untracked subscription** that you **MUST manually unsubscribe** to prevent memory leaks.
+
+#### Approach 1: Using `+=` / `-=` Operators (Manual Cleanup Required)
+
+The `+=` and `-=` operators provide a familiar C#-style syntax for subscribing and unsubscribing. However, this approach creates a **strong reference** that is **NOT automatically tracked** by the framework's cleanup system.
+
+> **⚠️ WARNING:** When using `+=`, you **MUST** manually unsubscribe using `-=` (typically in `OnDestroy()`) to prevent memory leaks. Forgetting to unsubscribe will keep your object alive in memory even after it should have been destroyed.
+
+```csharp
+public class EnemyHealthMonitor : MonoBehaviour {
+    [SerializeField] private PlayerDataModel playerDataModel;
+    
+    // Store the handler reference for later unsubscription
+    private Action<ObservableVariable<int>> _healthHandler;
+
+    private void Start() {
+        // Create and store the handler
+        _healthHandler = OnPlayerHealthChanged;
+        
+        // Subscribe using += (creates an UNTRACKED subscription)
+        playerDataModel.health.OnValueChanged += _healthHandler;
+    }
+
+    private void OnDestroy() {
+        // ⚠️ CRITICAL: You MUST unsubscribe manually when using +=
+        // Failure to do so will cause a memory leak!
+        playerDataModel.health.OnValueChanged -= _healthHandler;
+    }
+
+    private void OnPlayerHealthChanged(ObservableVariable<int> variable) {
+        int newHealth = variable.Value;
+        Debug.Log($"Player health is now: {newHealth}");
+        
+        if (newHealth < 30) {
+            // Player is vulnerable - trigger aggressive behavior
+            BecomeAggressive();
+        }
+    }
+    
+    private void BecomeAggressive() {
+        // ... enemy behavior logic
+    }
+}
+```
+
+#### Approach 2: Using `.Add()` Method (Recommended - Auto-Cleanup Supported)
+
+The `.Add(handler, subscriber)` method allows you to specify a subscriber object. When you provide a subscriber, the framework **automatically tracks** the subscription for cleanup when the parent data model is destroyed.
 
 ```csharp
 public class SomeOtherClass : MonoBehaviour {
     [SerializeField] private PlayerDataModel playerDataModel;
 
     private void Start() {
-        // Subscribe to the event - note the generic handler signature
+        // Subscribe using .Add() with 'this' as the subscriber
+        // The framework tracks this subscription for automatic cleanup
         playerDataModel.health.OnValueChanged.Add(OnHealthChanged, this);
     }
 
     private void OnDestroy() {
-        // Automatic cleanup happens when using tracked actions
-        // But you can also manually remove if needed
+        // Optional: You can manually remove if needed, but if playerDataModel
+        // is destroyed, cleanup happens automatically for tracked subscriptions
         playerDataModel.health.OnValueChanged.Remove(OnHealthChanged);
     }
 
@@ -458,6 +510,23 @@ public class SomeOtherClass : MonoBehaviour {
     }
 }
 ```
+
+#### Comparison: `+=` vs `.Add()`
+
+| Feature | `+=` Operator | `.Add(handler, subscriber)` |
+|---------|---------------|----------------------------|
+| **Syntax** | Familiar C# event syntax | Method call with subscriber |
+| **Auto-cleanup** | ❌ No | ✅ Yes (when subscriber provided) |
+| **Memory leak risk** | ⚠️ High if you forget `-=` | Low |
+| **Manual unsubscribe required** | ✅ Always | Optional (recommended for safety) |
+| **Best for** | Quick prototyping, short-lived objects | Production code, long-lived subscriptions |
+
+#### Best Practices
+
+1. **Prefer `.Add(handler, this)`** for production code to benefit from automatic cleanup.
+2. **Always unsubscribe in `OnDestroy()`** when using `+=` to prevent memory leaks.
+3. **Store handler references** if you need to unsubscribe the same handler later.
+4. **Consider the object lifecycle**: If your subscriber might be destroyed before the data model, always use `.Add()` with the subscriber parameter or ensure manual cleanup.
 
 ## Performance & Best Practices
 
