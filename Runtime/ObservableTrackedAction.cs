@@ -9,6 +9,19 @@ namespace SavableObservable {
         private List<Action<T>> _handlers = new List<Action<T>>();
         private readonly object _lock = new object();
 
+        public static ObservableTrackedAction<T> operator +(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
+            if (trackedAction == null) {
+                trackedAction = new ObservableTrackedAction<T>();
+            }
+            trackedAction.Add(handler, null);
+            return trackedAction;
+        }
+
+        public static ObservableTrackedAction<T> operator -(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
+            trackedAction?.Remove(handler);
+            return trackedAction;
+        }
+
         /// <summary>
         /// The parent data model for cleanup purposes.
         /// </summary>

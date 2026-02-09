@@ -28,6 +28,9 @@ namespace SavableObservable {
                 }
                 return _onValueChanged;
             }
+            set {
+                _onValueChanged = value ?? new ObservableTrackedAction<ObservableVariable<T>>();
+            }
         }
         private ObservableTrackedAction<ObservableVariable<T>> _onValueChanged;
 
