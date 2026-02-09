@@ -1,5 +1,3 @@
-# NOTE: This project is under development.
-
 # MMVC Framework for Unity
 
 ## Introduction
@@ -8,10 +6,12 @@ The MMVC (Model-Model-View-Controller) framework is a custom-designed architectu
 
 At its core, the framework is built on these key principles:
 
-* *Reactive Data Binding*: The `ObservableVariable` class allows UI elements and game logic to automatically react to data changes without tight coupling.
+* **Reactive Data Binding**: The `ObservableVariable<T>` class allows UI elements and game logic to automatically react to data changes without tight coupling.
 * **Separation of Concerns**: Each component has a distinct responsibility: data (`Model`), business logic (`Logic`), and presentation (`Presenter`).
 * **Centralized Lifecycle Management**: The `Loader` component acts as a central point for creating, managing, and saving/loading the other components.
-* **Convention over Configuration*): The framework uses reflection to automatically wire up dependencies, reducing boilerplate code and simplifying setup.
+* **Convention over Configuration**: The framework uses reflection to automatically wire up dependencies, reducing boilerplate code and simplifying setup.
+* **Attribute-Based Binding**: Use `[ObservableHandler]` and `[AutoBind]` attributes to declaratively connect observables to handlers and UI elements.
+* **Automatic Component Requirements**: In the Unity Editor, when you add core MMVC classes, missing dependencies are auto-added on the same GameObject (no `[RequireComponent]` attributes required in your concrete classes).
 
 ## Core Components
 
@@ -23,10 +23,24 @@ The `Model` is the data layer of your application. It holds the state and is res
 
 **Key Features:**
 
-* It uses `ObservableVariable` fields to store data, which automatically notify any listeners when their value changes.
-* The `InitFields` method uses reflection to initialize all `ObservableVariable` fields, so you don't have to do it manually.
+* It uses `ObservableVariable<T>` fields to store data, which automatically notify any listeners when their value changes.
+* The `EnsureFieldsInitialized()` method automatically initializes any null `ObservableVariable` fields and sets up parent references for cleanup.
 * **Mixed Data Types**: You can include regular, non-observable fields (like `int`, `string`, `List<T>`) alongside `ObservableVariable` fields in your model. The save/load system will correctly handle both.
 
+**Example Model:**
+
+```csharp
+[Serializable]
+public class PlayerDataModel : BaseObservableDataModel {
+    public ObservableVariable<string> playerName;
+    public ObservableVariable<int> health;
+    public ObservableVariable<int> score;
+    public ObservableVariable<bool> isAlive;
+    
+    // Regular fields also supported
+    public List<string> achievements;
+}
+```
 
 ### 2. Logic
 
@@ -37,9 +51,41 @@ The `Logic` component acts as the "Controller" or "ViewModel." It contains the b
 * It inherits from `BaseLogic<M>`, where `M` is the type of the `Model`.
 * Its primary role is to contain business logic that manipulates the `Model`.
 
+```csharp
+public class PlayerLogic : BaseLogic<PlayerDataModel> {
+
+    public void TakeDamage(int damage) {
+        var health = GetModel().health.Value - damage;
+        GetModel().health.Value = Mathf.Max(0, health);
+        
+        if (GetModel().health.Value <= 0) {
+            GetModel().isAlive.Value = false;
+        }
+    }
+    
+    public void AddScore(int points) {
+        GetModel().score.Value += points;
+    }
+}
+```
+
 ### 3. Presenter Hierarchy
 
 The framework provides two base classes for presenters, allowing you to choose the right one for your needs.
+
+#### Automatic Dependency Provisioning (Editor)
+
+The framework auto-adds required components in the Unity Editor (during `Reset` / `OnValidate`) so concrete classes no longer need explicit `[RequireComponent]` attributes.
+
+| Base Class | Auto-added dependency |
+|------------|------------------------|
+| `BasePresenter<M>` | `M` (Model) |
+| `ObservablePresenterWithLogic<M, L>` | `M` (via base) + `L` (Logic) |
+| `BaseLogic<M>` | `M` (Model) |
+| `LoaderWithModel<M>` | `M` (Model) |
+| `LoaderWithModelAndLogic<M, L>` | `M` (via base) + `L` (Logic) |
+
+This keeps setup simple: add your main class and the framework fills missing MMVC components automatically on the same GameObject in Editor mode.
 
 #### `BasePresenter<M>`
 
@@ -53,89 +99,187 @@ This is the reactive presenter, which inherits from `BasePresenter<M>`. It's des
 
 *   It inherits from `BasePresenter<M>`.
 *   It has references to UI elements (e.g., `Button`, `TextMeshProUGUI`).
-*   It provides two ways to handle model changes: a single universal handler or individual methods marked with an `[ObservableHandler]` attribute. See the "Event Handling in Presenters" section below for details.
-*   **Automatic Setup Validation**: It includes a check in `Start()` that will log an error if `Observable.SetListeners()` was not called for it. This helps prevent configuration errors where the UI does not update because event subscriptions are missing.
+*   It provides two powerful, declarative ways to handle model changes:
+    * `[AutoBind]` attribute for simple UI bindings
+    * `[ObservableHandler]` attribute for custom handler methods
+*   **Automatic Setup Validation**: It includes a check that will log a warning if `Observable.SetListeners()` was not called for it.
 
-##### **Important Note on `Start()`**
+#### `ObservablePresenterWithLogic<M, L>`
 
-Because `BaseObservablePresenter` uses `Start()` for its internal validation, if you need to use the `Start()` method in your own presenter, you **must** declare it as `protected override` and call `base.Start()`.
-
-```csharp
-public class MyPresenter : BaseObservablePresenter<MyModel>
-{
-    protected override void Start()
-    {
-        // 1. This call is crucial for the framework's validation to run.
-        base.Start();
-
-        // 2. Add your own Start() logic here.
-        Debug.Log("My custom Start logic.");
-    }
-
-    // ... other methods
-}
-```
-
-### 4. Event Handling in Presenters
-
-The framework offers two powerful, mutually exclusive ways to handle `ObservableVariable` changes in your presenters.
-
-#### Approach 1: The Universal Handler (High Priority)
-
-You can override the `OnModelValueChanged` method in your presenter. If this method is overridden, it will receive **all** change events from the model. This is useful for simple components or for debugging.
-
-**If this method is overridden, the framework will ignore any `[ObservableHandler]` attributes in the class.**
+This presenter extends `BaseObservablePresenter<M>` and adds a `GetLogic()` method for convenient access to the Logic component.
 
 ```csharp
-public class MyPresenter : BaseObservablePresenter<MyModel>
-{
-    // Override the single handler
-    protected override void OnModelValueChanged(IObservableVariable variable)
-    {
-        Debug.Log($"'{variable.Name}' changed!");
-        // Use a switch to handle different variables
-        switch (variable.Name) {
-            // ...
+public class PlayerPresenter : ObservablePresenterWithLogic<PlayerDataModel, PlayerLogic> {
+    
+    [AutoBind("health")]
+    [SerializeField] private TextMeshProUGUI healthText;
+    
+    [AutoBind("score")]
+    [SerializeField] private TextMeshProUGUI scoreText;
+    
+    [ObservableHandler("isAlive")]
+    private void OnIsAliveChanged(bool isAlive) {
+        if (!isAlive) {
+            ShowGameOverScreen();
         }
     }
 }
 ```
 
-#### Approach 2: Individual Handlers (Recommended)
+### 4. Event Handling in Presenters
 
-If you do **not** override `OnModelValueChanged`, the framework will instead look for individual methods marked with the `[ObservableHandler("VariableName")]` attribute. This is the recommended approach as it leads to cleaner, more organized code.
+The framework offers two powerful, declarative approaches to handle `ObservableVariable` changes in your presenters. These can be used together on the same presenter.
 
-*   The framework will scan your presenter for these attributes on startup.
-*   If an `ObservableVariable` exists in the model but no corresponding `[ObservableHandler]` is found in the presenter, a warning will be logged in the console.
+#### Approach 1: AutoBind (Recommended for Simple UI Updates)
+
+The `[AutoBind]` attribute provides zero-code UI binding. Simply mark a UI field with the attribute, and the framework automatically updates it when the observable value changes.
+
+**Using `nameof()` for Type-Safety (Recommended)**
+
+Instead of using plain string literals, use `nameof()` to get compile-time safety:
+
+```csharp
+public class BlockDetailsPresenter : BaseObservablePresenter<BlockDetailsModalDataModel> {
+    
+    // Type-safe binding using nameof() - compile error if field is renamed
+    [AutoBind(nameof(BlockDetailsModalDataModel.processingBlockExecTime))]
+    [SerializeField] private Text processingBlockExecTime;
+    
+    [AutoBind(nameof(BlockDetailsModalDataModel.processingBlockFixTime))]
+    [SerializeField] private Text processingBlockFixTime;
+}
+```
+
+**String Literal Binding**
+
+You can also use plain strings if you prefer:
+
+```csharp
+public class GamePresenter : BaseObservablePresenter<GameDataModel> {
+    
+    // Auto-bind to model.playerScore - converts to string automatically
+    [AutoBind("playerScore")]
+    [SerializeField] private TextMeshProUGUI scoreText;
+    
+    // Auto-bind to model.isActive - sets Toggle.isOn
+    [AutoBind("isActive")]
+    [SerializeField] private Toggle activeToggle;
+    
+    // Auto-bind to model.buttonLabel - sets text on child TMP_Text
+    [AutoBind("buttonLabel")]
+    [SerializeField] private Button actionButton;
+    
+    // If field name matches observable name exactly, you can omit the parameter
+    [AutoBind]
+    [SerializeField] private TextMeshProUGUI playerName; // Binds to model.playerName
+}
+```
+
+**Supported UI Types with Built-in Adapters:**
+
+| UI Type | Behavior |
+|---------|----------|
+| `TextMeshProUGUI` / `TMP_Text` | Sets `text` to `value.ToString()` |
+| `Text` (Unity UI) | Sets `text` to `value.ToString()` |
+| `Toggle` | Sets `isOn` to boolean value |
+| `Button` | Sets text on child `TMP_Text` component |
+| `Image` | Sets `sprite` to Sprite value |
+
+**Custom Adapters:**
+
+You can register custom UI adapters for your own component types:
+
+```csharp
+public class SliderAdapter : IUIAdapter {
+    public int Priority => 100;
+
+    public bool CanHandle(Type uiComponentType) {
+        return typeof(Slider).IsAssignableFrom(uiComponentType);
+    }
+
+    public void SetValue(object uiComponent, object value, Type valueType) {
+        if (uiComponent is Slider slider) {
+            if (value is float floatValue)
+                slider.value = floatValue;
+            else if (value is int intValue)
+                slider.value = intValue;
+        }
+    }
+}
+
+// Register in initialization code
+UIAdapterRegistry.RegisterAdapter(new SliderAdapter());
+```
+
+#### Approach 2: ObservableHandler (For Custom Logic)
+
+When you need more than simple UI updates, use the `[ObservableHandler]` attribute to create dedicated handler methods.
 
 **Flexible Method Signatures:**
 
 You can define the handler method with the arguments you need. The framework will automatically provide them.
 
 ```csharp
-public class PlayerStatsPresenter : BaseObservablePresenter<PlayerStatsModel>
-{
-    // 1. Get only the new value (most common)
-    [ObservableHandler(nameof(PlayerStatsModel.Level))]
-    private void OnLevelChanged(int newLevel)
-    {
-        levelText.text = $"Level: {newLevel}";
+public class PlayerStatsPresenter : BaseObservablePresenter<PlayerStatsModel> {
+    
+    // Option A: No parameters - access model directly
+    [ObservableHandler("level")]
+    private void OnLevelChanged() {
+        levelText.text = $"Level: {GetModel().level.Value}";
+        PlayLevelUpAnimation();
     }
 
-    // 2. Get the new and old values
-    [ObservableHandler(nameof(PlayerStatsModel.Health))]
-    private void OnHealthChanged(int newHealth, int oldHealth)
-    {
-        Debug.Log($"Health changed from {oldHealth} to {newHealth}");
+    // Option B: One parameter - receive the new value directly
+    [ObservableHandler("health")]
+    private void OnHealthChanged(int newHealth) {
         healthBar.fillAmount = newHealth / 100f;
     }
 
-    // 3. Get the raw variable object for more complex scenarios
-    [ObservableHandler(nameof(PlayerStatsModel.PlayerName))]
-    private void OnNameChanged(IObservableVariable variable)
-    {
-        var nameVar = (Observable.ObservableString)variable;
-        nameplateText.text = nameVar.Value;
+    // Option C: Two parameters - receive new and previous values
+    [ObservableHandler("experience")]
+    private void OnExperienceChanged(int current, int previous) {
+        if (current > previous) {
+            ShowExperienceGainPopup(current - previous);
+        }
+    }
+}
+```
+
+#### Combining AutoBind and ObservableHandler
+
+You can use both approaches in the same presenter. Use `[AutoBind]` for simple bindings and `[ObservableHandler]` for complex logic:
+
+```csharp
+public class GameManagerPresenter : ObservablePresenterWithLogic<GameDataModel, GameLogic> {
+    
+    // Simple bindings - use AutoBind
+    [AutoBind("redScore")]
+    [SerializeField] private TextMeshProUGUI redScoreText;
+    
+    [AutoBind("blueScore")]
+    [SerializeField] private TextMeshProUGUI blueScoreText;
+    
+    [AutoBind("statusMessage")]
+    [SerializeField] private TextMeshProUGUI statusText;
+    
+    // Complex logic - use ObservableHandler
+    [ObservableHandler("isGameOver")]
+    private void OnGameOverChanged(bool isGameOver) {
+        if (isGameOver) {
+            var winner = GetLogic().DetermineWinner();
+            ShowGameOverScreen(winner);
+            PlayEndGameSound();
+        }
+    }
+    
+    [ObservableHandler("currentPlayer")]
+    private void OnCurrentPlayerChanged(PlayerType player) {
+        if (player == PlayerType.AI) {
+            GetModel().statusMessage.Value = "AI is thinking...";
+            GetLogic().StartAITurn();
+        } else {
+            GetModel().statusMessage.Value = "Your turn";
+        }
     }
 }
 ```
@@ -163,8 +307,7 @@ Here is how you would create your own loader that integrates with your own save 
 This is an interface from **your** project, not from the framework.
 
 ```csharp
-public interface ISaveable
-{
+public interface ISaveable {
     object SaveState();
     void LoadState(object state);
 }
@@ -175,18 +318,16 @@ public interface ISaveable
 You create a class that inherits from `LoaderWithModel` (or `LoaderWithModelAndLogic`) and also implements **your** `ISaveable` interface.
 
 ```csharp
-public class MyPlayerLoader : LoaderWithModel<PlayerDataModel>, ISaveable
-{
+public class MyPlayerLoader : LoaderWithModel<PlayerDataModel>, ISaveable {
+    
     // Implement the SaveState method from your ISaveable interface
-    public object SaveState()
-    {
+    public object SaveState() {
         // Call the helper method from the framework's base class
         return GetModelToSave();
     }
 
     // Implement the LoadState method from your ISaveable interface
-    public void LoadState(object state)
-    {
+    public void LoadState(object state) {
         // Call the helper method from the framework's base class
         LoadDataFromModel(state);
     }
@@ -201,16 +342,17 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
 
 1.  **Create the Model**:
     * Create a new C# script that inherits from `BaseObservableDataModel`. 
-    * Add `ObservableVariable` fields for each piece of data you want to track.
+    * Add `ObservableVariable<T>` fields for each piece of data you want to track.
 
 2.  **Create the Logic**:
-    * Create a new C' script that inherits from `BaseLogic<YourModel>`. 
+    * Create a new C# script that inherits from `BaseLogic<YourModel>`. 
     * Implement methods to handle your game's business logic.
  
 3.  **Create the Presenter**:
-    * Create a new C# script that inherits from `BaseObservablePresenter<YourModel>`.
+    * Create a new C# script that inherits from `BaseObservablePresenter<YourModel>` or `ObservablePresenterWithLogic<YourModel, YourLogic>`.
     * Add references to your UI elements in the script.
-    * Choose your event handling strategy: either override the single `OnModelValueChanged` method, or create individual methods marked with the `[ObservableHandler]` attribute.
+    * Use `[AutoBind]` attributes for simple UI bindings.
+    * Use `[ObservableHandler]` attributes for methods that need custom logic.
 
 4.  **Create Your Loader**:
     * Create a new C# script that inherits from `LoaderWithModel<YourModel>` or `LoaderWithModelAndLogic<YourModel, YourLogic>`.
@@ -222,97 +364,98 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
     * Attach your `Model`, `Logic`, `Presenter`, and your new `Loader` script to the `GameObject`.
     * In the Inspector, connect the UI element references in your `Presenter`.
 
-	## Usage Example
-	
+## Usage Example
+
 Here is a complete example of a simple component that displays a status and a timer.
-	
+
 ### 1. The Model (`ComponentDataModel.cs`)
-	
-The model defines the data. Note that you don't need to initialize the variables; the `InitFields()` method in the base class will handle this automatically using reflection.
-	
+
+The model defines the data. Note that you don't need to initialize the variables; the `EnsureFieldsInitialized()` method in the base class will handle this automatically.
+
 ```csharp
-	[Serializable]
-	public class ComponentDataModel : BaseObservableDataModel {
-	    [SerializeReference] public Observable.ObservableString status;
-	    [SerializeReference] public Observable.ObservableBoolean newVersionTimerEnabled;
-	}
+[Serializable]
+public class ComponentDataModel : BaseObservableDataModel {
+    public ObservableVariable<string> status;
+    public ObservableVariable<bool> timerEnabled;
+    public ObservableVariable<float> timerValue;
+}
 ```
-	
+
 ### 2. The Logic (`ComponentLogic.cs`)
-	
+
 The logic contains the methods that change the model's state.
-	
+
 ```csharp
-	public class ComponentLogic : BaseLogic<ComponentDataModel> {
-	
-	    public void TimerStarts() {
-	        GetModel().status.Value = "InDevelopment";
-	        GetModel().newVersionTimerEnabled.Value = true;
-	    }
-	}
+public class ComponentLogic : BaseLogic<ComponentDataModel> {
+
+    public void StartTimer() {
+        GetModel().status.Value = "Timer Running";
+        GetModel().timerEnabled.Value = true;
+    }
+    
+    public void UpdateTimer(float deltaTime) {
+        if (GetModel().timerEnabled.Value) {
+            GetModel().timerValue.Value += deltaTime;
+        }
+    }
+}
 ```
-	
+
 ### 3. The Presenter (`ComponentPresenter.cs`)
-	
-The presenter listens for changes in the model and updates the UI. Note that `OnModelValueChanged` is now required due to the base class being abstract.
-	
+
+The presenter uses `[AutoBind]` for simple bindings and `[ObservableHandler]` for complex logic.
+
 ```csharp
-	public class ComponentPresenter : ObservablePresenterWithLogic<ComponentDataModel,ComponentLogic> {
-	    
-	    [SerializeField] private TextMeshProUGUI versionTextTMP;
-	    [SerializeField] private TextMeshProUGUI newVersionTimerTextTMP;
-	
-	    public override void OnModelValueChanged(IObservableVariable variable) {
-	        switch (variable.Name) {
-	            case var name when name == GetModel().newVersionTimerEnabled.Name:
-	                // Use the bool value to format the text
-	                versionTextTMP.text = GetModel().newVersionTimerEnabled.Value ? "Timer: ON" : "Timer: OFF";
-	                break;
-	            case var name when name == GetModel().status.Name:
-	                // Use the string value to control a boolean property
-	                newVersionTimerTextTMP.enabled = GetModel().status.Value == "InDevelopment";
-	                break;
-	            default:
-	                break;
-	        }
-	    }
-	 }
+public class ComponentPresenter : ObservablePresenterWithLogic<ComponentDataModel, ComponentLogic> {
+    
+    // Simple bindings - use AutoBind
+    [AutoBind("status")]
+    [SerializeField] private TextMeshProUGUI statusText;
+    
+    [AutoBind("timerValue")]
+    [SerializeField] private TextMeshProUGUI timerText;
+    
+    // Complex logic - use ObservableHandler
+    [ObservableHandler("timerEnabled")]
+    private void OnTimerEnabledChanged(bool enabled) {
+        // Control the visibility of a timer panel
+        timerPanel.SetActive(enabled);
+        
+        if (enabled) {
+            PlayTimerStartSound();
+        }
+    }
+    
+    [SerializeField] private GameObject timerPanel;
+}
 ```
-	
-This example demonstrates the core principle of the framework: the `Presenter` listens for notifications via `OnModelValueChanged` and then reads the strongly-typed data directly from the `Model` to update the view, completely avoiding casting.
+
+This example demonstrates the core principle of the framework: use declarative attributes to bind data to UI, keeping your presenter code clean and focused on presentation logic.
 
 ### Manual Event Subscription
 
-In addition to the automatic subscription in `BaseObservablePresenter`, you can manually subscribe to the `OnValueChanged` event of any `ObservableVariable` from any class. This is useful for cross-component communication.
-
-The event handler method must accept a single argument of type `IObservableVariable`. Inside the method, you can use pattern matching (`is`) to safely cast the variable to its concrete type and access its `Value`.
+In addition to the automatic subscription via attributes, you can manually subscribe to the `OnValueChanged` event of any `ObservableVariable` from any class. This is useful for cross-component communication.
 
 ```csharp
-public class SomeOtherClass : MonoBehaviour
-{
-	   [SerializeField] private PlayerDataModel playerDataModel; // Reference to a model
+public class SomeOtherClass : MonoBehaviour {
+    [SerializeField] private PlayerDataModel playerDataModel;
 
-	   private void Start()
-	   {
-	       // Subscribe to the event
-	       playerDataModel.level.OnValueChanged += LevelChanged;
-	   }
+    private void Start() {
+        // Subscribe to the event - note the generic handler signature
+        playerDataModel.health.OnValueChanged.Add(OnHealthChanged, this);
+    }
 
-	   private void OnDestroy()
-	   {
-	       // Don't forget to unsubscribe!
-	       playerDataModel.level.OnValueChanged -= LevelChanged;
-	   }
+    private void OnDestroy() {
+        // Automatic cleanup happens when using tracked actions
+        // But you can also manually remove if needed
+        playerDataModel.health.OnValueChanged.Remove(OnHealthChanged);
+    }
 
-	   public void LevelChanged(IObservableVariable variable)
-	   {
-	       // Use pattern matching to safely get the concrete type and value
-	       if (variable is ObservableVariable<int> levelVariable)
-	       {
-	           int newLevel = levelVariable.Value;
-	           Debug.Log($"Player level changed to: {newLevel}");
-	       }
-	   }
+    private void OnHealthChanged(ObservableVariable<int> variable) {
+        int newHealth = variable.Value;
+        int previousHealth = variable.PreviousValue;
+        Debug.Log($"Health changed from {previousHealth} to {newHealth}");
+    }
 }
 ```
 
@@ -327,20 +470,13 @@ The framework is designed to be efficient and avoid common performance pitfalls 
 
 ### Memory Management and Unsubscribing
 
-*   **Automatic Subscriptions**: For events subscribed automatically via `BaseObservablePresenter` (either through `OnModelValueChanged` or `[ObservableHandler]` attributes), the framework manages the lifetime of the subscription. You do not need to manually unsubscribe.
-*   **Manual Subscriptions**: If you manually subscribe to an `OnValueChanged` event from another class (as shown in the "Manual Event Subscription" section), it is **crucial** that you unsubscribe from the event when your listening object is destroyed, typically in the `OnDestroy()` method. Failure to do so can lead to memory leaks, as the `ObservableVariable` will hold a reference to your destroyed object, preventing it from being garbage collected.
-
-```csharp
-private void OnDestroy()
-{
-    // Always match a subscription with an unsubscription!
-    playerDataModel.level.OnValueChanged -= LevelChanged;
-}
-```
+*   **Automatic Subscriptions**: For events subscribed automatically via `[AutoBind]` or `[ObservableHandler]` attributes, the framework manages the lifetime of the subscription. You do not need to manually unsubscribe.
+*   **Tracked Actions**: The `ObservableTrackedAction` system automatically tracks subscriptions and cleans them up when the data model is destroyed.
+*   **Manual Subscriptions**: If you manually subscribe using `OnValueChanged.Add()`, the tracked action system will handle cleanup when the parent data model is destroyed.
 
 # Integrating Singletons with the MMVC Framework
 
-This document explains how to integrate globally accessible manager classes (using a Singleton/Service Locator pattern) with your existing MMVC architecture. This pattern is ideal for central systems like a game manager, sound manager, or data store that need to be accessed from many different parts of your application without creating complex dependencies.
+This section explains how to integrate globally accessible manager classes (using a Singleton/Service Locator pattern) with your existing MMVC architecture. This pattern is ideal for central systems like a game manager, sound manager, or data store that need to be accessed from many different parts of your application without creating complex dependencies.
 
 The approach uses a central static `Services` class (a Service Locator) to register and retrieve "singleton" instances that are identified by an `ISharedSingleton` interface.
 
@@ -361,7 +497,7 @@ namespace Assets.Scripts.Base {
 
 ### 2. The Initialization Process (`InitSingletones`)
 
-This method, which should be called once when the application starts, is responsible for finding, registering, and validating al singleton services.
+This method, which should be called once when the application starts, is responsible for finding, registering, and validating all singleton services.
 
 Here is a breakdown of how it works:
 
@@ -383,7 +519,7 @@ private void InitSingletones() {
                 SavableObservable.Observable.SetListeners(service);
             } else {
                 // 6. If a service of this type is already registered, enforce the Singleton pattern by quitting.
-                Debug.Log($"You have more than 1 instannce of {service.GetType()} with {Type.GetType(typeof(ISharedSingleton).FullName)} interface.");
+                Debug.Log($"You have more than 1 instance of {service.GetType()} with {Type.GetType(typeof(ISharedSingleton).FullName)} interface.");
                 UnityEngine.Application.Quit();
 #if UNITY_EDITOR
                 EditorApplication.ExitPlaymode();
@@ -397,7 +533,7 @@ This process creates a robust, auto-registering system for your global managers.
 
 ### Step 1: Create Your Component with MMVC
  
-First, build your component as you normally would using the MMVC pattern. We will use the `Component` example from the previous section.
+First, build your component as you normally would using the MMVC pattern.
  
 ### Step 2: Mark the Presenter as a Singleton
  
@@ -438,33 +574,27 @@ public class AnotherComponent : MonoBehaviour {
  
             // 3. Call a method on the Logic to change the model's state.
             // The ComponentPresenter will automatically react to this change and update its UI.
-            componentLogic.TimerStarts();
+            componentLogic.StartTimer();
         }
     }
 }
 ```
-Conclusion
+
+## Conclusion
+
 By combining the `ISharedSingleton` interface with a `Services` locator and an initialization routine, you can seamlessly integrate global manager classes into your MMVC framework. This gives you the best of both worlds:
 
-Decoupled Components: Individual components like PlayerChip don't need hard references to managers.
+* **Decoupled Components**: Individual components don't need hard references to managers.
+* **Centralized Access**: You have a single, reliable point of access (`Services.Get<T>()`) for all global systems.
+* **Reactive Singletons**: Because `SetListeners` is called on registered services, your global managers can fully participate in the reactive data-binding of the MMVC framework.
 
-Centralized Access: You have a single, reliable point of access (`Services.Get<T>()`) for all global systems.
+---
 
-Reactive Singletons: Because `SetListeners` is called on registered services, your global managers can fully participate in the reactive data-binding of the MMVC framework.
+## Migration from Legacy Framework
 
+If you are migrating from an older version of this framework that used:
+- Legacy typed observable classes (e.g., `Observable.ObservableInt32`, `Observable.ObservableString`)
+- The `OnModelValueChanged()` universal handler pattern
+- The `InitFields()` method
 
-Here the example how you can add new types:
-```csharp
-    public class ExtObservable {
-        internal static class ObservableTypeRegistrar {
-            [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-            private static void RegisterCustomObservableTypes() {                   
-                Observable.ObservableTypes.types.Add(typeof(ObservableAtaxxPlayerColorEnum), typeof(AtaxxAIEngine.PlayerColor));
-                
-            }
-        }
-
-        [Serializable] public class ObservableAtaxxPlayerColorEnum : ObservableVariable<AtaxxAIEngine.PlayerColor> { public ObservableAtaxxPlayerColorEnum(string name) : base(name) { } }
-    }
-}
-```
+Please refer to the [Migration Guide](../plans/UniversalHandler-Migration-Guide.md) for detailed instructions on updating your code to the modern attribute-based system.
