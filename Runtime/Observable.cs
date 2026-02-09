@@ -1,0 +1,438 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using UnityEngine;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Linq.Expressions;
+#if UNITY_EDITOR
+using UnityEditor;
+using System.Text.RegularExpressions;
+using System.Collections;
+#endif
+
+namespace SavableObservable {
+
+    public class Observable {
+
+        // Storage for per-instance data using ConditionalWeakTable to avoid memory leaks
+        private static readonly ConditionalWeakTable<BaseObservableDataModel, InstanceData> _instanceData =
+            new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
+
+        // Helper class to hold per-instance data
+        private class InstanceData {
+            public Dictionary<object, List<Delegate>> Subscriptions { get; } = new Dictionary<object, List<Delegate>>();
+            public FieldInfo[] CachedObservableFields { get; set; }
+            public readonly object Lock = new object(); // For thread safety
+            public bool IsInCleanup { get; set; }
+        }
+
+
+
+
+        public static void SetListeners(object obj) {
+            if (!(obj is MonoBehaviour monoBehaviour)) {
+                Debug.LogWarning($"[SavableObservable] SetListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
+                return;
+            }
+            var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
+            if (dataModel == null) return;
+
+            dataModel.EnsureFieldsInitialized();
+
+            var individualHandlers = obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null).ToList();
+
+            // Get cached observable fields once to avoid repeated reflection calls
+            var observableFields = dataModel.GetCachedObservableFields();
+
+            // Look for individual handlers with attributes.
+            var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
+
+            var autoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
+            try {
+                var autoBindFields = obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null);
+
+                foreach (var autoBindField in autoBindFields) {
+                    var autoBind = autoBindField.GetCustomAttribute<AutoBindAttribute>();
+                    var targetName = string.IsNullOrWhiteSpace(autoBind?.VariableName) ? autoBindField.Name : autoBind.VariableName;
+                    if (!string.IsNullOrWhiteSpace(targetName)) {
+                        autoBindTargetNames.Add(targetName);
+                    }
+                }
+            } catch (Exception ex) {
+                Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
+            }
+
+            foreach (var field in observableFields) {
+                if (individualHandlerMap.TryGetValue(field.Name, out var handlerMethod)) {
+                    SubscribeIndividualHandler(obj, handlerMethod, field, dataModel);
+                } else if (!autoBindTargetNames.Contains(field.Name)) {
+                    // Warn only when not handled by either [ObservableHandler] or [AutoBind].
+                    Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {dataModel.GetType().Name} has no corresponding [ObservableHandler] method or [AutoBind] field in {obj.GetType().Name}.", (MonoBehaviour)obj);
+                }
+            }
+
+            SetAutoBindListeners(obj);
+        }
+
+        private static void SubscribeIndividualHandler(object obj, MethodInfo handlerMethod, FieldInfo field, BaseObservableDataModel dataModel) {
+            var observableVar = field.GetValue(dataModel);
+            if (observableVar == null) return;
+
+            // Use reflection to get the OnValueChanged ObservableTrackedAction property
+            var onValueChangedProperty = field.FieldType.GetProperty("OnValueChanged");
+            if (onValueChangedProperty == null) return;
+            var trackedAction = onValueChangedProperty.GetValue(observableVar);
+            if (trackedAction == null) return;
+
+            // Create the handler based on the number of parameters
+            var handlerParams = handlerMethod.GetParameters();
+            var concreteObservableType = field.FieldType; // This is ObservableVariable<T>
+
+            Delegate handler;
+            if (handlerParams.Length == 0) {
+                // Wrap the zero-parameter method in a delegate that ignores the ObservableVariable<T> argument
+                var actionType = typeof(Action<>).MakeGenericType(concreteObservableType);
+                // Create a lambda: (ObservableVariable<T> _) => handlerMethod()
+                var param = Expression.Parameter(concreteObservableType, "_");
+                var callExpression = Expression.Call(Expression.Constant(obj), handlerMethod);
+                var lambda = Expression.Lambda(callExpression, param);
+                handler = lambda.Compile();
+            } else if (handlerParams.Length == 1) {
+                // Create a lambda that extracts the Value property
+                var param = Expression.Parameter(concreteObservableType, "var");
+                var valueProperty = Expression.Property(param, "Value");
+                var callExpression = Expression.Call(Expression.Constant(obj), handlerMethod, valueProperty);
+                var lambda = Expression.Lambda(callExpression, param);
+                handler = lambda.Compile();
+            } else if (handlerParams.Length == 2) {
+                // Create a lambda that extracts both Value and PreviousValue properties
+                var param = Expression.Parameter(concreteObservableType, "var");
+                var valueProperty = Expression.Property(param, "Value");
+                var prevValueProperty = Expression.Property(param, "PreviousValue");
+                var callExpression = Expression.Call(Expression.Constant(obj), handlerMethod, valueProperty, prevValueProperty);
+                var lambda = Expression.Lambda(callExpression, param);
+                handler = lambda.Compile();
+            } else {
+                Debug.LogError($"[SavableObservable] Method '{handlerMethod.Name}' has an invalid number of parameters for [ObservableHandler].", (MonoBehaviour)obj);
+                return;
+            }
+
+            // Add the handler to the tracked action
+            var addAction = trackedAction.GetType().GetMethod("Add");
+            addAction.Invoke(trackedAction, new object[] { handler, obj });
+        }
+
+        /// <summary>
+        /// Sets up automatic UI bindings for fields marked with [AutoBind].
+        /// </summary>
+        public static void SetAutoBindListeners(object obj) {
+            if (!(obj is MonoBehaviour monoBehaviour)) {
+                Debug.LogWarning($"[SavableObservable] SetAutoBindListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
+                return;
+            }
+
+            var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
+            if (dataModel == null) return;
+
+            List<FieldInfo> autoBindFields;
+            try {
+                autoBindFields = obj.GetType()
+                    .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null)
+                    .ToList();
+            } catch (Exception ex) {
+                Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
+                return;
+            }
+
+            if (autoBindFields.Count == 0) return;
+
+            Dictionary<string, FieldInfo> observableFields;
+            try {
+                observableFields = GetCachedObservableFields(dataModel).ToDictionary(f => f.Name, f => f);
+            } catch (Exception ex) {
+                Debug.LogError($"[SavableObservable] Failed to discover ObservableVariable fields on {dataModel.GetType().Name}: {ex.Message}", monoBehaviour);
+                return;
+            }
+
+            foreach (var uiField in autoBindFields) {
+                try {
+                    var attr = uiField.GetCustomAttribute<AutoBindAttribute>();
+                    var targetName = string.IsNullOrWhiteSpace(attr?.VariableName) ? uiField.Name : attr.VariableName;
+
+                    if (!observableFields.TryGetValue(targetName, out var observableField)) {
+                        Debug.LogWarning($"[SavableObservable] [AutoBind] on '{uiField.Name}' could not find ObservableVariable '{targetName}' in {dataModel.GetType().Name}.", monoBehaviour);
+                        continue;
+                    }
+
+                    var adapter = UIAdapterRegistry.GetAdapter(uiField.FieldType);
+                    if (adapter == null) {
+                        Debug.LogWarning($"[SavableObservable] No UI adapter found for type {uiField.FieldType.Name}. Register one via UIAdapterRegistry.RegisterAdapter().", monoBehaviour);
+                        continue;
+                    }
+
+                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter);
+                } catch (Exception ex) {
+                    Debug.LogError($"[SavableObservable] Failed to wire [AutoBind] for field '{uiField.Name}' on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
+                }
+            }
+        }
+
+        private static void SubscribeAutoBindHandler(
+            object obj,
+            FieldInfo uiField,
+            FieldInfo observableField,
+            BaseObservableDataModel dataModel,
+            IUIAdapter adapter) {
+            var observableVar = observableField.GetValue(dataModel);
+            if (observableVar == null) return;
+
+            var onValueChangedProperty = observableField.FieldType.GetProperty("OnValueChanged");
+            if (onValueChangedProperty == null) return;
+
+            var trackedAction = onValueChangedProperty.GetValue(observableVar);
+            if (trackedAction == null) return;
+
+            var genericArgs = observableField.FieldType.GetGenericArguments();
+            if (genericArgs.Length != 1) {
+                Debug.LogError($"[SavableObservable] [AutoBind] field '{observableField.Name}' is not a valid ObservableVariable<T>.", obj as MonoBehaviour);
+                return;
+            }
+
+            var valueType = genericArgs[0];
+            Action<object> handler = value => {
+                try {
+                    var currentUiComponent = uiField.GetValue(obj);
+                    if (currentUiComponent != null) {
+                        adapter.SetValue(currentUiComponent, value, valueType);
+                    }
+                } catch (Exception ex) {
+                    Debug.LogError($"[SavableObservable] [AutoBind] runtime update failed for UI field '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
+                }
+            };
+
+            var wrappedHandler = CreateWrappedHandler(observableField.FieldType, handler);
+            var addAction = trackedAction.GetType().GetMethod("Add");
+            addAction?.Invoke(trackedAction, new object[] { wrappedHandler, obj });
+        }
+
+        private static Delegate CreateWrappedHandler(Type observableType, Action<object> handler) {
+            var valueProperty = observableType.GetProperty("Value");
+            if (valueProperty == null) {
+                throw new InvalidOperationException($"Type {observableType.Name} does not expose a Value property.");
+            }
+
+            var param = Expression.Parameter(observableType, "obs");
+            var valueExpression = Expression.Property(param, valueProperty);
+            var boxedValue = Expression.Convert(valueExpression, typeof(object));
+            var handlerConstant = Expression.Constant(handler);
+            var invokeMethod = typeof(Action<object>).GetMethod(nameof(Action<object>.Invoke));
+            var callHandler = Expression.Call(handlerConstant, invokeMethod, boxedValue);
+            var lambda = Expression.Lambda(callHandler, param);
+            return lambda.Compile();
+        }
+
+        /// <summary>
+        /// Removes all subscriptions for a specific subscriber from the data model.
+        /// </summary>
+        /// <param name="dataModel">The data model containing the observables</param>
+        /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
+        public static void RemoveListeners(object dataModel, object subscriber) {
+            if (dataModel is BaseObservableDataModel model) {
+                RemoveAllSubscriptions(model, subscriber);
+            }
+        }
+
+        /// <summary>
+        /// Determines whether field type is <see cref="ObservableVariable" /> field
+        /// </summary>
+        /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
+        /// <returns>
+        ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
+        internal static bool IsSupportedFieldType(FieldInfo field) {
+            if (!field.FieldType.IsGenericType) return false;
+            var genericDef = field.FieldType.GetGenericTypeDefinition();
+            // Allow ObservableVariable<> and subclasses of ObservableVariable<>
+            if (genericDef == typeof(ObservableVariable<>)) return true;
+            // Check if field.FieldType inherits from ObservableVariable<SomeType>
+            var baseType = field.FieldType.BaseType;
+            while (baseType != null) {
+                if (baseType.IsGenericType && baseType.GetGenericTypeDefinition() == typeof(ObservableVariable<>))
+                    return true;
+                baseType = baseType.BaseType;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Gets the cached observable fields for a data model instance.
+        /// </summary>
+        public static FieldInfo[] GetCachedObservableFields(BaseObservableDataModel dataModel) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                if (instanceData.CachedObservableFields == null) {
+                    instanceData.CachedObservableFields = dataModel.GetType()
+                        .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        .Where(f => IsSupportedFieldType(f))
+                        .ToArray();
+                }
+
+                return instanceData.CachedObservableFields;
+            }
+        }
+
+        /// <summary>
+        /// Registers a subscription for automatic cleanup when the GameObject is destroyed.
+        /// </summary>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object (e.g., Presenter or Logic)</param>
+        /// <param name="subscription">The delegate subscription to be cleaned up</param>
+        public static void RegisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                if (!instanceData.Subscriptions.ContainsKey(subscriber)) {
+                    instanceData.Subscriptions[subscriber] = new List<Delegate>();
+                }
+                instanceData.Subscriptions[subscriber].Add(subscription);
+            }
+        }
+
+        /// <summary>
+        /// Removes a subscription from the tracking list.
+        /// </summary>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object</param>
+        /// <param name="subscription">The delegate subscription to remove</param>
+        public static void UnregisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                if (subscriber != null) {
+                    if (instanceData.Subscriptions.ContainsKey(subscriber)) {
+                        instanceData.Subscriptions[subscriber].Remove(subscription);
+                        if (instanceData.Subscriptions[subscriber].Count == 0) {
+                            instanceData.Subscriptions.Remove(subscriber);
+                        }
+                    }
+                    return;
+                }
+
+                // During model destruction cleanup, tracked actions call Remove(), which calls UnregisterSubscription.
+                // Skip mutation of the tracking dictionary in this phase because CleanupSubscriptions() will clear it at the end.
+                if (instanceData.IsInCleanup) {
+                    return;
+                }
+
+                // If subscriber is unknown, remove this subscription from any subscriber list that contains it.
+                var subscribersToRemove = new List<object>();
+                foreach (var kvp in instanceData.Subscriptions) {
+                    kvp.Value.Remove(subscription);
+                    if (kvp.Value.Count == 0) {
+                        subscribersToRemove.Add(kvp.Key);
+                    }
+                }
+
+                foreach (var emptySubscriber in subscribersToRemove) {
+                    instanceData.Subscriptions.Remove(emptySubscriber);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Internal method to remove subscriptions for a specific subscriber from all observable variables
+        /// </summary>
+        private static void RemoveSubscriptionsForSubscriber(BaseObservableDataModel dataModel, object subscriber) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                if (instanceData.Subscriptions.ContainsKey(subscriber)) {
+                    var subscriptions = new List<Delegate>(instanceData.Subscriptions[subscriber]);
+                    // Actually unsubscribe from each observable variable
+                    var observableFields = GetCachedObservableFields(dataModel);
+                    foreach (var field in observableFields) {
+                        var observableVar = field.GetValue(dataModel);
+                        if (observableVar != null) {
+                            // Use reflection to get the OnValueChanged ObservableTrackedAction property and remove the handler
+                            var onValueChangedProperty = field.FieldType.GetProperty("OnValueChanged");
+                            if (onValueChangedProperty != null) {
+                                var trackedAction = onValueChangedProperty.GetValue(observableVar);
+                                if (trackedAction != null) {
+                                    var removeMethod = trackedAction.GetType().GetMethod("Remove");
+                                    if (removeMethod != null) {
+                                        foreach (var subscription in subscriptions) {
+                                            try {
+                                                removeMethod.Invoke(trackedAction, new object[] { subscription });
+                                            } catch (System.ArgumentException) {
+                                                // Subscription was not found on this event, continue
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Removes all subscriptions for a specific subscriber.
+        /// </summary>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
+        public static void RemoveAllSubscriptions(BaseObservableDataModel dataModel, object subscriber) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                RemoveSubscriptionsForSubscriber(dataModel, subscriber);
+                instanceData.Subscriptions.Remove(subscriber);
+            }
+        }
+
+        /// <summary>
+        /// Cleans up all tracked subscriptions for a data model when it's destroyed.
+        /// </summary>
+        /// <param name="dataModel">The data model being destroyed</param>
+        public static void CleanupSubscriptions(BaseObservableDataModel dataModel) {
+            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+            lock (instanceData.Lock) {
+                instanceData.IsInCleanup = true;
+                try {
+                    // Snapshot subscriptions to avoid collection mutation while trackedAction.Remove()
+                    // triggers UnregisterSubscription internally.
+                    var subscriptionsSnapshot = instanceData.Subscriptions.Values
+                        .SelectMany(x => x)
+                        .ToList();
+
+                    // Clean up tracked subscriptions by iterating through each observable variable once
+                    var observableFields = GetCachedObservableFields(dataModel);
+                    foreach (var field in observableFields) {
+                        var observableVar = field.GetValue(dataModel);
+                        if (observableVar != null) {
+                            // Use reflection to get the OnValueChanged ObservableTrackedAction property and remove all handlers
+                            var onValueChangedProperty = field.FieldType.GetProperty("OnValueChanged");
+                            if (onValueChangedProperty != null) {
+                                var trackedAction = onValueChangedProperty.GetValue(observableVar);
+                                if (trackedAction != null) {
+                                    var removeMethod = trackedAction.GetType().GetMethod("Remove");
+                                    if (removeMethod != null) {
+                                        // Remove all subscriptions for this observable variable
+                                        foreach (var subscription in subscriptionsSnapshot) {
+                                            try {
+                                                removeMethod.Invoke(trackedAction, new object[] { subscription });
+                                            } catch (System.ArgumentException) {
+                                                // Subscription was not found on this event, continue
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    instanceData.Subscriptions.Clear();
+                } finally {
+                    instanceData.IsInCleanup = false;
+                }
+            }
+        }
+    }
+}
