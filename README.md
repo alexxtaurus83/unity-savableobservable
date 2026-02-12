@@ -27,6 +27,50 @@ The `Model` is the data layer of your application. It holds the state and is res
 * The `EnsureFieldsInitialized()` method automatically initializes any null `ObservableVariable` fields and sets up parent references for cleanup.
 * **Mixed Data Types**: You can include regular, non-observable fields (like `int`, `string`, `List<T>`) alongside `ObservableVariable` fields in your model. The save/load system will correctly handle both.
 
+### ObservableList<T>
+
+For collections, the framework provides `ObservableList<T>`, a fully reactive list implementation.
+
+**Key Features:**
+
+*   **Reactivity**: Similar to `ObservableVariable`, `ObservableList` notifies listeners whenever the list is modified (Add, Remove, Clear, etc.).
+*   **Previous Value**: It maintains a snapshot of the list state before the last modification, accessible via `PreviousValue`.
+*   **Unity Editor Support**: Fully integrated with the Unity Inspector, including undo/redo support and validation.
+
+```csharp
+[Serializable]
+public class InventoryModel : BaseObservableDataModel {
+    // A reactive list of items
+    public ObservableList<string> items = new ObservableList<string>();
+}
+```
+
+Usage in Logic:
+
+```csharp
+public void AddItem(string item) {
+    GetModel().items.Add(item); // Triggers OnChanged
+}
+```
+
+Usage in Presenter:
+
+```csharp
+protected override void Start() {
+    base.Start();
+    
+    // Subscribe to list changes
+    GetModel().items.OnChanged.Add(OnInventoryChanged, this);
+}
+
+private void OnInventoryChanged(ObservableList<string> list) {
+    Debug.Log($"Inventory updated. Count: {list.Count}");
+    
+    // Access previous state if needed
+    foreach (var item in list.PreviousValue) { ... }
+}
+```
+
 **Example Model:**
 
 ```csharp
@@ -181,13 +225,15 @@ public class GamePresenter : BaseObservablePresenter<GameDataModel> {
 |---------|----------|
 | `TextMeshProUGUI` / `TMP_Text` | Sets `text` to `value.ToString()` |
 | `Text` (Unity UI) | Sets `text` to `value.ToString()` |
-| `Toggle` | Sets `isOn` to boolean value |
+| `Toggle` | **Two-way binding:** Sets `isOn` from value, and updates value when `isOn` changes. |
+| `TMP_InputField` | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. |
+| `InputField` (Unity UI) | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. |
 | `Button` | Sets text on child `TMP_Text` component |
 | `Image` | Sets `sprite` to Sprite value |
 
 **Custom Adapters:**
 
-You can register custom UI adapters for your own component types:
+You can register custom UI adapters for your own component types by implementing `IUIAdapter`. This interface now supports two-way binding via `AddListener` and `RemoveListener`.
 
 ```csharp
 public class SliderAdapter : IUIAdapter {
@@ -205,10 +251,20 @@ public class SliderAdapter : IUIAdapter {
                 slider.value = intValue;
         }
     }
-}
 
-// Register in initialization code
-UIAdapterRegistry.RegisterAdapter(new SliderAdapter());
+    // Implement two-way binding
+    public void AddListener(object uiComponent, Action<object> onValueChanged) {
+        if (uiComponent is Slider slider) {
+            slider.onValueChanged.AddListener(val => onValueChanged(val));
+        }
+    }
+
+    public void RemoveListener(object uiComponent, object token) {
+        if (uiComponent is Slider slider) {
+            // Cleanup logic if needed, typically handled by Unity's event system
+        }
+    }
+}
 ```
 
 #### Approach 2: ObservableHandler (For Custom Logic)
