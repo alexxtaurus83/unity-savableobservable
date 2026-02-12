@@ -87,6 +87,7 @@ namespace SavableObservable
             {
                 if (_initialized) return;
 
+                RegisterAdapter(new TMPInputFieldAdapter());
                 RegisterAdapter(new TextMeshProAdapter());
                 RegisterAdapter(new UnityTextAdapter());
                 RegisterAdapter(new ToggleAdapter());
@@ -94,6 +95,50 @@ namespace SavableObservable
                 RegisterAdapter(new ImageAdapter());
 
                 _initialized = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adapter for TMP_InputField components.
+    /// </summary>
+    public class TMPInputFieldAdapter : IUIAdapter
+    {
+        public int Priority => 110; // Higher priority than TextMeshProAdapter
+
+        public bool CanHandle(Type uiComponentType)
+        {
+            return typeof(TMP_InputField).IsAssignableFrom(uiComponentType);
+        }
+
+        public void SetValue(object uiComponent, object value, Type valueType)
+        {
+            if (uiComponent is TMP_InputField inputField)
+            {
+                string stringValue = value?.ToString() ?? string.Empty;
+                if (inputField.text != stringValue)
+                {
+                    inputField.text = stringValue;
+                }
+            }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            if (uiComponent is TMP_InputField inputField)
+            {
+                UnityAction<string> listener = val => onValueChanged(val);
+                inputField.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is TMP_InputField inputField && token is UnityAction<string> listener)
+            {
+                inputField.onValueChanged.RemoveListener(listener);
             }
         }
     }
@@ -122,22 +167,11 @@ namespace SavableObservable
         public object AddListener(object uiComponent, Action<object> onValueChanged)
         {
             // TMP_Text does not have an onValueChanged event for editing, it's a display component.
-            // If this was TMP_InputField, we would use onValueChanged.
-            if (uiComponent is TMP_InputField inputField)
-            {
-                UnityAction<string> listener = val => onValueChanged(val);
-                inputField.onValueChanged.AddListener(listener);
-                return listener;
-            }
             return null;
         }
 
         public void RemoveListener(object uiComponent, object token)
         {
-            if (uiComponent is TMP_InputField inputField && token is UnityAction<string> listener)
-            {
-                inputField.onValueChanged.RemoveListener(listener);
-            }
         }
     }
 
