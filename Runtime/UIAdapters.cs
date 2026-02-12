@@ -32,7 +32,7 @@ namespace SavableObservable
         /// Adds a listener to the UI component to track changes.
         /// </summary>
         /// <returns>An opaque token representing the listener, used for removal.</returns>
-        object AddListener(object uiComponent, Action<object> onValueChanged);
+        object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType);
 
         /// <summary>
         /// Removes a previously added listener from the UI component.
@@ -123,11 +123,27 @@ namespace SavableObservable
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             if (uiComponent is TMP_InputField inputField)
             {
-                UnityAction<string> listener = val => onValueChanged(val);
+                UnityAction<string> listener = val =>
+                {
+                    try
+                    {
+                        object convertedValue = val;
+                        if (valueType != typeof(string))
+                        {
+                            if (string.IsNullOrEmpty(val)) return;
+                            convertedValue = Convert.ChangeType(val, valueType);
+                        }
+                        onValueChanged(convertedValue);
+                    }
+                    catch
+                    {
+                        // Conversion failed, ignore update
+                    }
+                };
                 inputField.onValueChanged.AddListener(listener);
                 return listener;
             }
@@ -164,7 +180,7 @@ namespace SavableObservable
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             // TMP_Text does not have an onValueChanged event for editing, it's a display component.
             return null;
@@ -195,12 +211,28 @@ namespace SavableObservable
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             // Text is a display component. InputField is interactive.
             if (uiComponent is InputField inputField)
             {
-                UnityAction<string> listener = val => onValueChanged(val);
+                UnityAction<string> listener = val =>
+                {
+                    try
+                    {
+                        object convertedValue = val;
+                        if (valueType != typeof(string))
+                        {
+                            if (string.IsNullOrEmpty(val)) return;
+                            convertedValue = Convert.ChangeType(val, valueType);
+                        }
+                        onValueChanged(convertedValue);
+                    }
+                    catch
+                    {
+                        // Conversion failed, ignore update
+                    }
+                };
                 inputField.onValueChanged.AddListener(listener);
                 return listener;
             }
@@ -230,18 +262,25 @@ namespace SavableObservable
 
         public void SetValue(object uiComponent, object value, Type valueType)
         {
-            if (uiComponent is Toggle toggle && value is bool boolValue)
+            if (uiComponent is Toggle toggle)
             {
-                // Temporarily disable the listener to avoid infinite loops if needed, 
-                // but usually checking value != current prevents this.
-                if (toggle.isOn != boolValue)
+                if (value is bool boolValue)
                 {
-                    toggle.isOn = boolValue;
+                    // Temporarily disable the listener to avoid infinite loops if needed,
+                    // but usually checking value != current prevents this.
+                    if (toggle.isOn != boolValue)
+                    {
+                        toggle.isOn = boolValue;
+                    }
+                }
+                else if (value != null)
+                {
+                    Debug.LogWarning($"ToggleAdapter: Expected boolean value for Toggle binding, but got {value.GetType().Name}.");
                 }
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             if (uiComponent is Toggle toggle)
             {
@@ -277,15 +316,23 @@ namespace SavableObservable
         {
             if (uiComponent is Button button)
             {
+                string stringValue = value?.ToString() ?? string.Empty;
                 var textComponent = button.GetComponentInChildren<TMP_Text>();
                 if (textComponent != null)
                 {
-                    textComponent.text = value?.ToString() ?? string.Empty;
+                    textComponent.text = stringValue;
+                    return;
+                }
+
+                var legacyText = button.GetComponentInChildren<Text>();
+                if (legacyText != null)
+                {
+                    legacyText.text = stringValue;
                 }
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             // Buttons trigger actions, they don't usually hold data values in this context.
             // But if we wanted to bind button click to something, we could.
@@ -314,11 +361,22 @@ namespace SavableObservable
         {
             if (uiComponent is Image image)
             {
-                image.sprite = value as Sprite;
+                if (value == null)
+                {
+                    image.sprite = null;
+                }
+                else if (value is Sprite sprite)
+                {
+                    image.sprite = sprite;
+                }
+                else
+                {
+                    Debug.LogWarning($"ImageAdapter: Expected Sprite value for Image binding, but got {value.GetType().Name}.");
+                }
             }
         }
 
-        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
             // Images are display components.
             return null;

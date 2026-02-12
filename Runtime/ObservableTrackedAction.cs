@@ -8,6 +8,7 @@ namespace SavableObservable {
     public class ObservableTrackedAction<T> where T : class, IObservableVariable {
         private List<Action<T>> _handlers = new List<Action<T>>();
         private readonly object _lock = new object();
+        private bool _isInvoking;
 
         public static ObservableTrackedAction<T> operator +(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
             if (trackedAction == null) {
@@ -60,18 +61,25 @@ namespace SavableObservable {
         /// Invokes all registered handlers.
         /// </summary>
         public void Invoke(T variable) {
-            Action<T>[] handlersCopy;
-            lock (_lock) {
-                handlersCopy = new Action<T>[_handlers.Count];
-                _handlers.CopyTo(handlersCopy);
-            }
+            if (_isInvoking) return;
 
-            foreach (var handler in handlersCopy) {
-                try {
-                    handler?.Invoke(variable);
-                } catch (Exception ex) {
-                    UnityEngine.Debug.LogError($"Error invoking handler: {ex.Message}");
+            _isInvoking = true;
+            try {
+                Action<T>[] handlersCopy;
+                lock (_lock) {
+                    handlersCopy = new Action<T>[_handlers.Count];
+                    _handlers.CopyTo(handlersCopy);
                 }
+
+                foreach (var handler in handlersCopy) {
+                    try {
+                        handler?.Invoke(variable);
+                    } catch (Exception ex) {
+                        UnityEngine.Debug.LogError($"Error invoking handler: {ex.Message}");
+                    }
+                }
+            } finally {
+                _isInvoking = false;
             }
         }
 

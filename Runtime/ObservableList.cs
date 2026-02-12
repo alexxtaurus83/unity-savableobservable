@@ -207,8 +207,16 @@ namespace SavableObservable {
 
             var itemsProperty = property.FindPropertyRelative("_items");
             if (itemsProperty != null) {
-                var targetObject = GetTargetObject(property);
-                InvokeMethod(targetObject, "OnBeginGui");
+                IObservableVariable targetObject = null;
+                try {
+                    targetObject = GetTargetObjectOfProperty(property) as IObservableVariable;
+                } catch {
+                    // Ignore resolution errors
+                }
+
+                if (targetObject != null) {
+                    targetObject.OnBeginGui();
+                }
 
                 EditorGUI.BeginChangeCheck();
                 EditorGUI.PropertyField(position, itemsProperty, label, true);
@@ -216,14 +224,11 @@ namespace SavableObservable {
                 if (EditorGUI.EndChangeCheck()) {
                     property.serializedObject.ApplyModifiedProperties();
 
-                    if (targetObject != null && targetObject is IObservableVariable) {
-                        if (!InvokeMethod(targetObject, "OnValidate")) {
-                            InvokeMethod(targetObject, "ForceNotify");
-                        }
+                    if (targetObject != null) {
+                        targetObject.OnValidate();
                     }
                 }
-            }
-            else {
+            } else {
                 EditorGUI.PropertyField(position, property, label, true);
             }
 
@@ -239,67 +244,55 @@ namespace SavableObservable {
             return EditorGUIUtility.singleLineHeight;
         }
 
-        private object GetTargetObject(SerializedProperty property) {
-            string propertyPath = property.propertyPath;
+        /// <summary>
+        /// Gets the object instance that the SerializedProperty points to.
+        /// Improved to avoid regex and be safer.
+        /// </summary>
+        private object GetTargetObjectOfProperty(SerializedProperty property) {
+            if (property == null) return null;
+
+            var path = property.propertyPath.Replace(".Array.data[", "[");
             object obj = property.serializedObject.targetObject;
+            var elements = path.Split('.');
 
-            var paths = propertyPath.Split('.');
-            for (int i = 0; i < paths.Length; i++) {
-                string path = paths[i];
-
-                if (path == "Array") {
-                    i++;
-                    if (i < paths.Length) {
-                        var match = Regex.Match(paths[i], @"data\[([0-9]+)\]");
-                        if (match.Success) {
-                            int index = int.Parse(match.Groups[1].Value);
-                            if (obj is IList list) {
-                                obj = list[index];
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                FieldInfo fieldInfo = GetFieldInfo(obj.GetType(), path);
-                if (fieldInfo != null) {
-                    obj = fieldInfo.GetValue(obj);
-                }
-                else {
-                    break;
+            foreach (var element in elements) {
+                if (element.Contains("[")) {
+                    var elementName = element.Substring(0, element.IndexOf("["));
+                    var index = Convert.ToInt32(element.Substring(element.IndexOf("[")).Replace("[", "").Replace("]", ""));
+                    obj = GetValue_Imp(obj, elementName, index);
+                } else {
+                    obj = GetValue_Imp(obj, element);
                 }
             }
 
             return obj;
         }
 
-        private bool InvokeMethod(object target, string methodName) {
-            if (target == null) return false;
+        private object GetValue_Imp(object source, string name) {
+            if (source == null) return null;
+            var type = source.GetType();
 
-            var method = target.GetType().GetMethod(methodName,
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            while (type != null) {
+                var f = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+                if (f != null) return f.GetValue(source);
 
-            if (method == null) return false;
+                var p = type.GetProperty(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                if (p != null) return p.GetValue(source, null);
 
-            method.Invoke(target, null);
-            return true;
+                type = type.BaseType;
+            }
+            return null;
         }
 
-        private FieldInfo GetFieldInfo(Type type, string fieldName) {
-            FieldInfo fieldInfo = null;
-            Type currentType = type;
+        private object GetValue_Imp(object source, string name, int index) {
+            var enumerable = GetValue_Imp(source, name) as IEnumerable;
+            if (enumerable == null) return null;
 
-            while (currentType != null && fieldInfo == null) {
-                fieldInfo = currentType.GetField(fieldName,
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (fieldInfo != null)
-                    break;
-
-                currentType = currentType.BaseType;
+            var enm = enumerable.GetEnumerator();
+            for (int i = 0; i <= index; i++) {
+                if (!enm.MoveNext()) return null;
             }
-
-            return fieldInfo;
+            return enm.Current;
         }
     }
 
