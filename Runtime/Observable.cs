@@ -189,33 +189,57 @@ namespace SavableObservable {
             var observableVar = observableField.GetValue(dataModel);
             if (observableVar == null) return;
 
+            // 1) Subscribe Model -> UI (One-way binding)
+            // ----------------------------------------------------------------
             var onValueChangedProperty = observableField.FieldType.GetProperty("OnValueChanged");
-            if (onValueChangedProperty == null) return;
+            if (onValueChangedProperty != null) {
+                var trackedAction = onValueChangedProperty.GetValue(observableVar);
+                if (trackedAction != null) {
+                    var genericArgs = observableField.FieldType.GetGenericArguments();
+                    if (genericArgs.Length == 1) {
+                        var valueType = genericArgs[0];
+                        Action<object> modelToUiHandler = value => {
+                            try {
+                                var currentUiComponent = uiField.GetValue(obj);
+                                if (currentUiComponent != null) {
+                                    adapter.SetValue(currentUiComponent, value, valueType);
+                                }
+                            } catch (Exception ex) {
+                                Debug.LogError($"[SavableObservable] [AutoBind] runtime update failed for UI field '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
+                            }
+                        };
 
-            var trackedAction = onValueChangedProperty.GetValue(observableVar);
-            if (trackedAction == null) return;
-
-            var genericArgs = observableField.FieldType.GetGenericArguments();
-            if (genericArgs.Length != 1) {
-                Debug.LogError($"[SavableObservable] [AutoBind] field '{observableField.Name}' is not a valid ObservableVariable<T>.", obj as MonoBehaviour);
-                return;
+                        var wrappedHandler = CreateWrappedHandler(observableField.FieldType, modelToUiHandler);
+                        var addAction = trackedAction.GetType().GetMethod("Add");
+                        addAction?.Invoke(trackedAction, new object[] { wrappedHandler, obj });
+                    }
+                }
             }
 
-            var valueType = genericArgs[0];
-            Action<object> handler = value => {
-                try {
-                    var currentUiComponent = uiField.GetValue(obj);
-                    if (currentUiComponent != null) {
-                        adapter.SetValue(currentUiComponent, value, valueType);
-                    }
-                } catch (Exception ex) {
-                    Debug.LogError($"[SavableObservable] [AutoBind] runtime update failed for UI field '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
-                }
-            };
+            // 2) Subscribe UI -> Model (Two-way binding, if supported)
+            // ----------------------------------------------------------------
+            try {
+                var currentUiComponent = uiField.GetValue(obj);
+                if (currentUiComponent != null) {
+                    // Create a callback that updates the ObservableVariable
+                    Action<object> uiToModelHandler = (newValue) => {
+                        try {
+                            // Reflection: observableVar.Value = newValue
+                            var valueProp = observableField.FieldType.GetProperty("Value");
+                            if (valueProp != null && valueProp.CanWrite) {
+                                valueProp.SetValue(observableVar, newValue);
+                            }
+                        } catch (Exception ex) {
+                            Debug.LogError($"[SavableObservable] Failed to update Observable '{observableField.Name}' from UI: {ex.Message}", obj as MonoBehaviour);
+                        }
+                    };
 
-            var wrappedHandler = CreateWrappedHandler(observableField.FieldType, handler);
-            var addAction = trackedAction.GetType().GetMethod("Add");
-            addAction?.Invoke(trackedAction, new object[] { wrappedHandler, obj });
+                    // Register the listener via the adapter
+                    adapter.AddListener(currentUiComponent, uiToModelHandler);
+                }
+            } catch (Exception ex) {
+                Debug.LogWarning($"[SavableObservable] Failed to setup two-way binding for '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
+            }
         }
 
         private static Delegate CreateWrappedHandler(Type observableType, Action<object> handler) {
@@ -253,16 +277,25 @@ namespace SavableObservable {
         ///   <c>true</c> if filed of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
         internal static bool IsSupportedFieldType(FieldInfo field) {
             if (!field.FieldType.IsGenericType) return false;
+
             var genericDef = field.FieldType.GetGenericTypeDefinition();
-            // Allow ObservableVariable<> and subclasses of ObservableVariable<>
-            if (genericDef == typeof(ObservableVariable<>)) return true;
-            // Check if field.FieldType inherits from ObservableVariable<SomeType>
+            if (genericDef == typeof(ObservableVariable<>) || genericDef == typeof(ObservableList<>)) {
+                return true;
+            }
+
+            // Allow subclasses of ObservableVariable<> / ObservableList<>
             var baseType = field.FieldType.BaseType;
             while (baseType != null) {
-                if (baseType.IsGenericType && baseType.GetGenericTypeDefinition() == typeof(ObservableVariable<>))
-                    return true;
+                if (baseType.IsGenericType) {
+                    var baseGenericDef = baseType.GetGenericTypeDefinition();
+                    if (baseGenericDef == typeof(ObservableVariable<>) || baseGenericDef == typeof(ObservableList<>)) {
+                        return true;
+                    }
+                }
+
                 baseType = baseType.BaseType;
             }
+
             return false;
         }
 

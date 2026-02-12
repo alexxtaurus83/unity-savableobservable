@@ -1,10 +1,14 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 #if UNITY_EDITOR
 using UnityEditor;
 using System.Text.RegularExpressions;
-using System.Collections;
+#if ODIN_INSPECTOR
+using Sirenix.OdinInspector.Editor;
+#endif
 #endif
 
 namespace SavableObservable {
@@ -39,6 +43,13 @@ namespace SavableObservable {
         /// </summary>
         public T PreviousValue { get; private set; }
 
+#if UNITY_EDITOR
+        [NonSerialized] private T _editorGuiSnapshot;
+        [NonSerialized] private bool _hasEditorGuiSnapshot;
+        [NonSerialized] private T _lastValidatedValue;
+        [NonSerialized] private bool _hasLastValidatedValue;
+#endif
+
         /// <summary>
         /// Default constructor.
         /// </summary>
@@ -68,6 +79,48 @@ namespace SavableObservable {
 
         public override string ToString() => _value?.ToString();
 
+#if UNITY_EDITOR
+        /// <summary>
+        /// Captures the value snapshot before drawing editor controls.
+        /// </summary>
+        public void OnBeginGui() {
+            _editorGuiSnapshot = _value;
+            _hasEditorGuiSnapshot = true;
+
+            if (!_hasLastValidatedValue) {
+                _lastValidatedValue = _value;
+                _hasLastValidatedValue = true;
+            }
+        }
+
+        /// <summary>
+        /// Handles editor validation (including undo/redo) and emits change notifications with proper previous-value snapshots.
+        /// </summary>
+        public void OnValidate() {
+            T previousValue;
+
+            if (_hasEditorGuiSnapshot) {
+                previousValue = _editorGuiSnapshot;
+            }
+            else if (_hasLastValidatedValue) {
+                previousValue = _lastValidatedValue;
+            }
+            else {
+                previousValue = _value;
+            }
+
+            _hasEditorGuiSnapshot = false;
+
+            if (!EqualityComparer<T>.Default.Equals(previousValue, _value)) {
+                PreviousValue = previousValue;
+                OnValueChanged?.Invoke(this);
+            }
+
+            _lastValidatedValue = _value;
+            _hasLastValidatedValue = true;
+        }
+#endif
+
         /// <summary>
         /// Sets the parent data model for cleanup purposes.
         /// </summary>
@@ -90,6 +143,9 @@ namespace SavableObservable {
                 
                 if (valueProperty != null)
                 {
+                    var targetObject = GetTargetObject(property);
+                    InvokeMethod(targetObject, "OnBeginGui");
+
                     // Begin change check before drawing
                     EditorGUI.BeginChangeCheck();
                     // Draw the value field with the original label
@@ -101,18 +157,12 @@ namespace SavableObservable {
                         // Apply the changes to ensure the serialized data is updated
                         property.serializedObject.ApplyModifiedProperties();
                         
-                        // Find the target object to call ForceNotify
-                        var targetObject = GetTargetObject(property);
-                        if (targetObject != null && targetObject is IObservableVariable observableVar)
+                        if (targetObject != null && targetObject is IObservableVariable)
                         {
-                            // Call ForceNotify to trigger the OnValueChanged event
-                            // Use reflection to call ForceNotify to avoid generic type issues
-                            var forceNotifyMethod = targetObject.GetType().GetMethod("ForceNotify",
-                                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                            
-                            if (forceNotifyMethod != null)
+                            // Use OnValidate first so PreviousValue uses the editor snapshot.
+                            if (!InvokeMethod(targetObject, "OnValidate"))
                             {
-                                forceNotifyMethod.Invoke(targetObject, null);
+                                InvokeMethod(targetObject, "ForceNotify");
                             }
                         }
                     }
@@ -185,6 +235,19 @@ namespace SavableObservable {
                 return obj;
             }
     
+            private bool InvokeMethod(object target, string methodName)
+            {
+                if (target == null) return false;
+
+                var method = target.GetType().GetMethod(methodName,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                if (method == null) return false;
+
+                method.Invoke(target, null);
+                return true;
+            }
+
             private FieldInfo GetFieldInfo(System.Type type, string fieldName)
             {
                 FieldInfo fieldInfo = null;
@@ -206,5 +269,22 @@ namespace SavableObservable {
             }
         
     }
+
+#if ODIN_INSPECTOR
+    public class ObservableVariableOdinDrawer<T> : OdinValueDrawer<ObservableVariable<T>> {
+        protected override void DrawPropertyLayout(GUIContent label) {
+            var observable = ValueEntry.SmartValue;
+            observable?.OnBeginGui();
+
+            EditorGUI.BeginChangeCheck();
+            CallNextDrawer(label);
+
+            if (EditorGUI.EndChangeCheck()) {
+                observable?.OnValidate();
+                ValueEntry.SmartValue = observable;
+            }
+        }
+    }
+#endif
 #endif
 }

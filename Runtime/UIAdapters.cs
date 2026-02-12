@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UI;
 using TMPro;
 
@@ -26,6 +27,17 @@ namespace SavableObservable
         /// Sets the value on the UI component.
         /// </summary>
         void SetValue(object uiComponent, object value, Type valueType);
+
+        /// <summary>
+        /// Adds a listener to the UI component to track changes.
+        /// </summary>
+        /// <returns>An opaque token representing the listener, used for removal.</returns>
+        object AddListener(object uiComponent, Action<object> onValueChanged);
+
+        /// <summary>
+        /// Removes a previously added listener from the UI component.
+        /// </summary>
+        void RemoveListener(object uiComponent, object token);
     }
 
     /// <summary>
@@ -106,6 +118,27 @@ namespace SavableObservable
                 textComponent.text = value?.ToString() ?? string.Empty;
             }
         }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            // TMP_Text does not have an onValueChanged event for editing, it's a display component.
+            // If this was TMP_InputField, we would use onValueChanged.
+            if (uiComponent is TMP_InputField inputField)
+            {
+                UnityAction<string> listener = val => onValueChanged(val);
+                inputField.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is TMP_InputField inputField && token is UnityAction<string> listener)
+            {
+                inputField.onValueChanged.RemoveListener(listener);
+            }
+        }
     }
 
     /// <summary>
@@ -127,6 +160,26 @@ namespace SavableObservable
                 textComponent.text = value?.ToString() ?? string.Empty;
             }
         }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            // Text is a display component. InputField is interactive.
+            if (uiComponent is InputField inputField)
+            {
+                UnityAction<string> listener = val => onValueChanged(val);
+                inputField.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is InputField inputField && token is UnityAction<string> listener)
+            {
+                inputField.onValueChanged.RemoveListener(listener);
+            }
+        }
     }
 
     /// <summary>
@@ -145,7 +198,31 @@ namespace SavableObservable
         {
             if (uiComponent is Toggle toggle && value is bool boolValue)
             {
-                toggle.isOn = boolValue;
+                // Temporarily disable the listener to avoid infinite loops if needed, 
+                // but usually checking value != current prevents this.
+                if (toggle.isOn != boolValue)
+                {
+                    toggle.isOn = boolValue;
+                }
+            }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            if (uiComponent is Toggle toggle)
+            {
+                UnityAction<bool> listener = val => onValueChanged(val);
+                toggle.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is Toggle toggle && token is UnityAction<bool> listener)
+            {
+                toggle.onValueChanged.RemoveListener(listener);
             }
         }
     }
@@ -173,6 +250,18 @@ namespace SavableObservable
                 }
             }
         }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            // Buttons trigger actions, they don't usually hold data values in this context.
+            // But if we wanted to bind button click to something, we could.
+            // For now, no two-way binding for simple buttons as value holders.
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+        }
     }
 
     /// <summary>
@@ -193,6 +282,16 @@ namespace SavableObservable
             {
                 image.sprite = value as Sprite;
             }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged)
+        {
+            // Images are display components.
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
         }
     }
 }
