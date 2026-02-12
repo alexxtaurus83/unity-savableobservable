@@ -226,8 +226,8 @@ public class GamePresenter : BaseObservablePresenter<GameDataModel> {
 | `TextMeshProUGUI` / `TMP_Text` | Sets `text` to `value.ToString()` |
 | `Text` (Unity UI) | Sets `text` to `value.ToString()` |
 | `Toggle` | **Two-way binding:** Sets `isOn` from value, and updates value when `isOn` changes. |
-| `TMP_InputField` | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. |
-| `InputField` (Unity UI) | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. |
+| `TMP_InputField` | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. Supports automatic conversion for basic types (int, float, bool, etc.). **Note:** Complex types like `Vector2` are not supported for auto-binding. |
+| `InputField` (Unity UI) | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. Supports automatic conversion for basic types (int, float, bool, etc.). **Note:** Complex types like `Vector2` are not supported for auto-binding. |
 | `Button` | Sets text on child `TMP_Text` component |
 | `Image` | Sets `sprite` to Sprite value |
 
@@ -253,7 +253,7 @@ public class SliderAdapter : IUIAdapter {
     }
 
     // Implement two-way binding
-    public void AddListener(object uiComponent, Action<object> onValueChanged) {
+    public void AddListener(object uiComponent, Action<object> onValueChanged, Type valueType) {
         if (uiComponent is Slider slider) {
             slider.onValueChanged.AddListener(val => onValueChanged(val));
         }

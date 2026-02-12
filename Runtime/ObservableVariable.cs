@@ -132,142 +132,114 @@ namespace SavableObservable {
 
 #if UNITY_EDITOR
     [CustomPropertyDrawer(typeof(ObservableVariable<>), true)]
-    public class ObservableVariableDrawer : PropertyDrawer
-    {
-            public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
-            {
-                EditorGUI.BeginProperty(position, label, property);
-    
-                // Find the actual value field (which is _value)
-                var valueProperty = property.FindPropertyRelative("_value");
-                
-                if (valueProperty != null)
-                {
-                    var targetObject = GetTargetObject(property);
-                    InvokeMethod(targetObject, "OnBeginGui");
+    public class ObservableVariableDrawer : PropertyDrawer {
+        public override void OnGUI(Rect position, SerializedProperty property, GUIContent label) {
+            EditorGUI.BeginProperty(position, label, property);
 
-                    // Begin change check before drawing
-                    EditorGUI.BeginChangeCheck();
-                    // Draw the value field with the original label
-                    EditorGUI.PropertyField(position, valueProperty, label, true);
-                    
-                    // Check if the value has changed in the editor
-                    if (EditorGUI.EndChangeCheck())
-                    {
-                        // Apply the changes to ensure the serialized data is updated
-                        property.serializedObject.ApplyModifiedProperties();
-                        
-                        if (targetObject != null && targetObject is IObservableVariable)
-                        {
-                            // Use OnValidate first so PreviousValue uses the editor snapshot.
-                            if (!InvokeMethod(targetObject, "OnValidate"))
-                            {
-                                InvokeMethod(targetObject, "ForceNotify");
-                            }
-                        }
+            // Find the actual value field (which is _value)
+            var valueProperty = property.FindPropertyRelative("_value");
+
+            if (valueProperty != null) {
+                // Use fieldInfo.GetValue(targetObject) where possible, but for PropertyDrawers
+                // navigating to the actual object instance can be tricky/expensive.
+                // However, we only need to invoke methods if we are actually about to change something or capture state.
+
+                IObservableVariable targetObject = null;
+                // Only resolve target object if we are in a context where we might need it (optimization)
+                // or simply do it once. Resolving every frame in OnGUI can be heavy if deep in hierarchy.
+                // We'll resolve it since we need to call OnBeginGui().
+                try {
+                    targetObject = GetTargetObjectOfProperty(property) as IObservableVariable;
+                } catch {
+                    // Ignore resolution errors to prevent UI freeze
+                }
+
+                if (targetObject != null) {
+                    targetObject.OnBeginGui();
+                }
+
+                // Begin change check before drawing
+                EditorGUI.BeginChangeCheck();
+                // Draw the value field with the original label
+                EditorGUI.PropertyField(position, valueProperty, label, true);
+
+                // Check if the value has changed in the editor
+                if (EditorGUI.EndChangeCheck()) {
+                    // Apply the changes to ensure the serialized data is updated
+                    property.serializedObject.ApplyModifiedProperties();
+
+                    if (targetObject != null) {
+                        targetObject.OnValidate();
                     }
                 }
-                else
-                {
-                    // Fallback: draw the default property field if _value is not found
-                    EditorGUI.PropertyField(position, property, label, true);
-                }
-    
-                EditorGUI.EndProperty();
-            }
-    
-            public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
-            {
-                var valueProperty = property.FindPropertyRelative("_value");
-                if (valueProperty != null)
-                {
-                    // Return the height required for drawing the value property
-                    return EditorGUI.GetPropertyHeight(valueProperty, label, true);
-                }
-                // Default height if the property isn't found
-                return EditorGUIUtility.singleLineHeight;
-            }
-    
-            private object GetTargetObject(SerializedProperty property)
-            {
-                // Navigate to the target object using reflection
-                string propertyPath = property.propertyPath;
-                object obj = property.serializedObject.targetObject;
-    
-                // Split the path and traverse the object hierarchy
-                var paths = propertyPath.Split('.');
-                for (int i = 0; i < paths.Length; i++)
-                {
-                    string path = paths[i];
-                    
-                    // Handle array elements
-                    if (path == "Array")
-                    {
-                        i++; // Move to the element part: data[index]
-                        if (i < paths.Length)
-                        {
-                            var match = Regex.Match(paths[i], @"data\[([0-9]+)\]");
-                            if (match.Success)
-                            {
-                                int index = int.Parse(match.Groups[1].Value);
-                                if (obj is IList list)
-                                {
-                                    obj = list[index];
-                                }
-                            }
-                        }
-                        continue;
-                    }
-    
-                    // Get the field info
-                    FieldInfo fieldInfo = GetFieldInfo(obj.GetType(), path);
-                    if (fieldInfo != null)
-                    {
-                        obj = fieldInfo.GetValue(obj);
-                    }
-                    else
-                    {
-                        // If we can't find the field, break
-                        break;
-                    }
-                }
-    
-                return obj;
-            }
-    
-            private bool InvokeMethod(object target, string methodName)
-            {
-                if (target == null) return false;
-
-                var method = target.GetType().GetMethod(methodName,
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (method == null) return false;
-
-                method.Invoke(target, null);
-                return true;
+            } else {
+                // Fallback: draw the default property field if _value is not found
+                EditorGUI.PropertyField(position, property, label, true);
             }
 
-            private FieldInfo GetFieldInfo(System.Type type, string fieldName)
-            {
-                FieldInfo fieldInfo = null;
-                System.Type currentType = type;
-    
-                // Look in the current type and all base types
-                while (currentType != null && fieldInfo == null)
-                {
-                    fieldInfo = currentType.GetField(fieldName,
-                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    
-                    if (fieldInfo != null)
-                        break;
-                        
-                    currentType = currentType.BaseType;
-                }
-    
-                return fieldInfo;
+            EditorGUI.EndProperty();
+        }
+
+        public override float GetPropertyHeight(SerializedProperty property, GUIContent label) {
+            var valueProperty = property.FindPropertyRelative("_value");
+            if (valueProperty != null) {
+                // Return the height required for drawing the value property
+                return EditorGUI.GetPropertyHeight(valueProperty, label, true);
             }
-        
+            // Default height if the property isn't found
+            return EditorGUIUtility.singleLineHeight;
+        }
+
+        /// <summary>
+        /// Gets the object instance that the SerializedProperty points to.
+        /// Improved to avoid regex and be safer.
+        /// </summary>
+        private object GetTargetObjectOfProperty(SerializedProperty property) {
+            if (property == null) return null;
+
+            var path = property.propertyPath.Replace(".Array.data[", "[");
+            object obj = property.serializedObject.targetObject;
+            var elements = path.Split('.');
+
+            foreach (var element in elements) {
+                if (element.Contains("[")) {
+                    var elementName = element.Substring(0, element.IndexOf("["));
+                    var index = Convert.ToInt32(element.Substring(element.IndexOf("[")).Replace("[", "").Replace("]", ""));
+                    obj = GetValue_Imp(obj, elementName, index);
+                } else {
+                    obj = GetValue_Imp(obj, element);
+                }
+            }
+
+            return obj;
+        }
+
+        private object GetValue_Imp(object source, string name) {
+            if (source == null) return null;
+            var type = source.GetType();
+
+            while (type != null) {
+                var f = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+                if (f != null) return f.GetValue(source);
+
+                var p = type.GetProperty(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                if (p != null) return p.GetValue(source, null);
+
+                type = type.BaseType;
+            }
+            return null;
+        }
+
+        private object GetValue_Imp(object source, string name, int index) {
+            var enumerable = GetValue_Imp(source, name) as IEnumerable;
+            if (enumerable == null) return null;
+
+            var enm = enumerable.GetEnumerator();
+            for (int i = 0; i <= index; i++) {
+                if (!enm.MoveNext()) return null;
+            }
+            return enm.Current;
+        }
     }
 
 #if ODIN_INSPECTOR

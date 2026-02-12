@@ -235,7 +235,9 @@ namespace SavableObservable {
                     };
 
                     // Register the listener via the adapter
-                    adapter.AddListener(currentUiComponent, uiToModelHandler);
+                    var genericArgs = observableField.FieldType.GetGenericArguments();
+                    var valueType = genericArgs.Length > 0 ? genericArgs[0] : typeof(object);
+                    adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
                 }
             } catch (Exception ex) {
                 Debug.LogWarning($"[SavableObservable] Failed to setup two-way binding for '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
