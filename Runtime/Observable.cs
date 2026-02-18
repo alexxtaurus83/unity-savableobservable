@@ -24,6 +24,23 @@ namespace SavableObservable {
             public FieldInfo[] CachedObservableFields { get; set; }
             public readonly object Lock = new object(); // For thread safety
             public bool IsInCleanup { get; set; }
+
+            // Fix A: Track UI→Model listener tokens so they can be removed during cleanup.
+            // Key: subscriber object (e.g., presenter/Logic), Value: list of (uiComponent, token) pairs.
+            // Using WeakReference for uiComponent to avoid preventing GC of destroyed Unity objects.
+            public Dictionary<object, List<UiListenerToken>> UiListenerTokens { get; } = new Dictionary<object, List<UiListenerToken>>();
+        }
+
+        // Helper struct to store UI listener token information
+        // Stored per subscriber to enable deterministic cleanup of UI→Model bindings
+        private struct UiListenerToken {
+            public UnityEngine.Object UiComponent; // Unity object reference (weak reference not needed for UnityEngine.Object)
+            public object Token; // Opaque token returned by IUIAdapter.AddListener()
+
+            public UiListenerToken(UnityEngine.Object uiComponent, object token) {
+                UiComponent = uiComponent;
+                Token = token;
+            }
         }
 
 
@@ -36,6 +53,10 @@ namespace SavableObservable {
             }
             var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
+
+            // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
+            // Calling SetListeners() multiple times will not duplicate Model→UI subscriptions.
+            RemoveAllSubscriptions(dataModel, obj);
 
             dataModel.EnsureFieldsInitialized();
 
@@ -153,6 +174,10 @@ namespace SavableObservable {
             var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
+            // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
+            // Calling SetAutoBindListeners() multiple times will not duplicate Model→UI subscriptions.
+            RemoveAllSubscriptions(dataModel, obj);
+
             List<FieldInfo> autoBindFields;
             try {
                 autoBindFields = new List<FieldInfo>();
@@ -262,7 +287,19 @@ namespace SavableObservable {
                     // Register the listener via the adapter
                     var genericArgs = observableField.FieldType.GetGenericArguments();
                     var valueType = genericArgs.Length > 0 ? genericArgs[0] : typeof(object);
-                    adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+                    object token = adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+
+                    // Fix A: Store the UI listener token for later cleanup.
+                    // Key by subscriber (obj) so we can remove all UI listeners when cleanup is needed.
+                    if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
+                        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+                        lock (instanceData.Lock) {
+                            if (!instanceData.UiListenerTokens.ContainsKey(obj)) {
+                                instanceData.UiListenerTokens[obj] = new List<UiListenerToken>();
+                            }
+                            instanceData.UiListenerTokens[obj].Add(new UiListenerToken(unityUiComponent, token));
+                        }
+                    }
                 }
             } catch (Exception ex) {
                 Debug.LogWarning($"[SavableObservable] Failed to setup two-way binding for '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
@@ -450,6 +487,9 @@ namespace SavableObservable {
             lock (instanceData.Lock) {
                 RemoveSubscriptionsForSubscriber(dataModel, subscriber);
                 instanceData.Subscriptions.Remove(subscriber);
+
+                // Fix A: Also remove UI→Model listener tokens for this subscriber.
+                RemoveUiListenersForSubscriber(dataModel, subscriber, instanceData);
             }
         }
 
@@ -499,10 +539,48 @@ namespace SavableObservable {
                         }
                     }
                     instanceData.Subscriptions.Clear();
+
+                    // Fix A: Clean up all UI→Model listener tokens for all subscribers.
+                    foreach (var kvp in instanceData.UiListenerTokens) {
+                        RemoveUiListenersForSubscriber(dataModel, kvp.Key, instanceData);
+                    }
+                    instanceData.UiListenerTokens.Clear();
                 } finally {
                     instanceData.IsInCleanup = false;
                 }
             }
+        }
+
+        /// <summary>
+        /// Helper method to remove UI listener tokens for a specific subscriber.
+        /// Called by RemoveAllSubscriptions and CleanupSubscriptions.
+        /// </summary>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object</param>
+        /// <param name="instanceData">The instance data (already locked)</param>
+        private static void RemoveUiListenersForSubscriber(BaseObservableDataModel dataModel, object subscriber, InstanceData instanceData) {
+            if (!instanceData.UiListenerTokens.ContainsKey(subscriber)) {
+                return;
+            }
+
+            var tokens = instanceData.UiListenerTokens[subscriber];
+            foreach (var uiToken in tokens) {
+                // Skip if UI component was destroyed (Unity object null check handles destroyed objects gracefully)
+                if (uiToken.UiComponent == null) {
+                    continue;
+                }
+
+                // Get the adapter for this UI component type
+                var adapter = UIAdapterRegistry.GetAdapter(uiToken.UiComponent.GetType());
+                if (adapter != null && uiToken.Token != null) {
+                    try {
+                        adapter.RemoveListener(uiToken.UiComponent, uiToken.Token);
+                    } catch (Exception ex) {
+                        Debug.LogWarning($"[SavableObservable] Failed to remove UI listener token during cleanup: {ex.Message}");
+                    }
+                }
+            }
+            tokens.Clear();
         }
     }
 }

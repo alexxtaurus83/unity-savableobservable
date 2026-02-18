@@ -1,6 +1,6 @@
 using System;
 
-namespace SavableObservable 
+namespace SavableObservable
 {
     public interface IObservableVariable
     {
@@ -10,10 +10,15 @@ namespace SavableObservable
         /// <param name="dataModel">The parent data model</param>
         void SetParentDataModel(BaseObservableDataModel dataModel);
 
+        /// <summary>
+        /// Forces the OnValueChanged event to fire. Useful for triggering updates
+        /// when values are modified directly in the editor or when explicit notification is needed.
+        /// </summary>
+        void ForceNotify();
+
 #if UNITY_EDITOR
         void OnBeginGui();
         void OnValidate();
-        void ForceNotify();
 #endif
     }
 }

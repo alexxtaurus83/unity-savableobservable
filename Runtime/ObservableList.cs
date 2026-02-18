@@ -140,11 +140,11 @@ namespace SavableObservable {
         /// Captures list snapshot before drawing editor controls.
         /// </summary>
         public void OnBeginGui() {
-            _editorGuiSnapshot = CopyToArray(_items);
+            _editorGuiSnapshot = _items.ToArray();
             _hasEditorGuiSnapshot = true;
 
             if (!_hasLastValidatedSnapshot) {
-                _lastValidatedSnapshot = CopyToArray(_items);
+                _lastValidatedSnapshot = _items.ToArray();
                 _hasLastValidatedSnapshot = true;
             }
         }
@@ -155,7 +155,7 @@ namespace SavableObservable {
         public void OnValidate() {
             var previous = _hasEditorGuiSnapshot
                 ? _editorGuiSnapshot
-                : (_hasLastValidatedSnapshot ? _lastValidatedSnapshot : CopyToArray(_items));
+                : (_hasLastValidatedSnapshot ? _lastValidatedSnapshot : _items.ToArray());
 
             _hasEditorGuiSnapshot = false;
 
@@ -176,15 +176,7 @@ namespace SavableObservable {
         }
 
         private void CapturePrevious() {
-            PreviousValue = CopyToArray(_items);
-        }
-
-        private T[] CopyToArray(List<T> list) {
-            var array = new T[list.Count];
-            for (int i = 0; i < list.Count; i++) {
-                array[i] = list[i];
-            }
-            return array;
+            PreviousValue = _items.ToArray();
         }
 
         private void NotifyChanged() {
