@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 #if UNITY_EDITOR
@@ -40,18 +39,36 @@ namespace SavableObservable {
 
             dataModel.EnsureFieldsInitialized();
 
-            var individualHandlers = obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null).ToList();
+            var individualHandlers = new List<MethodInfo>();
+            foreach (var method in obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                if (method.GetCustomAttribute<ObservableHandlerAttribute>() != null)
+                {
+                    individualHandlers.Add(method);
+                }
+            }
 
             // Get cached observable fields once to avoid repeated reflection calls
             var observableFields = dataModel.GetCachedObservableFields();
 
             // Look for individual handlers with attributes.
-            var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
+            var individualHandlerMap = new Dictionary<string, MethodInfo>();
+            foreach (var handler in individualHandlers)
+            {
+                var variableName = handler.GetCustomAttribute<ObservableHandlerAttribute>().VariableName;
+                individualHandlerMap[variableName] = handler;
+            }
 
             var autoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
             try {
-                var autoBindFields = obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null);
+                var autoBindFields = new List<FieldInfo>();
+                foreach (var field in obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (field.GetCustomAttribute<AutoBindAttribute>() != null)
+                    {
+                        autoBindFields.Add(field);
+                    }
+                }
 
                 foreach (var autoBindField in autoBindFields) {
                     var autoBind = autoBindField.GetCustomAttribute<AutoBindAttribute>();
@@ -138,10 +155,14 @@ namespace SavableObservable {
 
             List<FieldInfo> autoBindFields;
             try {
-                autoBindFields = obj.GetType()
-                    .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null)
-                    .ToList();
+                autoBindFields = new List<FieldInfo>();
+                foreach (var field in obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (field.GetCustomAttribute<AutoBindAttribute>() != null)
+                    {
+                        autoBindFields.Add(field);
+                    }
+                }
             } catch (Exception ex) {
                 Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
                 return;
@@ -151,7 +172,11 @@ namespace SavableObservable {
 
             Dictionary<string, FieldInfo> observableFields;
             try {
-                observableFields = GetCachedObservableFields(dataModel).ToDictionary(f => f.Name, f => f);
+                observableFields = new Dictionary<string, FieldInfo>();
+                foreach (var field in GetCachedObservableFields(dataModel))
+                {
+                    observableFields[field.Name] = field;
+                }
             } catch (Exception ex) {
                 Debug.LogError($"[SavableObservable] Failed to discover ObservableVariable fields on {dataModel.GetType().Name}: {ex.Message}", monoBehaviour);
                 return;
@@ -308,10 +333,15 @@ namespace SavableObservable {
             var instanceData = _instanceData.GetOrCreateValue(dataModel);
             lock (instanceData.Lock) {
                 if (instanceData.CachedObservableFields == null) {
-                    instanceData.CachedObservableFields = dataModel.GetType()
-                        .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                        .Where(f => IsSupportedFieldType(f))
-                        .ToArray();
+                    var supportedFields = new List<FieldInfo>();
+                    foreach (var field in dataModel.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        if (IsSupportedFieldType(field))
+                        {
+                            supportedFields.Add(field);
+                        }
+                    }
+                    instanceData.CachedObservableFields = supportedFields.ToArray();
                 }
 
                 return instanceData.CachedObservableFields;
@@ -434,9 +464,14 @@ namespace SavableObservable {
                 try {
                     // Snapshot subscriptions to avoid collection mutation while trackedAction.Remove()
                     // triggers UnregisterSubscription internally.
-                    var subscriptionsSnapshot = instanceData.Subscriptions.Values
-                        .SelectMany(x => x)
-                        .ToList();
+                    var subscriptionsSnapshot = new List<Delegate>();
+                    foreach (var subscriptionList in instanceData.Subscriptions.Values)
+                    {
+                        foreach (var subscription in subscriptionList)
+                        {
+                            subscriptionsSnapshot.Add(subscription);
+                        }
+                    }
 
                     // Clean up tracked subscriptions by iterating through each observable variable once
                     var observableFields = GetCachedObservableFields(dataModel);

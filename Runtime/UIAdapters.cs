@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
@@ -75,7 +74,14 @@ namespace SavableObservable
 
             lock (_lock)
             {
-                return _adapters.FirstOrDefault(adapter => adapter.CanHandle(uiComponentType));
+                foreach (var adapter in _adapters)
+                {
+                    if (adapter.CanHandle(uiComponentType))
+                    {
+                        return adapter;
+                    }
+                }
+                return null;
             }
         }
 
