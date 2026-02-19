@@ -174,9 +174,9 @@ namespace SavableObservable {
             var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
-            // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
-            // Calling SetAutoBindListeners() multiple times will not duplicate Model→UI subscriptions.
-            RemoveAllSubscriptions(dataModel, obj);
+            // Note: Idempotent cleanup is performed at the SetListeners() entry point.
+            // SetAutoBindListeners() is called from SetListeners() and should not perform
+            // its own cleanup to avoid double-removal of handlers added by [ObservableHandler] methods.
 
             List<FieldInfo> autoBindFields;
             try {

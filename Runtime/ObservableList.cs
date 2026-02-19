@@ -164,7 +164,7 @@ namespace SavableObservable {
                 NotifyChanged();
             }
 
-            _lastValidatedSnapshot = CopyToArray(_items);
+            _lastValidatedSnapshot = _items.ToArray();
             _hasLastValidatedSnapshot = true;
         }
 #endif

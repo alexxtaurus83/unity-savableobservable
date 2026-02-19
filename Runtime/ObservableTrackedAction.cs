@@ -75,16 +75,17 @@ namespace SavableObservable {
         public void Invoke(T variable) {
             AssertMainThread();
 
+            // Re-entrant call: mark pending and return; outer loop will re-invoke
+            if (_isInvoking) {
+                _pending = true;
+                return;
+            }
+
             const int maxIterations = 32;
             int iterations = 0;
 
-            while (_isInvoking || _pending) {
-                if (_isInvoking) {
-                    // Re-entrant call: mark pending and return; outer loop will re-invoke
-                    _pending = true;
-                    return;
-                }
-
+            // Ensure at least one invocation pass runs; repeat if re-entrant calls set _pending
+            do {
                 // Clear pending before starting this pass
                 _pending = false;
 
@@ -112,7 +113,7 @@ namespace SavableObservable {
                     UnityEngine.Debug.LogError($"ObservableTrackedAction.Invoke exceeded maxIterations ({maxIterations}); stopping to prevent infinite loop.");
                     break;
                 }
-            }
+            } while (_pending);
         }
 
         /// <summary>
