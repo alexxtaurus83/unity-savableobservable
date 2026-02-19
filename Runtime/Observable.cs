@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 #if UNITY_EDITOR
@@ -25,6 +24,23 @@ namespace SavableObservable {
             public FieldInfo[] CachedObservableFields { get; set; }
             public readonly object Lock = new object(); // For thread safety
             public bool IsInCleanup { get; set; }
+
+            // Fix A: Track UI→Model listener tokens so they can be removed during cleanup.
+            // Key: subscriber object (e.g., presenter/Logic), Value: list of (uiComponent, token) pairs.
+            // Using WeakReference for uiComponent to avoid preventing GC of destroyed Unity objects.
+            public Dictionary<object, List<UiListenerToken>> UiListenerTokens { get; } = new Dictionary<object, List<UiListenerToken>>();
+        }
+
+        // Helper struct to store UI listener token information
+        // Stored per subscriber to enable deterministic cleanup of UI→Model bindings
+        private struct UiListenerToken {
+            public UnityEngine.Object UiComponent; // Unity object reference (weak reference not needed for UnityEngine.Object)
+            public object Token; // Opaque token returned by IUIAdapter.AddListener()
+
+            public UiListenerToken(UnityEngine.Object uiComponent, object token) {
+                UiComponent = uiComponent;
+                Token = token;
+            }
         }
 
 
@@ -38,20 +54,42 @@ namespace SavableObservable {
             var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
+            // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
+            // Calling SetListeners() multiple times will not duplicate Model→UI subscriptions.
+            RemoveAllSubscriptions(dataModel, obj);
+
             dataModel.EnsureFieldsInitialized();
 
-            var individualHandlers = obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).Where(m => m.GetCustomAttribute<ObservableHandlerAttribute>() != null).ToList();
+            var individualHandlers = new List<MethodInfo>();
+            foreach (var method in obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                if (method.GetCustomAttribute<ObservableHandlerAttribute>() != null)
+                {
+                    individualHandlers.Add(method);
+                }
+            }
 
             // Get cached observable fields once to avoid repeated reflection calls
             var observableFields = dataModel.GetCachedObservableFields();
 
             // Look for individual handlers with attributes.
-            var individualHandlerMap = individualHandlers.ToDictionary(x => x.GetCustomAttribute<ObservableHandlerAttribute>().VariableName, x => x);
+            var individualHandlerMap = new Dictionary<string, MethodInfo>();
+            foreach (var handler in individualHandlers)
+            {
+                var variableName = handler.GetCustomAttribute<ObservableHandlerAttribute>().VariableName;
+                individualHandlerMap[variableName] = handler;
+            }
 
             var autoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
             try {
-                var autoBindFields = obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null);
+                var autoBindFields = new List<FieldInfo>();
+                foreach (var field in obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (field.GetCustomAttribute<AutoBindAttribute>() != null)
+                    {
+                        autoBindFields.Add(field);
+                    }
+                }
 
                 foreach (var autoBindField in autoBindFields) {
                     var autoBind = autoBindField.GetCustomAttribute<AutoBindAttribute>();
@@ -136,12 +174,20 @@ namespace SavableObservable {
             var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
             if (dataModel == null) return;
 
+            // Note: Idempotent cleanup is performed at the SetListeners() entry point.
+            // SetAutoBindListeners() is called from SetListeners() and should not perform
+            // its own cleanup to avoid double-removal of handlers added by [ObservableHandler] methods.
+
             List<FieldInfo> autoBindFields;
             try {
-                autoBindFields = obj.GetType()
-                    .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .Where(f => f.GetCustomAttribute<AutoBindAttribute>() != null)
-                    .ToList();
+                autoBindFields = new List<FieldInfo>();
+                foreach (var field in obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (field.GetCustomAttribute<AutoBindAttribute>() != null)
+                    {
+                        autoBindFields.Add(field);
+                    }
+                }
             } catch (Exception ex) {
                 Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
                 return;
@@ -151,7 +197,11 @@ namespace SavableObservable {
 
             Dictionary<string, FieldInfo> observableFields;
             try {
-                observableFields = GetCachedObservableFields(dataModel).ToDictionary(f => f.Name, f => f);
+                observableFields = new Dictionary<string, FieldInfo>();
+                foreach (var field in GetCachedObservableFields(dataModel))
+                {
+                    observableFields[field.Name] = field;
+                }
             } catch (Exception ex) {
                 Debug.LogError($"[SavableObservable] Failed to discover ObservableVariable fields on {dataModel.GetType().Name}: {ex.Message}", monoBehaviour);
                 return;
@@ -237,7 +287,19 @@ namespace SavableObservable {
                     // Register the listener via the adapter
                     var genericArgs = observableField.FieldType.GetGenericArguments();
                     var valueType = genericArgs.Length > 0 ? genericArgs[0] : typeof(object);
-                    adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+                    object token = adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+
+                    // Fix A: Store the UI listener token for later cleanup.
+                    // Key by subscriber (obj) so we can remove all UI listeners when cleanup is needed.
+                    if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
+                        var instanceData = _instanceData.GetOrCreateValue(dataModel);
+                        lock (instanceData.Lock) {
+                            if (!instanceData.UiListenerTokens.ContainsKey(obj)) {
+                                instanceData.UiListenerTokens[obj] = new List<UiListenerToken>();
+                            }
+                            instanceData.UiListenerTokens[obj].Add(new UiListenerToken(unityUiComponent, token));
+                        }
+                    }
                 }
             } catch (Exception ex) {
                 Debug.LogWarning($"[SavableObservable] Failed to setup two-way binding for '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
@@ -308,10 +370,15 @@ namespace SavableObservable {
             var instanceData = _instanceData.GetOrCreateValue(dataModel);
             lock (instanceData.Lock) {
                 if (instanceData.CachedObservableFields == null) {
-                    instanceData.CachedObservableFields = dataModel.GetType()
-                        .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                        .Where(f => IsSupportedFieldType(f))
-                        .ToArray();
+                    var supportedFields = new List<FieldInfo>();
+                    foreach (var field in dataModel.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        if (IsSupportedFieldType(field))
+                        {
+                            supportedFields.Add(field);
+                        }
+                    }
+                    instanceData.CachedObservableFields = supportedFields.ToArray();
                 }
 
                 return instanceData.CachedObservableFields;
@@ -420,6 +487,9 @@ namespace SavableObservable {
             lock (instanceData.Lock) {
                 RemoveSubscriptionsForSubscriber(dataModel, subscriber);
                 instanceData.Subscriptions.Remove(subscriber);
+
+                // Fix A: Also remove UI→Model listener tokens for this subscriber.
+                RemoveUiListenersForSubscriber(dataModel, subscriber, instanceData);
             }
         }
 
@@ -434,9 +504,14 @@ namespace SavableObservable {
                 try {
                     // Snapshot subscriptions to avoid collection mutation while trackedAction.Remove()
                     // triggers UnregisterSubscription internally.
-                    var subscriptionsSnapshot = instanceData.Subscriptions.Values
-                        .SelectMany(x => x)
-                        .ToList();
+                    var subscriptionsSnapshot = new List<Delegate>();
+                    foreach (var subscriptionList in instanceData.Subscriptions.Values)
+                    {
+                        foreach (var subscription in subscriptionList)
+                        {
+                            subscriptionsSnapshot.Add(subscription);
+                        }
+                    }
 
                     // Clean up tracked subscriptions by iterating through each observable variable once
                     var observableFields = GetCachedObservableFields(dataModel);
@@ -464,10 +539,48 @@ namespace SavableObservable {
                         }
                     }
                     instanceData.Subscriptions.Clear();
+
+                    // Fix A: Clean up all UI→Model listener tokens for all subscribers.
+                    foreach (var kvp in instanceData.UiListenerTokens) {
+                        RemoveUiListenersForSubscriber(dataModel, kvp.Key, instanceData);
+                    }
+                    instanceData.UiListenerTokens.Clear();
                 } finally {
                     instanceData.IsInCleanup = false;
                 }
             }
+        }
+
+        /// <summary>
+        /// Helper method to remove UI listener tokens for a specific subscriber.
+        /// Called by RemoveAllSubscriptions and CleanupSubscriptions.
+        /// </summary>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object</param>
+        /// <param name="instanceData">The instance data (already locked)</param>
+        private static void RemoveUiListenersForSubscriber(BaseObservableDataModel dataModel, object subscriber, InstanceData instanceData) {
+            if (!instanceData.UiListenerTokens.ContainsKey(subscriber)) {
+                return;
+            }
+
+            var tokens = instanceData.UiListenerTokens[subscriber];
+            foreach (var uiToken in tokens) {
+                // Skip if UI component was destroyed (Unity object null check handles destroyed objects gracefully)
+                if (uiToken.UiComponent == null) {
+                    continue;
+                }
+
+                // Get the adapter for this UI component type
+                var adapter = UIAdapterRegistry.GetAdapter(uiToken.UiComponent.GetType());
+                if (adapter != null && uiToken.Token != null) {
+                    try {
+                        adapter.RemoveListener(uiToken.UiComponent, uiToken.Token);
+                    } catch (Exception ex) {
+                        Debug.LogWarning($"[SavableObservable] Failed to remove UI listener token during cleanup: {ex.Message}");
+                    }
+                }
+            }
+            tokens.Clear();
         }
     }
 }

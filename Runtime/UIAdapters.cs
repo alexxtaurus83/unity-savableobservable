@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
@@ -48,6 +47,14 @@ namespace SavableObservable
         private static readonly List<IUIAdapter> _adapters = new List<IUIAdapter>();
         private static readonly object _lock = new object();
         private static bool _initialized;
+        
+        // Immutable snapshot of adapters for lock-free iteration after initialization
+        private static IUIAdapter[] _adaptersSnapshot;
+        
+        // Cache mapping Type -> IUIAdapter for O(1) lookups after first call
+        // Null adapters are cached separately to avoid repeated failed lookups
+        private static readonly Dictionary<Type, IUIAdapter> _adapterCache = new Dictionary<Type, IUIAdapter>();
+        private static readonly HashSet<Type> _negativeCache = new HashSet<Type>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Initialize()
@@ -65,6 +72,11 @@ namespace SavableObservable
 
                 _adapters.Add(adapter);
                 _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
+                
+                // Invalidate snapshot and caches when adapters are modified
+                _adaptersSnapshot = null;
+                _adapterCache.Clear();
+                _negativeCache.Clear();
             }
         }
 
@@ -73,10 +85,48 @@ namespace SavableObservable
             EnsureInitialized();
             if (uiComponentType == null) return null;
 
+            // Check cache first (lock-free after initialization)
             lock (_lock)
             {
-                return _adapters.FirstOrDefault(adapter => adapter.CanHandle(uiComponentType));
+                if (_adapterCache.TryGetValue(uiComponentType, out var cachedAdapter))
+                {
+                    return cachedAdapter;
+                }
+                if (_negativeCache.Contains(uiComponentType))
+                {
+                    return null;
+                }
             }
+
+            // Iterate over immutable snapshot without locking
+            IUIAdapter foundAdapter = null;
+            var snapshot = _adaptersSnapshot;
+            if (snapshot != null)
+            {
+                foreach (var adapter in snapshot)
+                {
+                    if (adapter.CanHandle(uiComponentType))
+                    {
+                        foundAdapter = adapter;
+                        break;
+                    }
+                }
+            }
+
+            // Cache the result (positive or negative)
+            lock (_lock)
+            {
+                if (foundAdapter != null)
+                {
+                    _adapterCache[uiComponentType] = foundAdapter;
+                }
+                else
+                {
+                    _negativeCache.Add(uiComponentType);
+                }
+            }
+
+            return foundAdapter;
         }
 
         private static void EnsureInitialized()
@@ -89,11 +139,14 @@ namespace SavableObservable
 
                 RegisterAdapter(new TMPInputFieldAdapter());
                 RegisterAdapter(new TextMeshProAdapter());
+                RegisterAdapter(new InputFieldAdapter());
                 RegisterAdapter(new UnityTextAdapter());
                 RegisterAdapter(new ToggleAdapter());
                 RegisterAdapter(new ButtonTextAdapter());
                 RegisterAdapter(new ImageAdapter());
 
+                // Build immutable snapshot after all adapters are registered
+                _adaptersSnapshot = _adapters.ToArray();
                 _initialized = true;
             }
         }
@@ -160,6 +213,66 @@ namespace SavableObservable
     }
 
     /// <summary>
+    /// Adapter for legacy UGUI InputField components.
+    /// </summary>
+    public class InputFieldAdapter : IUIAdapter
+    {
+        public int Priority => 110; // Higher priority than UnityTextAdapter
+
+        public bool CanHandle(Type uiComponentType)
+        {
+            return typeof(InputField).IsAssignableFrom(uiComponentType);
+        }
+
+        public void SetValue(object uiComponent, object value, Type valueType)
+        {
+            if (uiComponent is InputField inputField)
+            {
+                string stringValue = value?.ToString() ?? string.Empty;
+                if (inputField.text != stringValue)
+                {
+                    inputField.text = stringValue;
+                }
+            }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
+        {
+            if (uiComponent is InputField inputField)
+            {
+                UnityAction<string> listener = val =>
+                {
+                    try
+                    {
+                        object convertedValue = val;
+                        if (valueType != typeof(string))
+                        {
+                            if (string.IsNullOrEmpty(val)) return;
+                            convertedValue = Convert.ChangeType(val, valueType);
+                        }
+                        onValueChanged(convertedValue);
+                    }
+                    catch
+                    {
+                        // Conversion failed, ignore update
+                    }
+                };
+                inputField.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is InputField inputField && token is UnityAction<string> listener)
+            {
+                inputField.onValueChanged.RemoveListener(listener);
+            }
+        }
+    }
+
+    /// <summary>
     /// Adapter for TextMeshProUGUI components.
     /// Converts any value to string via ToString().
     /// </summary>
@@ -213,38 +326,13 @@ namespace SavableObservable
 
         public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
-            // Text is a display component. InputField is interactive.
-            if (uiComponent is InputField inputField)
-            {
-                UnityAction<string> listener = val =>
-                {
-                    try
-                    {
-                        object convertedValue = val;
-                        if (valueType != typeof(string))
-                        {
-                            if (string.IsNullOrEmpty(val)) return;
-                            convertedValue = Convert.ChangeType(val, valueType);
-                        }
-                        onValueChanged(convertedValue);
-                    }
-                    catch
-                    {
-                        // Conversion failed, ignore update
-                    }
-                };
-                inputField.onValueChanged.AddListener(listener);
-                return listener;
-            }
+            // Text is a display-only component; it does not emit value change events.
             return null;
         }
 
         public void RemoveListener(object uiComponent, object token)
         {
-            if (uiComponent is InputField inputField && token is UnityAction<string> listener)
-            {
-                inputField.onValueChanged.RemoveListener(listener);
-            }
+            // Text is a display-only component; no listeners to remove.
         }
     }
 
