@@ -26,7 +26,13 @@ namespace SavableObservable
         /// Sets the value on the UI component.
         /// </summary>
         void SetValue(object uiComponent, object value, Type valueType);
+    }
 
+    /// <summary>
+    /// Extended interface for UI adapters that support listening to value changes.
+    /// </summary>
+    public interface IUIListenerAdapter : IUIAdapter
+    {
         /// <summary>
         /// Adds a listener to the UI component to track changes.
         /// </summary>
@@ -150,12 +156,24 @@ namespace SavableObservable
                 _initialized = true;
             }
         }
+
+        /// <summary>
+        /// Tries to get a listener adapter for the specified UI component type.
+        /// </summary>
+        /// <param name="uiComponentType">The type of UI component.</param>
+        /// <param name="listenerAdapter">The listener adapter if found; otherwise, null.</param>
+        /// <returns>True if a listener adapter was found; otherwise, false.</returns>
+        public static bool TryGetListenerAdapter(Type uiComponentType, out IUIListenerAdapter listenerAdapter)
+        {
+            listenerAdapter = GetAdapter(uiComponentType) as IUIListenerAdapter;
+            return listenerAdapter != null;
+        }
     }
 
     /// <summary>
     /// Adapter for TMP_InputField components.
     /// </summary>
-    public class TMPInputFieldAdapter : IUIAdapter
+    public class TMPInputFieldAdapter : IUIListenerAdapter
     {
         public int Priority => 110; // Higher priority than TextMeshProAdapter
 
@@ -215,7 +233,7 @@ namespace SavableObservable
     /// <summary>
     /// Adapter for legacy UGUI InputField components.
     /// </summary>
-    public class InputFieldAdapter : IUIAdapter
+    public class InputFieldAdapter : IUIListenerAdapter
     {
         public int Priority => 110; // Higher priority than UnityTextAdapter
 
@@ -292,16 +310,6 @@ namespace SavableObservable
                 textComponent.text = value?.ToString() ?? string.Empty;
             }
         }
-
-        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
-        {
-            // TMP_Text does not have an onValueChanged event for editing, it's a display component.
-            return null;
-        }
-
-        public void RemoveListener(object uiComponent, object token)
-        {
-        }
     }
 
     /// <summary>
@@ -323,23 +331,12 @@ namespace SavableObservable
                 textComponent.text = value?.ToString() ?? string.Empty;
             }
         }
-
-        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
-        {
-            // Text is a display-only component; it does not emit value change events.
-            return null;
-        }
-
-        public void RemoveListener(object uiComponent, object token)
-        {
-            // Text is a display-only component; no listeners to remove.
-        }
     }
 
     /// <summary>
     /// Adapter for Toggle components. Handles boolean values.
     /// </summary>
-    public class ToggleAdapter : IUIAdapter
+    public class ToggleAdapter : IUIListenerAdapter
     {
         public int Priority => 100;
 
@@ -419,18 +416,6 @@ namespace SavableObservable
                 }
             }
         }
-
-        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
-        {
-            // Buttons trigger actions, they don't usually hold data values in this context.
-            // But if we wanted to bind button click to something, we could.
-            // For now, no two-way binding for simple buttons as value holders.
-            return null;
-        }
-
-        public void RemoveListener(object uiComponent, object token)
-        {
-        }
     }
 
     /// <summary>
@@ -462,16 +447,6 @@ namespace SavableObservable
                     Debug.LogWarning($"ImageAdapter: Expected Sprite value for Image binding, but got {value.GetType().Name}.");
                 }
             }
-        }
-
-        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
-        {
-            // Images are display components.
-            return null;
-        }
-
-        public void RemoveListener(object uiComponent, object token)
-        {
         }
     }
 }
