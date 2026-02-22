@@ -233,10 +233,54 @@ public class GamePresenter : BaseObservablePresenter<GameDataModel> {
 
 **Custom Adapters:**
 
-You can register custom UI adapters for your own component types by implementing `IUIAdapter`. This interface now supports two-way binding via `AddListener` and `RemoveListener`.
+The framework provides two interfaces for UI adapters, following the Interface Segregation Principle:
+
+| Interface | Purpose | Methods |
+|-----------|---------|---------|
+| [`IUIAdapter`](Runtime/UIAdapters.cs:13) | Display-only / Model→UI only | `CanHandle(Type)`, `Priority`, `SetValue(object, object, Type)` |
+| [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) | Interactive / Two-way binding | Extends `IUIAdapter` + `AddListener(object, Action<object>, Type)`, `RemoveListener(object, object)` |
+
+### How to Create Custom UI Adapters
+
+#### Display-Only Adapters (Model→UI)
+
+Use [`IUIAdapter`](Runtime/UIAdapters.cs:13) for components that only display data and don't need to propagate user input back to the model:
 
 ```csharp
-public class SliderAdapter : IUIAdapter {
+using System;
+using UnityEngine;
+using SavableObservable;
+
+// Display-only adapter for a progress bar
+public class ProgressBarAdapter : IUIAdapter {
+    public int Priority => 100;
+
+    public bool CanHandle(Type uiComponentType) {
+        return typeof(ProgressBar).IsAssignableFrom(uiComponentType);
+    }
+
+    public void SetValue(object uiComponent, object value, Type valueType) {
+        if (uiComponent is ProgressBar progressBar) {
+            if (value is float floatValue) {
+                progressBar.fillAmount = floatValue;
+            }
+        }
+    }
+}
+```
+
+#### Interactive Adapters (Two-Way Binding)
+
+Use [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) for components that need to propagate user input back to the model:
+
+```csharp
+using System;
+using UnityEngine;
+using UnityEngine.UI;
+using SavableObservable;
+
+// Interactive adapter for Slider - supports two-way binding
+public class SliderAdapter : IUIListenerAdapter {
     public int Priority => 100;
 
     public bool CanHandle(Type uiComponentType) {
@@ -252,20 +296,52 @@ public class SliderAdapter : IUIAdapter {
         }
     }
 
-    // Implement two-way binding
-    public void AddListener(object uiComponent, Action<object> onValueChanged, Type valueType) {
+    // Returns an opaque token used for listener removal
+    public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType) {
         if (uiComponent is Slider slider) {
-            slider.onValueChanged.AddListener(val => onValueChanged(val));
+            UnityAction<float> listener = val => onValueChanged(val);
+            slider.onValueChanged.AddListener(listener);
+            return listener; // Return the listener as the token
         }
+        return null;
     }
 
     public void RemoveListener(object uiComponent, object token) {
-        if (uiComponent is Slider slider) {
-            // Cleanup logic if needed, typically handled by Unity's event system
+        if (uiComponent is Slider slider && token is UnityAction<float> listener) {
+            slider.onValueChanged.RemoveListener(listener);
         }
     }
 }
 ```
+
+#### Registering Custom Adapters
+
+Register your adapters at runtime using [`UIAdapterRegistry.RegisterAdapter()`](Runtime/UIAdapters.cs:71):
+
+```csharp
+using SavableObservable;
+
+public class AdapterSetup : MonoBehaviour {
+    void Awake() {
+        UIAdapterRegistry.RegisterAdapter(new SliderAdapter());
+        UIAdapterRegistry.RegisterAdapter(new ProgressBarAdapter());
+    }
+}
+```
+
+#### Adapter Lookup
+
+The registry provides two methods for adapter lookup:
+
+- [`UIAdapterRegistry.GetAdapter(Type)`](Runtime/UIAdapters.cs:89) — Returns an [`IUIAdapter`](Runtime/UIAdapters.cs:13) for the given UI component type, or `null` if none found.
+- [`UIAdapterRegistry.TryGetListenerAdapter(Type, out IUIListenerAdapter)`](Runtime/UIAdapters.cs:166) — Returns `true` and provides an [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) if the adapter supports two-way binding. Use this when you need to check if an adapter can propagate user input back to the model.
+
+#### Migration Note
+
+If you have existing custom adapters from a previous version:
+
+1. **Display-only adapters**: Remove any no-op `AddListener`/`RemoveListener` implementations and implement only [`IUIAdapter`](Runtime/UIAdapters.cs:13).
+2. **Interactive adapters**: Move listener methods into the [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) interface implementation. The `AddListener` method now returns an opaque token (instead of `void`) for proper listener cleanup.
 
 #### Approach 2: ObservableHandler (For Custom Logic)
 

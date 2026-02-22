@@ -4,11 +4,6 @@ using System.Reflection;
 using UnityEngine;
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
-#if UNITY_EDITOR
-using UnityEditor;
-using System.Text.RegularExpressions;
-using System.Collections;
-#endif
 
 namespace SavableObservable {
 
@@ -271,33 +266,37 @@ namespace SavableObservable {
             try {
                 var currentUiComponent = uiField.GetValue(obj);
                 if (currentUiComponent != null) {
-                    // Create a callback that updates the ObservableVariable
-                    Action<object> uiToModelHandler = (newValue) => {
-                        try {
-                            // Reflection: observableVar.Value = newValue
-                            var valueProp = observableField.FieldType.GetProperty("Value");
-                            if (valueProp != null && valueProp.CanWrite) {
-                                valueProp.SetValue(observableVar, newValue);
-                            }
-                        } catch (Exception ex) {
-                            Debug.LogError($"[SavableObservable] Failed to update Observable '{observableField.Name}' from UI: {ex.Message}", obj as MonoBehaviour);
-                        }
-                    };
-
-                    // Register the listener via the adapter
+                    // Register the listener via the adapter (only if it supports listening)
                     var genericArgs = observableField.FieldType.GetGenericArguments();
                     var valueType = genericArgs.Length > 0 ? genericArgs[0] : typeof(object);
-                    object token = adapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
-
-                    // Fix A: Store the UI listener token for later cleanup.
-                    // Key by subscriber (obj) so we can remove all UI listeners when cleanup is needed.
-                    if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
-                        var instanceData = _instanceData.GetOrCreateValue(dataModel);
-                        lock (instanceData.Lock) {
-                            if (!instanceData.UiListenerTokens.ContainsKey(obj)) {
-                                instanceData.UiListenerTokens[obj] = new List<UiListenerToken>();
+                    
+                    // Use IUIListenerAdapter for two-way binding (only interactive components support this)
+                    if (UIAdapterRegistry.TryGetListenerAdapter(currentUiComponent.GetType(), out var listenerAdapter)) {
+                        // Create a callback that updates the ObservableVariable
+                        Action<object> uiToModelHandler = (newValue) => {
+                            try {
+                                // Reflection: observableVar.Value = newValue
+                                var valueProp = observableField.FieldType.GetProperty("Value");
+                                if (valueProp != null && valueProp.CanWrite) {
+                                    valueProp.SetValue(observableVar, newValue);
+                                }
+                            } catch (Exception ex) {
+                                Debug.LogError($"[SavableObservable] Failed to update Observable '{observableField.Name}' from UI: {ex.Message}", obj as MonoBehaviour);
                             }
-                            instanceData.UiListenerTokens[obj].Add(new UiListenerToken(unityUiComponent, token));
+                        };
+
+                        object token = listenerAdapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+
+                        // Fix A: Store the UI listener token for later cleanup.
+                        // Key by subscriber (obj) so we can remove all UI listeners when cleanup is needed.
+                        if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
+                            var instanceData = _instanceData.GetOrCreateValue(dataModel);
+                            lock (instanceData.Lock) {
+                                if (!instanceData.UiListenerTokens.ContainsKey(obj)) {
+                                    instanceData.UiListenerTokens[obj] = new List<UiListenerToken>();
+                                }
+                                instanceData.UiListenerTokens[obj].Add(new UiListenerToken(unityUiComponent, token));
+                            }
                         }
                     }
                 }
@@ -570,11 +569,10 @@ namespace SavableObservable {
                     continue;
                 }
 
-                // Get the adapter for this UI component type
-                var adapter = UIAdapterRegistry.GetAdapter(uiToken.UiComponent.GetType());
-                if (adapter != null && uiToken.Token != null) {
+                // Get the listener adapter for this UI component type
+                if (uiToken.Token != null && UIAdapterRegistry.TryGetListenerAdapter(uiToken.UiComponent.GetType(), out var listenerAdapter)) {
                     try {
-                        adapter.RemoveListener(uiToken.UiComponent, uiToken.Token);
+                        listenerAdapter.RemoveListener(uiToken.UiComponent, uiToken.Token);
                     } catch (Exception ex) {
                         Debug.LogWarning($"[SavableObservable] Failed to remove UI listener token during cleanup: {ex.Message}");
                     }
