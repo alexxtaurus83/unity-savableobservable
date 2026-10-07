@@ -716,8 +716,10 @@ private void InitSingletones() {
             // 4. Try to add the service to the central registry.
             if (Services.Add(service) != null) { 
                 
-                // 5. If successful, integrate with the MMVC framework by setting up listeners.
-                SavableObservable.Observable.SetListeners(service);
+                // 5. If successful and the service is an observable presenter, set up listeners.
+                if (service is SavableObservable.IObservablePresenter presenter) {
+                    SavableObservable.Observable.SetListeners(service, presenter.GetObservableModel());
+                }
             } else {
                 // 6. If a service of this type is already registered, enforce the Singleton pattern by quitting.
                 Debug.Log($"You have more than 1 instance of {service.GetType()} with {Type.GetType(typeof(ISharedSingleton).FullName)} interface.");
@@ -787,7 +789,8 @@ By combining the `ISharedSingleton` interface with a `Services` locator and an i
 
 * **Decoupled Components**: Individual components don't need hard references to managers.
 * **Centralized Access**: You have a single, reliable point of access (`Services.Get<T>()`) for all global systems.
-* **Reactive Singletons**: Because `SetListeners` is called on registered services, your global managers can fully participate in the reactive data-binding of the MMVC framework.
+* **Reactive Singletons**: Observable presenters implementing `IObservablePresenter` (or extending `BaseObservablePresenter<M>`) can be bound cleanly using `Observable.SetListeners(subscriber, model)`.
+* **One Model per GameObject**: Each presenter should correspond to exactly one data model on its GameObject. Do not place multiple `BaseObservableDataModel` components on the same GameObject; pass the model explicitly via `Observable.SetListeners(subscriber, model)` when binding presenters.
 
 ---
 
