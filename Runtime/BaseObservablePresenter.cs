@@ -3,7 +3,11 @@
 namespace SavableObservable {
 
     [DisallowMultipleComponent]
-    public abstract class BaseObservablePresenter<M> : BasePresenter<M> {
+    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter {
+
+        public BaseObservableDataModel GetObservableModel() {
+            return GetModel() as BaseObservableDataModel;
+        }
 
         /*protected virtual void Start() {
             if (!Observable.AreListenersInitialized(this)) {

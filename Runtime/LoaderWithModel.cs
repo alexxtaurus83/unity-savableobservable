@@ -42,7 +42,7 @@ namespace SavableObservable {
             
             // Set up listeners AFTER model state is loaded to prevent notifications during load.
             var presenter = GetComponent<BaseObservablePresenter<M>>();
-            if (presenter != null) { Observable.SetListeners(presenter); }
+            if (presenter != null) { Observable.SetListeners(presenter, GetModel() as BaseObservableDataModel); }
         }
     }
 }
