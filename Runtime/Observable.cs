@@ -47,24 +47,10 @@ namespace SavableObservable {
                 return;
             }
 
-            BaseObservableDataModel dataModel = null;
-            if (obj is IObservablePresenter presenter) {
-                dataModel = presenter.GetObservableModel();
-            }
-
-            if (dataModel == null) {
-                var models = monoBehaviour.GetComponents<BaseObservableDataModel>();
-                if (models.Length > 1) {
-                    Debug.LogWarning($"[SavableObservable] GameObject '{monoBehaviour.gameObject.name}' has multiple BaseObservableDataModel components ({models.Length}). Ambiguous model resolution for {obj.GetType().Name}.", monoBehaviour);
-                }
-                if (models.Length > 0) {
-                    dataModel = models[0];
-                }
-            }
-
+            var dataModel = ResolveModel(monoBehaviour, obj);
             if (dataModel == null) return;
 
-            SetListeners(obj, dataModel);
+            SetListenersCore(monoBehaviour, obj, dataModel);
         }
 
         public static void SetListeners(object subscriber, BaseObservableDataModel model) {
@@ -78,6 +64,15 @@ namespace SavableObservable {
                 return;
             }
 
+            if (!ValidateSameGameObject(monoBehaviour, model, nameof(SetListeners))) {
+                return;
+            }
+
+            ValidateSingleMmvc(monoBehaviour, model);
+            SetListenersCore(monoBehaviour, subscriber, model);
+        }
+
+        private static void SetListenersCore(MonoBehaviour monoBehaviour, object subscriber, BaseObservableDataModel model) {
             // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
             // Calling SetListeners() multiple times will not duplicate Model→UI subscriptions.
             RemoveAllSubscriptions(model, subscriber);
@@ -135,7 +130,58 @@ namespace SavableObservable {
                 }
             }
 
-            SetAutoBindListeners(subscriber, model);
+            SetAutoBindListenersCore(monoBehaviour, subscriber, model);
+        }
+
+        private static BaseObservableDataModel ResolveModel(MonoBehaviour mb, object subscriber) {
+            BaseObservableDataModel dataModel = null;
+            if (subscriber is IObservablePresenter presenter) {
+                dataModel = presenter.GetObservableModel();
+            }
+
+            if (dataModel == null) {
+                var models = mb.GetComponents<BaseObservableDataModel>();
+                if (models.Length > 0) {
+                    dataModel = models[0];
+                }
+            }
+
+            ValidateSingleMmvc(mb, dataModel);
+            return dataModel;
+        }
+
+        private static void ValidateSingleMmvc(MonoBehaviour mb, BaseObservableDataModel chosenModel = null) {
+            var models = mb.GetComponents<BaseObservableDataModel>();
+            if (models.Length > 1) {
+                var modelTypeNames = string.Join(", ", Array.ConvertAll(models, m => m.GetType().Name));
+                var chosenName = chosenModel != null ? chosenModel.GetType().Name : (models.Length > 0 ? models[0].GetType().Name : "none");
+                Debug.LogError(
+                    $"[SavableObservable] GameObject '{mb.gameObject.name}' has multiple {nameof(BaseObservableDataModel)} components ({modelTypeNames}). " +
+                    $"Rule: One GameObject = one MMVC unit (one model, at most one logic, at most one presenter). " +
+                    $"Binding to '{chosenName}'.",
+                    mb);
+            }
+
+            var presenters = mb.GetComponents<IObservablePresenter>();
+            if (presenters.Length > 1) {
+                var presenterTypeNames = string.Join(", ", Array.ConvertAll(presenters, p => p.GetType().Name));
+                Debug.LogError(
+                    $"[SavableObservable] GameObject '{mb.gameObject.name}' has multiple {nameof(IObservablePresenter)} components ({presenterTypeNames}). " +
+                    $"Rule: One GameObject = one MMVC unit (one model, at most one logic, at most one presenter).",
+                    mb);
+            }
+        }
+
+        private static bool ValidateSameGameObject(MonoBehaviour mb, BaseObservableDataModel model, string api) {
+            if (model.gameObject != mb.gameObject) {
+                Debug.LogError(
+                    $"[SavableObservable] Cross-GameObject binding rejected in {api}: subscriber '{mb.GetType().Name}' is on GameObject '{mb.gameObject.name}', " +
+                    $"but model '{model.GetType().Name}' is on GameObject '{model.gameObject.name}'. " +
+                    $"Rule: One GameObject = one MMVC unit. To access another unit's model, get its presenter and call presenter.GetModel() or subscribe to individual events manually.",
+                    mb);
+                return false;
+            }
+            return true;
         }
 
         private static void SubscribeIndividualHandler(object obj, MethodInfo handlerMethod, FieldInfo field, BaseObservableDataModel dataModel) {
@@ -195,24 +241,10 @@ namespace SavableObservable {
                 return;
             }
 
-            BaseObservableDataModel dataModel = null;
-            if (obj is IObservablePresenter presenter) {
-                dataModel = presenter.GetObservableModel();
-            }
-
-            if (dataModel == null) {
-                var models = monoBehaviour.GetComponents<BaseObservableDataModel>();
-                if (models.Length > 1) {
-                    Debug.LogWarning($"[SavableObservable] GameObject '{monoBehaviour.gameObject.name}' has multiple BaseObservableDataModel components ({models.Length}). Ambiguous model resolution for {obj.GetType().Name}.", monoBehaviour);
-                }
-                if (models.Length > 0) {
-                    dataModel = models[0];
-                }
-            }
-
+            var dataModel = ResolveModel(monoBehaviour, obj);
             if (dataModel == null) return;
 
-            SetAutoBindListeners(obj, dataModel);
+            SetAutoBindListenersCore(monoBehaviour, obj, dataModel);
         }
 
         public static void SetAutoBindListeners(object obj, BaseObservableDataModel dataModel) {
@@ -221,8 +253,20 @@ namespace SavableObservable {
                 return;
             }
 
-            if (dataModel == null) return;
+            if (dataModel == null) {
+                Debug.LogError($"[SavableObservable] SetAutoBindListeners called with null model on {obj.GetType().Name}.", monoBehaviour);
+                return;
+            }
 
+            if (!ValidateSameGameObject(monoBehaviour, dataModel, nameof(SetAutoBindListeners))) {
+                return;
+            }
+
+            ValidateSingleMmvc(monoBehaviour, dataModel);
+            SetAutoBindListenersCore(monoBehaviour, obj, dataModel);
+        }
+
+        private static void SetAutoBindListenersCore(MonoBehaviour monoBehaviour, object obj, BaseObservableDataModel dataModel) {
             // Note: Idempotent cleanup is performed at the SetListeners() entry point.
             // SetAutoBindListeners() is called from SetListeners() and should not perform
             // its own cleanup to avoid double-removal of handlers added by [ObservableHandler] methods.

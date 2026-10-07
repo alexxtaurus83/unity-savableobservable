@@ -3,7 +3,12 @@ using UnityEngine;
 
 namespace SavableObservable {
 
-    public abstract class LoaderWithModel<M> : MonoBehaviour 
+    /// <summary>
+    /// Base loader component to load and save model state.
+    /// Generic parameter <typeparamref name="M"/> must derive from <see cref="BaseObservableDataModel"/>.
+    /// Non-observable models and interfaces (e.g. IModel) are not supported.
+    /// </summary>
+    public abstract class LoaderWithModel<M> : MonoBehaviour where M : BaseObservableDataModel
     {
         protected virtual void Reset() {
             ComponentAutoRequire.EnsureComponent<M>(this);
@@ -42,7 +47,9 @@ namespace SavableObservable {
             
             // Set up listeners AFTER model state is loaded to prevent notifications during load.
             var presenter = GetComponent<BaseObservablePresenter<M>>();
-            if (presenter != null) { Observable.SetListeners(presenter, GetModel() as BaseObservableDataModel); }
+            if (presenter != null) {
+                Observable.SetListeners(presenter, GetModel());
+            }
         }
     }
 }

@@ -117,6 +117,43 @@ public class PlayerLogic : BaseLogic<PlayerDataModel> {
 
 The framework provides two base classes for presenters, allowing you to choose the right one for your needs.
 
+#### Architecture Rule: One GameObject = One MMVC Unit
+
+Each GameObject represents a single MMVC unit containing:
+- Exactly **one Model** (`BaseObservableDataModel`)
+- At most **one Logic** (`BaseLogic<M>`)
+- At most **one Presenter** (`BaseObservablePresenter<M>`)
+- Optional **one Loader** (`LoaderWithModel<M>`)
+
+**Guards and Validation:**
+- **Editor Guard:** All MMVC base classes (`BaseObservableDataModel`, `BasePresenter<M>`, `BaseObservablePresenter<M>`, `BaseLogic<M>`) are decorated with `[DisallowMultipleComponent]`. Unity blocks adding duplicate instances of these components to the same GameObject in the Inspector.
+- **Runtime Guard (Multiple Components):** If duplicate model or presenter components exist on a GameObject (e.g. from legacy prefabs or runtime script additions), `Observable.SetListeners()` logs a `Debug.LogError` describing the violation and binds to the resolved model.
+- **Runtime Guard (Cross-GameObject Binding):** Explicit-model overloads `Observable.SetListeners(subscriber, model)` and `Observable.SetAutoBindListeners(subscriber, model)` strictly require `model.gameObject == subscriber.gameObject`. Attempting cross-GameObject binding logs a `Debug.LogError` and rejects the binding to prevent dangling subscriptions and lifecycle leaks.
+
+> **Strict Generic Constraints:** All generic base classes (`BasePresenter<M>`, `BaseObservablePresenter<M>`, `BaseLogic<M>`, `LoaderWithModel<M>`) strictly enforce `where M : BaseObservableDataModel`. In addition, `ObservablePresenterWithLogic<M, LO>` and `LoaderWithModelAndLogic<M, LO>` enforce `where LO : BaseLogic<M>`. Non-observable models and interfaces (such as `IModel` or `BaseObservablePresenter<IModel>`) are **not supported** and produce compile-time errors.
+
+#### Cross-Component Access
+
+Components on other GameObjects must **never** hold a direct serialized reference to another GameObject's Model, nor bind to it directly using `SetListeners`.
+Instead, obtain a reference to the owning **Presenter** (via Inspector `[SerializeField]` reference or service locator `Services.Get<T>()`), then access the model or logic via `presenter.GetModel()` or `presenter.GetLogic()`:
+
+```csharp
+public class ScoreObserver : MonoBehaviour {
+    [SerializeField] private ScorePresenter scorePresenter;
+
+    private void Start() {
+        if (scorePresenter != null) {
+            // Subscribe manually to the foreign model's tracked action, passing this as target
+            scorePresenter.GetModel().score.OnValueChanged.Add(OnScoreChanged, this);
+        }
+    }
+
+    private void OnScoreChanged(int newScore) {
+        Debug.Log($"Score updated to: {newScore}");
+    }
+}
+```
+
 #### Automatic Dependency Provisioning (Editor)
 
 The framework auto-adds required components in the Unity Editor (during `Reset` / `OnValidate`) so concrete classes no longer need explicit `[RequireComponent]` attributes.
@@ -133,7 +170,7 @@ This keeps setup simple: add your main class and the framework fills missing MMV
 
 #### `BasePresenter<M>`
 
-This is the simplest presenter. It should be used when you have a `Model` that does **not** contain any `ObservableVariable` fields. It provides a `GetModel()` method but does not have any built-in reactivity.
+This is the non-reactive presenter base class. It should be used when the presenter manages a `BaseObservableDataModel` but does not need declarative `[AutoBind]` or `[ObservableHandler]` reactivity. It provides a strongly-typed `GetModel()` method. All models must inherit from `BaseObservableDataModel`.
 
 #### `BaseObservablePresenter<M>`
 
@@ -146,7 +183,7 @@ This is the reactive presenter, which inherits from `BasePresenter<M>`. It's des
 *   It provides two powerful, declarative ways to handle model changes:
     * `[AutoBind]` attribute for simple UI bindings
     * `[ObservableHandler]` attribute for custom handler methods
-*   **Automatic Setup Validation**: It includes a check that will log a warning if `Observable.SetListeners()` was not called for it.
+*   **Setup Validation**: Logs descriptive errors if duplicate MMVC components or cross-GameObject bindings are detected.
 
 #### `ObservablePresenterWithLogic<M, L>`
 
@@ -789,8 +826,8 @@ By combining the `ISharedSingleton` interface with a `Services` locator and an i
 
 * **Decoupled Components**: Individual components don't need hard references to managers.
 * **Centralized Access**: You have a single, reliable point of access (`Services.Get<T>()`) for all global systems.
-* **Reactive Singletons**: Observable presenters implementing `IObservablePresenter` (or extending `BaseObservablePresenter<M>`) can be bound cleanly using `Observable.SetListeners(subscriber, model)`.
-* **One Model per GameObject**: Each presenter should correspond to exactly one data model on its GameObject. Do not place multiple `BaseObservableDataModel` components on the same GameObject; pass the model explicitly via `Observable.SetListeners(subscriber, model)` when binding presenters.
+* **Reactive Singletons**: Observable presenters implementing `IObservablePresenter` (or extending `BaseObservablePresenter<M>`) can be bound cleanly using `Observable.SetListeners(subscriber)` or `Observable.SetListeners(subscriber, model)`.
+* **Strict One MMVC Unit per GameObject**: Each GameObject must hold exactly one Model, at most one Logic, and at most one Presenter. The explicit-model overloads `Observable.SetListeners(subscriber, model)` and `Observable.SetAutoBindListeners(subscriber, model)` strictly require the model to be on the subscriber's own GameObject. Access other units via their presenter (`presenter.GetModel()`), never by holding or binding another GameObject's model directly.
 
 ---
 
