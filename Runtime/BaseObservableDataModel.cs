@@ -7,6 +7,7 @@ namespace SavableObservable {
 
     /// <summary>Abstract DataModel class to keep observable keep data with ObservableVariable types</summary>    
     [Serializable]
+    [DisallowMultipleComponent]
     public abstract class BaseObservableDataModel : MonoBehaviour {
         /// <summary>
         /// Gets the cached observable fields for this data model.
