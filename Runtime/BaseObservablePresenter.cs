@@ -2,20 +2,19 @@
 
 namespace SavableObservable {
 
+    /// <summary>
+    /// Base class for reactive presenters managing an observable data model.
+    /// Generic parameter <typeparamref name="M"/> must derive from <see cref="BaseObservableDataModel"/>.
+    /// Non-observable models and interfaces (e.g. IModel) are not supported.
+    /// </summary>
     [DisallowMultipleComponent]
-    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter {
+    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter where M : BaseObservableDataModel {
 
+        /// <summary>
+        /// Gets the model as <see cref="BaseObservableDataModel"/>.
+        /// </summary>
         public BaseObservableDataModel GetObservableModel() {
-            return GetModel() as BaseObservableDataModel;
+            return GetModel();
         }
-
-        /*protected virtual void Start() {
-            if (!Observable.AreListenersInitialized(this)) {
-                Debug.LogWarning($"[SavableObservable] Listeners for {this.GetType().Name} on '{this.gameObject.name}' were not initialized. " +
-                    $"If this is a singleton, ensure it's registered with the GameManager. " +
-                    $"If it's dynamically instantiated, ensure its initialization logic calls Observable.SetListeners().",
-                    this.gameObject);
-            }            
-        }*/
     }
 }
