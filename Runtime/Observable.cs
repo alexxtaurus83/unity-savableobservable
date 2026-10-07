@@ -46,17 +46,46 @@ namespace SavableObservable {
                 Debug.LogWarning($"[SavableObservable] SetListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
                 return;
             }
-            var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
+
+            BaseObservableDataModel dataModel = null;
+            if (obj is IObservablePresenter presenter) {
+                dataModel = presenter.GetObservableModel();
+            }
+
+            if (dataModel == null) {
+                var models = monoBehaviour.GetComponents<BaseObservableDataModel>();
+                if (models.Length > 1) {
+                    Debug.LogWarning($"[SavableObservable] GameObject '{monoBehaviour.gameObject.name}' has multiple BaseObservableDataModel components ({models.Length}). Ambiguous model resolution for {obj.GetType().Name}.", monoBehaviour);
+                }
+                if (models.Length > 0) {
+                    dataModel = models[0];
+                }
+            }
+
             if (dataModel == null) return;
+
+            SetListeners(obj, dataModel);
+        }
+
+        public static void SetListeners(object subscriber, BaseObservableDataModel model) {
+            if (!(subscriber is MonoBehaviour monoBehaviour)) {
+                Debug.LogWarning($"[SavableObservable] SetListeners called on non-MonoBehaviour object {subscriber?.GetType().Name}. Only MonoBehaviours are supported.");
+                return;
+            }
+
+            if (model == null) {
+                Debug.LogError($"[SavableObservable] SetListeners called with null model on {subscriber.GetType().Name}.", monoBehaviour);
+                return;
+            }
 
             // Fix B/C: Remove existing subscriptions before adding new ones to ensure idempotent setup.
             // Calling SetListeners() multiple times will not duplicate Model→UI subscriptions.
-            RemoveAllSubscriptions(dataModel, obj);
+            RemoveAllSubscriptions(model, subscriber);
 
-            dataModel.EnsureFieldsInitialized();
+            model.EnsureFieldsInitialized();
 
             var individualHandlers = new List<MethodInfo>();
-            foreach (var method in obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+            foreach (var method in subscriber.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
             {
                 if (method.GetCustomAttribute<ObservableHandlerAttribute>() != null)
                 {
@@ -65,7 +94,7 @@ namespace SavableObservable {
             }
 
             // Get cached observable fields once to avoid repeated reflection calls
-            var observableFields = dataModel.GetCachedObservableFields();
+            var observableFields = model.GetCachedObservableFields();
 
             // Look for individual handlers with attributes.
             var individualHandlerMap = new Dictionary<string, MethodInfo>();
@@ -78,7 +107,7 @@ namespace SavableObservable {
             var autoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
             try {
                 var autoBindFields = new List<FieldInfo>();
-                foreach (var field in obj.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                foreach (var field in subscriber.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
                 {
                     if (field.GetCustomAttribute<AutoBindAttribute>() != null)
                     {
@@ -94,19 +123,19 @@ namespace SavableObservable {
                     }
                 }
             } catch (Exception ex) {
-                Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
+                Debug.LogError($"[SavableObservable] Failed to scan [AutoBind] fields on {subscriber.GetType().Name}: {ex.Message}", monoBehaviour);
             }
 
             foreach (var field in observableFields) {
                 if (individualHandlerMap.TryGetValue(field.Name, out var handlerMethod)) {
-                    SubscribeIndividualHandler(obj, handlerMethod, field, dataModel);
+                    SubscribeIndividualHandler(subscriber, handlerMethod, field, model);
                 } else if (!autoBindTargetNames.Contains(field.Name)) {
                     // Warn only when not handled by either [ObservableHandler] or [AutoBind].
-                    Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {dataModel.GetType().Name} has no corresponding [ObservableHandler] method or [AutoBind] field in {obj.GetType().Name}.", (MonoBehaviour)obj);
+                    Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {model.GetType().Name} has no corresponding [ObservableHandler] method or [AutoBind] field in {subscriber.GetType().Name}.", monoBehaviour);
                 }
             }
 
-            SetAutoBindListeners(obj);
+            SetAutoBindListeners(subscriber, model);
         }
 
         private static void SubscribeIndividualHandler(object obj, MethodInfo handlerMethod, FieldInfo field, BaseObservableDataModel dataModel) {
@@ -166,7 +195,32 @@ namespace SavableObservable {
                 return;
             }
 
-            var dataModel = monoBehaviour.GetComponent<BaseObservableDataModel>();
+            BaseObservableDataModel dataModel = null;
+            if (obj is IObservablePresenter presenter) {
+                dataModel = presenter.GetObservableModel();
+            }
+
+            if (dataModel == null) {
+                var models = monoBehaviour.GetComponents<BaseObservableDataModel>();
+                if (models.Length > 1) {
+                    Debug.LogWarning($"[SavableObservable] GameObject '{monoBehaviour.gameObject.name}' has multiple BaseObservableDataModel components ({models.Length}). Ambiguous model resolution for {obj.GetType().Name}.", monoBehaviour);
+                }
+                if (models.Length > 0) {
+                    dataModel = models[0];
+                }
+            }
+
+            if (dataModel == null) return;
+
+            SetAutoBindListeners(obj, dataModel);
+        }
+
+        public static void SetAutoBindListeners(object obj, BaseObservableDataModel dataModel) {
+            if (!(obj is MonoBehaviour monoBehaviour)) {
+                Debug.LogWarning($"[SavableObservable] SetAutoBindListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
+                return;
+            }
+
             if (dataModel == null) return;
 
             // Note: Idempotent cleanup is performed at the SetListeners() entry point.
