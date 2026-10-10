@@ -108,8 +108,8 @@ namespace SavableObservable
                 _adapters.Add(adapter);
                 _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
                 
-                // Invalidate snapshot and caches when adapters are modified
-                _adaptersSnapshot = null;
+                // Rebuild snapshot and invalidate caches when adapters are modified
+                _adaptersSnapshot = _adapters.ToArray();
                 _adapterCache.Clear();
                 _negativeCache.Clear();
             }
