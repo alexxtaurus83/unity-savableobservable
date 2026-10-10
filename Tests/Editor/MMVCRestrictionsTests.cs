@@ -34,29 +34,22 @@ namespace SavableObservable.Tests {
             Observable.SetListeners(presenterB, modelA);
         }
 
-        private class SecondaryModel : BaseObservableDataModel { }
-        private class SecondaryPresenter : BaseObservablePresenter<SamplePlayerModel> { }
-
         [Test]
-        public void MultipleModels_OnSameGameObject_LogsError() {
-            var model1 = _goA.AddComponent<SamplePlayerModel>();
-            var model2 = _goA.AddComponent<SecondaryModel>();
-            var presenter = _goA.AddComponent<SamplePlayerPresenter>();
+        public void ValidateSingleMmvc_Rules_EnforcedViaDisallowMultipleComponent() {
+            // Rule 1: One GameObject = one model.
+            // Both BaseObservableDataModel and its subclasses are protected by [DisallowMultipleComponent].
+            var modelAttrs = typeof(BaseObservableDataModel).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
+            Assert.IsTrue(modelAttrs.Length > 0, "BaseObservableDataModel must have [DisallowMultipleComponent]");
 
-            LogAssert.Expect(LogType.Error, new Regex(@"GameObject 'UnitA' has multiple BaseObservableDataModel components"));
+            // Rule 2: One GameObject = one presenter.
+            // BasePresenter<M> and BaseObservablePresenter<M> are protected by [DisallowMultipleComponent].
+            var presenterAttrs = typeof(BasePresenter<SamplePlayerModel>).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
+            Assert.IsTrue(presenterAttrs.Length > 0, "BasePresenter must have [DisallowMultipleComponent]");
 
-            Observable.SetListeners(presenter, model1);
-        }
-
-        [Test]
-        public void MultiplePresenters_OnSameGameObject_LogsError() {
-            var model = _goA.AddComponent<SamplePlayerModel>();
-            var presenter1 = _goA.AddComponent<SamplePlayerPresenter>();
-            var presenter2 = _goA.AddComponent<SecondaryPresenter>();
-
-            LogAssert.Expect(LogType.Error, new Regex(@"GameObject 'UnitA' has multiple IObservablePresenter components"));
-
-            Observable.SetListeners(presenter1, model);
+            // Rule 3: One GameObject = one logic.
+            // BaseLogic<M> is protected by [DisallowMultipleComponent].
+            var logicAttrs = typeof(BaseLogic<SamplePlayerModel>).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
+            Assert.IsTrue(logicAttrs.Length > 0, "BaseLogic must have [DisallowMultipleComponent]");
         }
 
         [Test]

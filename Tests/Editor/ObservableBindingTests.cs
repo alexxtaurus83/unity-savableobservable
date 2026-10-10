@@ -76,8 +76,8 @@ namespace SavableObservable.Tests {
         [Test]
         public void Observable_SetListeners_InvalidSignature_LogsError() {
             var invalidSub = _host.AddComponent<InvalidSubscriber>();
-            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'playerName'"));
+            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
