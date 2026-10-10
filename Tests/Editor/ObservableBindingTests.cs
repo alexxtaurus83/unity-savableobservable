@@ -41,7 +41,9 @@ namespace SavableObservable.Tests {
                 TwoParamCurrent = current;
                 TwoParamPrev = prev;
             }
+        }
 
+        private class InvalidSubscriber : MonoBehaviour {
             [ObservableHandler("health")]
             public void OnInvalidSignature(int a, int b, int c) {
                 // Invalid: 3 parameters
@@ -72,15 +74,23 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void Observable_SetListeners_Wires0_1_2_ParameterHandlers() {
-            // Expected log warnings/errors in exact occurrence order:
-            // 1. Error for invalid signature during handler subscription
+        public void Observable_SetListeners_InvalidSignature_LogsError() {
+            var invalidSub = _host.AddComponent<InvalidSubscriber>();
             LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
-            // 2. Warnings for unhandled observable fields
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'playerName'"));
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
+
+            Observable.SetListeners(invalidSub, _model);
+        }
+
+        [Test]
+        public void Observable_SetListeners_Wires0_1_2_ParameterHandlers() {
+            // Expected log warnings
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy' in SamplePlayerModel has no corresponding"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive' in SamplePlayerModel has no corresponding"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory' in SamplePlayerModel has no corresponding"));
-            // 3. Warning for missing AutoBind target field
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
 
             Observable.SetListeners(_subscriber, _model);
@@ -96,7 +106,6 @@ namespace SavableObservable.Tests {
         [Test]
         public void Observable_SetListeners_IsIdempotent_DoesNotDuplicateHandlers() {
             // First call expected logs
-            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
@@ -106,7 +115,6 @@ namespace SavableObservable.Tests {
             Observable.SetListeners(_subscriber, _model);
 
             // Second call expected logs
-            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
@@ -122,7 +130,6 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void Observable_RemoveListeners_DetachesAllTrackedHandlers() {
-            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
@@ -141,7 +148,6 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void AutoBind_PropagatesModelValueToUI() {
-            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
             LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
