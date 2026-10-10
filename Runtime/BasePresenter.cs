@@ -17,8 +17,13 @@ namespace SavableObservable {
             ComponentAutoRequire.EnsureComponent<M>(this);
         }
 
-        public M GetModel()  {
-            return GetComponent<M>();
+        private M _model;
+
+        public M GetModel() {
+            if (_model == null) {
+                _model = GetComponent<M>();
+            }
+            return _model;
         }
     }
 }

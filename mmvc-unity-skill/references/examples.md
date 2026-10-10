@@ -41,7 +41,7 @@ public class ScorePresenter : ObservablePresenterWithLogic<ScoreDataModel, Score
 }
 ```
 
-Attach all three components to one GameObject, assign the text reference, and call Initialize from the owning bootstrap after configuration. Initialize fields earlier if logic runs before that point. Wire any requested button action separately; AutoBind on a Button only sets its label.
+Attach all three components to one GameObject, assign the text reference, and call Initialize from the owning bootstrap after configuration. Initialize fields earlier if logic runs before that point. Wire any requested button action separately; bind labels directly to TextMeshProUGUI or Text components.
 
 ## Dynamic Prefab
 

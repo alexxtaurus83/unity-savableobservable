@@ -2,7 +2,12 @@
   "name": "com.evialdev.savableobservable.Editor",
   "rootNamespace": "",
   "references": [
-    "com.evialdev.savableobservable"
+    "com.evialdev.savableobservable",
+    "com.evialdev.savableobservable.Samples",
+    "Unity.Pipeline",
+    "Unity.Pipeline.Attributes",
+    "Unity.TextMeshPro",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [
     "Editor"
@@ -13,6 +18,17 @@
   "precompiledReferences": [],
   "autoReferenced": true,
   "defineConstraints": [],
-  "versionDefines": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.pipeline",
+      "expression": "0.0.1",
+      "define": "HAS_UNITY_PIPELINE"
+    },
+    {
+      "name": "Unity",
+      "expression": "6000.5",
+      "define": "UNITY_HAS_LIFECYCLE_MANAGEMENT"
+    }
+  ],
   "noEngineReferences": false
 }

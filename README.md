@@ -246,9 +246,9 @@ public class GamePresenter : BaseObservablePresenter<GameDataModel> {
     [AutoBind("isActive")]
     [SerializeField] private Toggle activeToggle;
     
-    // Auto-bind to model.buttonLabel - sets text on child TMP_Text
-    [AutoBind("buttonLabel")]
-    [SerializeField] private Button actionButton;
+    // Auto-bind to model.volume - sets Slider.value (two-way binding)
+    [AutoBind("volume")]
+    [SerializeField] private Slider volumeSlider;
     
     // If field name matches observable name exactly, you can omit the parameter
     [AutoBind]
@@ -263,10 +263,12 @@ public class GamePresenter : BaseObservablePresenter<GameDataModel> {
 | `TextMeshProUGUI` / `TMP_Text` | Sets `text` to `value.ToString()` |
 | `Text` (Unity UI) | Sets `text` to `value.ToString()` |
 | `Toggle` | **Two-way binding:** Sets `isOn` from value, and updates value when `isOn` changes. |
+| `Slider` | **Two-way binding:** Sets `value` from observable, and updates value when slider position changes. |
 | `TMP_InputField` | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. Supports automatic conversion for basic types (int, float, bool, etc.). **Note:** Complex types like `Vector2` are not supported for auto-binding. |
 | `InputField` (Unity UI) | **Two-way binding:** Sets `text` from value, and updates value when `text` changes. Supports automatic conversion for basic types (int, float, bool, etc.). **Note:** Complex types like `Vector2` are not supported for auto-binding. |
-| `Button` | Sets text on child `TMP_Text` component |
 | `Image` | Sets `sprite` to Sprite value |
+
+> **Note on Buttons:** `Button` components do not have a built-in AutoBind adapter. To bind a button's text label, attach `[AutoBind]` directly to its `TextMeshProUGUI` or `Text` child component, and wire click events directly or via your presenter.
 
 **Custom Adapters:**
 

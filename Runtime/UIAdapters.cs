@@ -4,6 +4,9 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
 using TMPro;
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace SavableObservable
 {
@@ -48,24 +51,50 @@ namespace SavableObservable
     /// <summary>
     /// Registry for UI adapters. Manages adapter registration and lookup.
     /// </summary>
-    public static class UIAdapterRegistry
+    public static partial class UIAdapterRegistry
     {
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
         private static readonly List<IUIAdapter> _adapters = new List<IUIAdapter>();
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [NoAutoStaticsCleanup]
+#endif
         private static readonly object _lock = new object();
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
         private static bool _initialized;
         
         // Immutable snapshot of adapters for lock-free iteration after initialization
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
         private static IUIAdapter[] _adaptersSnapshot;
         
         // Cache mapping Type -> IUIAdapter for O(1) lookups after first call
         // Null adapters are cached separately to avoid repeated failed lookups
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
         private static readonly Dictionary<Type, IUIAdapter> _adapterCache = new Dictionary<Type, IUIAdapter>();
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
         private static readonly HashSet<Type> _negativeCache = new HashSet<Type>();
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        private static void Initialize()
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetRegistry()
         {
-            EnsureInitialized();
+            lock (_lock)
+            {
+                _adapters.Clear();
+                _adapterCache.Clear();
+                _negativeCache.Clear();
+                _adaptersSnapshot = null;
+                _initialized = false;
+                EnsureInitialized();
+            }
         }
 
         public static void RegisterAdapter(IUIAdapter adapter)
@@ -148,7 +177,7 @@ namespace SavableObservable
                 RegisterAdapter(new InputFieldAdapter());
                 RegisterAdapter(new UnityTextAdapter());
                 RegisterAdapter(new ToggleAdapter());
-                RegisterAdapter(new ButtonTextAdapter());
+                RegisterAdapter(new SliderAdapter());
                 RegisterAdapter(new ImageAdapter());
 
                 // Build immutable snapshot after all adapters are registered
@@ -386,34 +415,67 @@ namespace SavableObservable
     }
 
     /// <summary>
-    /// Adapter for Button components. Sets text on nested TextMeshProUGUI.
+    /// Adapter for Slider components. Handles numeric values with two-way binding.
     /// </summary>
-    public class ButtonTextAdapter : IUIAdapter
+    public class SliderAdapter : IUIListenerAdapter
     {
         public int Priority => 100;
 
         public bool CanHandle(Type uiComponentType)
         {
-            return typeof(Button).IsAssignableFrom(uiComponentType);
+            return typeof(Slider).IsAssignableFrom(uiComponentType);
         }
 
         public void SetValue(object uiComponent, object value, Type valueType)
         {
-            if (uiComponent is Button button)
+            if (uiComponent is Slider slider && value != null)
             {
-                string stringValue = value?.ToString() ?? string.Empty;
-                var textComponent = button.GetComponentInChildren<TMP_Text>();
-                if (textComponent != null)
+                try
                 {
-                    textComponent.text = stringValue;
-                    return;
+                    float floatValue = Convert.ToSingle(value);
+                    if (!Mathf.Approximately(slider.value, floatValue))
+                    {
+                        slider.value = floatValue;
+                    }
                 }
+                catch
+                {
+                    // Ignore conversion failures
+                }
+            }
+        }
 
-                var legacyText = button.GetComponentInChildren<Text>();
-                if (legacyText != null)
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
+        {
+            if (uiComponent is Slider slider)
+            {
+                UnityAction<float> listener = val =>
                 {
-                    legacyText.text = stringValue;
-                }
+                    try
+                    {
+                        object convertedValue = val;
+                        if (valueType != typeof(float))
+                        {
+                            convertedValue = Convert.ChangeType(val, valueType);
+                        }
+                        onValueChanged(convertedValue);
+                    }
+                    catch
+                    {
+                        onValueChanged(val);
+                    }
+                };
+                slider.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is Slider slider && token is UnityAction<float> listener)
+            {
+                slider.onValueChanged.RemoveListener(listener);
             }
         }
     }

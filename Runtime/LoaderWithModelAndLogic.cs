@@ -21,8 +21,13 @@ namespace SavableObservable {
             ComponentAutoRequire.EnsureComponent<LO>(this);
         }
 
+        private LO _logic;
+
         public LO GetLogic() {
-            return GetComponent<LO>();
+            if (_logic == null) {
+                _logic = GetComponent<LO>();
+            }
+            return _logic;
         }
     }
 }

@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace SavableObservable {
     /// <summary>
@@ -11,14 +14,21 @@ namespace SavableObservable {
     /// cross-thread access; violations will log an error in player builds and throw in development builds.
     /// </para>
     /// </summary>
-    public class ObservableTrackedAction<T> where T : class, IObservableVariable {
-        private List<Action<T>> _handlers = new List<Action<T>>();
+    public partial class ObservableTrackedAction<T> where T : class, IObservableVariable {
+        private readonly List<Action<T>> _handlers = new List<Action<T>>();
+        private Action<T>[] _handlersArray = Array.Empty<Action<T>>();
         private readonly object _lock = new object();
         private bool _isInvoking;
         private bool _pending;
 
         // Main thread assertion support
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [NoAutoStaticsCleanup]
+#endif
         private static int _mainThreadId = -1;
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [NoAutoStaticsCleanup]
+#endif
         private static readonly object _mainThreadInitLock = new object();
 
         public static ObservableTrackedAction<T> operator +(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
@@ -43,9 +53,11 @@ namespace SavableObservable {
         /// Adds a handler to the tracked action.
         /// </summary>
         public void Add(Action<T> handler, object subscriber) {
+            AssertMainThread();
             lock (_lock) {
                 if (!_handlers.Contains(handler)) {
                     _handlers.Add(handler);
+                    _handlersArray = _handlers.ToArray();
 
                     // Register this subscription for automatic cleanup if possible
                     if (ParentDataModel != null && subscriber != null) {
@@ -59,11 +71,15 @@ namespace SavableObservable {
         /// Removes a handler from the tracked action.
         /// </summary>
         public void Remove(Action<T> handler) {
+            AssertMainThread();
             lock (_lock) {
-                _handlers.Remove(handler);
-                // Notify Observable to unregister the subscription for cleanup
-                if (ParentDataModel != null) {
-                    Observable.UnregisterSubscription(ParentDataModel, null, handler);
+                if (_handlers.Remove(handler)) {
+                    _handlersArray = _handlers.Count > 0 ? _handlers.ToArray() : Array.Empty<Action<T>>();
+
+                    // Notify Observable to unregister the subscription for cleanup
+                    if (ParentDataModel != null) {
+                        Observable.UnregisterSubscription(ParentDataModel, null, handler);
+                    }
                 }
             }
         }
@@ -91,15 +107,10 @@ namespace SavableObservable {
 
                 _isInvoking = true;
                 try {
-                    Action<T>[] handlersCopy;
-                    lock (_lock) {
-                        handlersCopy = new Action<T>[_handlers.Count];
-                        _handlers.CopyTo(handlersCopy);
-                    }
-
-                    foreach (var handler in handlersCopy) {
+                    var handlers = _handlersArray;
+                    for (int i = 0; i < handlers.Length; i++) {
                         try {
-                            handler?.Invoke(variable);
+                            handlers[i]?.Invoke(variable);
                         } catch (Exception ex) {
                             UnityEngine.Debug.LogException(ex);
                         }
@@ -151,9 +162,12 @@ namespace SavableObservable {
             if (currentThreadId != _mainThreadId) {
                 string message = $"[SavableObservable] ObservableTrackedAction<{typeof(T).Name}> accessed from non-main thread (thread {currentThreadId}). All ObservableTrackedAction operations must be called from the Unity main thread.";
                 
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
+#if UNITY_EDITOR || DEBUG || UNITY_ENABLE_CHECKS
                 throw new InvalidOperationException(message);
 #else
+                if (Debug.isDebugBuild) {
+                    throw new InvalidOperationException(message);
+                }
                 Debug.LogError(message);
 #endif
             }

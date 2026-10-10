@@ -1,0 +1,34 @@
+{
+    "name": "com.evialdev.savableobservable.EditorTests",
+    "rootNamespace": "SavableObservable.Tests",
+    "references": [
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
+        "com.evialdev.savableobservable",
+        "com.evialdev.savableobservable.Editor",
+        "com.evialdev.savableobservable.Samples",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [
+        {
+            "name": "Unity",
+            "expression": "6000.5",
+            "define": "UNITY_HAS_LIFECYCLE_MANAGEMENT"
+        }
+    ],
+    "noEngineReferences": false
+}

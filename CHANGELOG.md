@@ -1,9 +1,38 @@
 # Changelog
 
+## [1.0.16] - 2026-10-08 - Performance, AOT/IL2CPP hardening & architecture simplification
+- **Unity 6.6 & Configurable Enter Play Mode Support (Domain Reload Disabled):**
+  - Added `Unity.Scripting.LifecycleManagement` annotations (`[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`) and marked containing types with `partial` modifier to comply with Unity 6.5/6.6+ Roslyn analyzers (UAL0011-UAL0014) and source generation.
+  - Applied `[AutoStaticsCleanup]` and `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` to `Observable._instanceData`, ensuring deterministic teardown of per-instance model subscriptions and UI listener tokens across Play sessions without Domain Reload.
+  - Applied `[NoAutoStaticsCleanup]` to immutable type-reflection caches and singleton binding bridges (`_subscriberMetadataCache`, `_modelMetadataCache`, `_bindingCache`, `_loadDescriptors`, `ObservableTrackedAction._mainThreadId`, `ObservableVariableBinding.Instance`, `ObservableListBinding.Instance`) to preserve precomputed reflection metadata across Play sessions.
+  - Overhauled `UIAdapterRegistry` for domain-reload persistence: added `[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`, and explicit `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` reset, preventing duplicate adapter registrations and stale component references across Play sessions.
+  - Guarded all `using Unity.Scripting.LifecycleManagement;` imports and attributes with `#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT` and configured `versionDefines` in `com.evialdev.savableobservable.asmdef`, ensuring full backwards compatibility with Unity 2021.3 through 6.4 while enabling native engine lifecycle attributes in Unity 6.5+.
+- **Allocation-Free Event Dispatch:**
+  - Optimized `ObservableTrackedAction<T>.Invoke` to be 100% allocation-free by using copy-on-write snapshotting on `Add`/`Remove`, eliminating `Action<T>[]` heap allocations on every event dispatch.
+  - Aligned thread assertions across `Add`, `Remove`, `Invoke`, and `HandlerCount` to enforce main-thread execution cleanly.
+- **Overhauled `Observable.SetListeners` & AOT/IL2CPP Support:**
+  - Replaced runtime dynamic expression compilation (`System.Linq.Expressions.Expression.Compile()`) with strongly-typed generic binding bridges (`Delegate.CreateDelegate` with safe invocation fallback).
+  - Unified listener cleanup with direct unbind closures, replacing the $O(N \times M)$ reflection-based unsubscription loop and eliminating caught `ArgumentException` spikes during teardown.
+  - Added type-level metadata caching for subscriber attributes (`[ObservableHandler]`, `[AutoBind]`) and model observable fields, eliminating redundant multi-pass reflection and dictionary allocations on repeated bindings.
+  - Unified model-to-UI and UI-to-model subscription tracking into a single deterministic unbinding pipeline.
+- **Optimized `ObservableList<T>` Mutations:**
+  - Skipped array cloning in `CapturePrevious()` when there are no active event subscribers, drastically reducing GC pressure during initial population, factory spawns, and bulk updates.
+  - Guarded `AddRange` against empty collection operations.
+- **Cached Save/Load Descriptors:**
+  - Added cached `ModelLoadDescriptor` in `BaseObservableDataModel.LoadDataFromModel`, caching property and observable-field reflection metadata per model type to accelerate save/load state restoration.
+- **UI Adapters Modernization:**
+  - Removed `ButtonTextAdapter` (which performed expensive recursive `GetComponentInChildren` searches on every value change); label text should now be targeted directly on `TextMeshProUGUI` or `Text` components.
+  - Added built-in two-way `SliderAdapter` for `UnityEngine.UI.Slider`.
+- **Component Access Caching:**
+  - Cached `GetComponent` lookups in private backing fields for `BasePresenter<M>.GetModel()`, `BaseLogic<M>.GetModel()`, `ObservablePresenterWithLogic<M, LO>.GetLogic()`, `LoaderWithModel<M>.GetModel()`, and `LoaderWithModelAndLogic<M, LO>.GetLogic()` to minimize native engine interop overhead during frequent updates.
+- **Loaders & Preprocessor Directives:**
+  - Simplified `LoaderWithModel<M>.LoadDataFromModel(object state)` to call `model.LoadDataFromModel(state)` directly on the model instance instead of using reflection, leveraging the `where M : BaseObservableDataModel` constraint.
+  - Replaced deprecated `DEVELOPMENT_BUILD` preprocessor directive in `ObservableTrackedAction.cs` with `#if UNITY_EDITOR || DEBUG || UNITY_ENABLE_CHECKS` and runtime check `Debug.isDebugBuild`.
+
 ## [1.0.15] - 2026-10-07 - Strict MMVC architecture guards & generic model constraints
 - Added `where M : BaseObservableDataModel` compile-time generic constraint to `BasePresenter<M>`, `BaseObservablePresenter<M>`, `BaseLogic<M>`, and `LoaderWithModel<M>`. Non-observable models and interfaces are strictly prohibited and caught at compile time.
 - Added `where LO : BaseLogic<M>` generic constraint to `ObservablePresenterWithLogic<M, LO>` and `LoaderWithModelAndLogic<M, LO>`, ensuring type safety between presenters/loaders and their corresponding logic.
-- Simplified `BaseObservablePresenter<M>.GetObservableModel()` and `LoaderWithModel<M>.LoadDataFromModel()` now that `M` is statically known to derive from `BaseObservableDataModel`.
+- Simplified `BaseObservablePresenter<M>.GetObservableModel()` now that `M` is statically known to derive from `BaseObservableDataModel`.
 - Enforced strict "One MMVC unit per GameObject" architecture:
   - Added `[DisallowMultipleComponent]` to `BaseObservableDataModel`.
   - Added runtime duplicate validation logging `LogError` when multiple models or presenters are found on the same GameObject during listener setup.
