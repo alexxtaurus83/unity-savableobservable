@@ -112,10 +112,9 @@ namespace SavableObservable.Tests {
 
         private class DummyCustomComponent : MonoBehaviour { }
         private class DummyCustomAdapter : IUIAdapter {
-            public Type HandledType => typeof(DummyCustomComponent);
+            public bool CanHandle(Type uiComponentType) => uiComponentType == typeof(DummyCustomComponent);
             public int Priority => 10;
-            public void SetValue(object target, object value, Type valueType) { }
-            public object GetValue(object target) => null;
+            public void SetValue(object uiComponent, object value, Type valueType) { }
         }
 
         [Test]
