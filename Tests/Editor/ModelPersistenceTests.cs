@@ -92,21 +92,18 @@ namespace SavableObservable.Tests {
             var presenter = _unitA.AddComponent<SamplePlayerPresenter>();
             var loader = _unitA.AddComponent<SamplePlayerLoader>();
 
+            var sourceModel = _unitB.AddComponent<SamplePlayerModel>();
+            sourceModel.InitializeDefaults();
+            sourceModel.health.Value = 70;
+
             model.InitializeDefaults();
             Observable.SetListeners(presenter, model);
 
-            model.health.Value = 70;
-            Assert.AreEqual(70, presenter.LastObservedHealth);
-            int initialEvents = presenter.HealthChangeEventsCount;
-
-            // Save state
-            var dto = loader.SaveCurrentState();
-
-            // Mutate model
+            // Mutate target model
             model.health.Value = 10;
 
-            // Load saved state through loader
-            loader.LoadDataFromModel(dto);
+            // Load saved model through loader (LoaderWithModel passes model state object)
+            loader.LoadDataFromModel(sourceModel);
 
             // Verify state is restored and listeners remain intact and active
             Assert.AreEqual(70, model.health.Value);

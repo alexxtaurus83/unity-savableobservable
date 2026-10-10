@@ -74,17 +74,18 @@ namespace SavableObservable.Tests {
             int receivedNewValue = 0;
             int changeCount = 0;
 
+            // 1. Designer begins GUI edit in Inspector: captures snapshot
+            variable.OnBeginGui();
+
+            // 2. Inspector modifies the backing field directly via SerializedProperty (without triggering C# property setter)
+            var backingField = typeof(ObservableVariable<int>).GetField("_value", BindingFlags.Instance | BindingFlags.NonPublic);
+            backingField?.SetValue(variable, 250);
+
+            // Subscribe after edit to verify OnValidate fires the change event
             variable.OnValueChanged.Add(v => {
                 receivedNewValue = v.Value;
                 changeCount++;
             }, null);
-
-            // 1. Designer begins GUI edit in Inspector: captures snapshot
-            variable.OnBeginGui();
-
-            // 2. Inspector modifies the internal backing field directly via SerializedProperty
-            // Simulate editor serialization change:
-            variable.Value = 250;
 
             // 3. Unity calls OnValidate()
             variable.OnValidate();
