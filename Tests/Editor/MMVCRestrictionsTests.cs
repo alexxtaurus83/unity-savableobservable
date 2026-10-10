@@ -34,10 +34,13 @@ namespace SavableObservable.Tests {
             Observable.SetListeners(presenterB, modelA);
         }
 
+        private class SecondaryModel : BaseObservableDataModel { }
+        private class SecondaryPresenter : BaseObservablePresenter<SamplePlayerModel> { }
+
         [Test]
         public void MultipleModels_OnSameGameObject_LogsError() {
             var model1 = _goA.AddComponent<SamplePlayerModel>();
-            var model2 = _goA.AddComponent<SamplePlayerModel>();
+            var model2 = _goA.AddComponent<SecondaryModel>();
             var presenter = _goA.AddComponent<SamplePlayerPresenter>();
 
             LogAssert.Expect(LogType.Error, new Regex(@"GameObject 'UnitA' has multiple BaseObservableDataModel components"));
@@ -49,7 +52,7 @@ namespace SavableObservable.Tests {
         public void MultiplePresenters_OnSameGameObject_LogsError() {
             var model = _goA.AddComponent<SamplePlayerModel>();
             var presenter1 = _goA.AddComponent<SamplePlayerPresenter>();
-            var presenter2 = _goA.AddComponent<SamplePlayerPresenter>();
+            var presenter2 = _goA.AddComponent<SecondaryPresenter>();
 
             LogAssert.Expect(LogType.Error, new Regex(@"GameObject 'UnitA' has multiple IObservablePresenter components"));
 

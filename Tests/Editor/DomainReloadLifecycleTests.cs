@@ -122,6 +122,7 @@ namespace SavableObservable.Tests {
             var customAdapter = new DummyCustomAdapter();
             UIAdapterRegistry.RegisterAdapter(customAdapter);
 
+            Assert.IsNotNull(UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
             Assert.AreSame(customAdapter, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
 
             // Reset registry (as occurs on domain reload / subsystem registration)
