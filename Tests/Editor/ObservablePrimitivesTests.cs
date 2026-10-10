@@ -67,6 +67,35 @@ namespace SavableObservable.Tests {
             Assert.AreEqual("Initial", variable.PreviousValue);
         }
 
+#if UNITY_EDITOR
+        [Test]
+        public void ObservableVariable_EditorOnValidate_EmitsNotificationWithCorrectPreviousValue() {
+            var variable = new ObservableVariable<int> { Value = 100 };
+            int receivedNewValue = 0;
+            int changeCount = 0;
+
+            variable.OnValueChanged.Add(v => {
+                receivedNewValue = v.Value;
+                changeCount++;
+            }, null);
+
+            // 1. Designer begins GUI edit in Inspector: captures snapshot
+            variable.OnBeginGui();
+
+            // 2. Inspector modifies the internal backing field directly via SerializedProperty
+            // Simulate editor serialization change:
+            variable.Value = 250;
+
+            // 3. Unity calls OnValidate()
+            variable.OnValidate();
+
+            Assert.AreEqual(100, variable.PreviousValue, "PreviousValue must reflect the pre-GUI snapshot");
+            Assert.AreEqual(250, variable.Value);
+            Assert.AreEqual(250, receivedNewValue);
+            Assert.AreEqual(1, changeCount);
+        }
+#endif
+
         #endregion
 
         #region ObservableList Tests

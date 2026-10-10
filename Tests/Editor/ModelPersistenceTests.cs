@@ -57,6 +57,65 @@ namespace SavableObservable.Tests {
             model.LoadDataFromModel(null);
         }
 
+        private class DerivedPlayerModel : SamplePlayerModel {
+            public ObservableVariable<int> level = new ObservableVariable<int>();
+            public string characterClass = "Mage";
+        }
+
+        [Test]
+        public void BaseObservableDataModel_LoadDataFromModel_CopiesInheritedAndDerivedFields() {
+            var target = _unitA.AddComponent<DerivedPlayerModel>();
+            var source = _unitB.AddComponent<DerivedPlayerModel>();
+
+            target.InitializeDefaults();
+            target.level.Value = 1;
+            target.characterClass = "Novice";
+
+            source.InitializeDefaults();
+            source.playerName.Value = "Gandalf";
+            source.health.Value = 95;
+            source.level.Value = 50;
+            source.characterClass = "Wizard";
+
+            target.LoadDataFromModel(source);
+
+            // Verify both base class fields and derived class fields are copied
+            Assert.AreEqual("Gandalf", target.playerName.Value);
+            Assert.AreEqual(95, target.health.Value);
+            Assert.AreEqual(50, target.level.Value);
+            Assert.AreEqual("Wizard", target.characterClass);
+        }
+
+        [Test]
+        public void LoaderWithModel_LoadDataFromModel_RebindsPresenterWithoutCorruptingListeners() {
+            var model = _unitA.AddComponent<SamplePlayerModel>();
+            var presenter = _unitA.AddComponent<SamplePlayerPresenter>();
+            var loader = _unitA.AddComponent<SamplePlayerLoader>();
+
+            model.InitializeDefaults();
+            Observable.SetListeners(presenter, model);
+
+            model.health.Value = 70;
+            Assert.AreEqual(70, presenter.LastObservedHealth);
+            int initialEvents = presenter.HealthChangeEventsCount;
+
+            // Save state
+            var dto = loader.SaveCurrentState();
+
+            // Mutate model
+            model.health.Value = 10;
+
+            // Load saved state through loader
+            loader.LoadDataFromModel(dto);
+
+            // Verify state is restored and listeners remain intact and active
+            Assert.AreEqual(70, model.health.Value);
+
+            // Further changes continue to notify presenter
+            model.health.Value = 65;
+            Assert.AreEqual(65, presenter.LastObservedHealth);
+        }
+
         [Test]
         public void SamplePlayerLoader_SaveAndLoadRoundtrip() {
             var model = _unitA.AddComponent<SamplePlayerModel>();

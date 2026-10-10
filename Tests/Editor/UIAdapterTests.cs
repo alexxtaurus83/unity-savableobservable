@@ -141,5 +141,39 @@ namespace SavableObservable.Tests {
                 UnityEngine.Object.DestroyImmediate(tex);
             }
         }
+
+        [Test]
+        public void TwoWayBinding_DoesNotCauseInfiniteRecursionOrReentrancyLoop() {
+            var toggle = _host.AddComponent<Toggle>();
+            var modelVar = new ObservableVariable<bool> { Value = false };
+            var adapter = UIAdapterRegistry.GetAdapter(typeof(Toggle)) as IUIListenerAdapter;
+            Assert.IsNotNull(adapter);
+
+            int uiListenerInvocations = 0;
+            int modelListenerInvocations = 0;
+
+            // UI -> Model listener
+            object token = adapter.AddListener(toggle, val => {
+                uiListenerInvocations++;
+                if (modelVar.Value != (bool)val) {
+                    modelVar.Value = (bool)val;
+                }
+            }, typeof(bool));
+
+            // Model -> UI listener
+            modelVar.OnValueChanged.Add(v => {
+                modelListenerInvocations++;
+                adapter.SetValue(toggle, v.Value, typeof(bool));
+            }, null);
+
+            // Trigger change from UI side
+            toggle.isOn = true;
+
+            Assert.AreEqual(1, uiListenerInvocations, "UI listener should only fire once per user change");
+            Assert.AreEqual(1, modelListenerInvocations, "Model listener should only fire once");
+            Assert.IsTrue(modelVar.Value);
+
+            adapter.RemoveListener(toggle, token);
+        }
     }
 }
