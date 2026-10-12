@@ -79,6 +79,7 @@ namespace SavableObservable {
 
         public void AddRange(IEnumerable<T> items) {
             if (items == null) return;
+            if (items is ICollection<T> col && col.Count == 0) return;
             CapturePrevious();
             _items.AddRange(items);
             NotifyChanged();
@@ -169,7 +170,11 @@ namespace SavableObservable {
         }
 
         private void CapturePrevious() {
-            PreviousValue = _items.ToArray();
+            if (_onChanged != null && _onChanged.HandlerCount > 0) {
+                PreviousValue = _items.ToArray();
+            } else {
+                PreviousValue = Array.Empty<T>();
+            }
         }
 
         private void NotifyChanged() {
