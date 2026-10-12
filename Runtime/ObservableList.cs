@@ -170,11 +170,7 @@ namespace SavableObservable {
         }
 
         private void CapturePrevious() {
-            if (_onChanged != null && _onChanged.HandlerCount > 0) {
-                PreviousValue = _items.ToArray();
-            } else {
-                PreviousValue = Array.Empty<T>();
-            }
+            PreviousValue = _items.Count == 0 ? Array.Empty<T>() : _items.ToArray();
         }
 
         private void NotifyChanged() {

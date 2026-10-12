@@ -276,14 +276,14 @@ The framework provides two interfaces for UI adapters, following the Interface S
 
 | Interface | Purpose | Methods |
 |-----------|---------|---------|
-| [`IUIAdapter`](Runtime/UIAdapters.cs:13) | Display-only / Model→UI only | `CanHandle(Type)`, `Priority`, `SetValue(object, object, Type)` |
-| [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) | Interactive / Two-way binding | Extends `IUIAdapter` + `AddListener(object, Action<object>, Type)`, `RemoveListener(object, object)` |
+| [`IUIAdapter`](Runtime/UIAdapters.cs) | Display-only / Model→UI only | `CanHandle(Type)`, `Priority`, `SetValue(object, object, Type)` |
+| [`IUIListenerAdapter`](Runtime/UIAdapters.cs) | Interactive / Two-way binding | Extends `IUIAdapter` + `AddListener(object, Action<object>, Type)`, `RemoveListener(object, object)` |
 
 ### How to Create Custom UI Adapters
 
 #### Display-Only Adapters (Model→UI)
 
-Use [`IUIAdapter`](Runtime/UIAdapters.cs:13) for components that only display data and don't need to propagate user input back to the model:
+Use [`IUIAdapter`](Runtime/UIAdapters.cs) for components that only display data and don't need to propagate user input back to the model:
 
 ```csharp
 using System;
@@ -310,44 +310,45 @@ public class ProgressBarAdapter : IUIAdapter {
 
 #### Interactive Adapters (Two-Way Binding)
 
-Use [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) for components that need to propagate user input back to the model:
+Use [`IUIListenerAdapter`](Runtime/UIAdapters.cs) for components that need to propagate user input back to the model (such as `UnityEngine.UI.Scrollbar`, `Dropdown`, or custom controls):
 
 ```csharp
 using System;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Events;
 using SavableObservable;
 
-// Interactive adapter for Slider - supports two-way binding
-public class SliderAdapter : IUIListenerAdapter {
+// Interactive adapter for Scrollbar - supports two-way binding
+public class ScrollbarAdapter : IUIListenerAdapter {
     public int Priority => 100;
 
     public bool CanHandle(Type uiComponentType) {
-        return typeof(Slider).IsAssignableFrom(uiComponentType);
+        return typeof(Scrollbar).IsAssignableFrom(uiComponentType);
     }
 
     public void SetValue(object uiComponent, object value, Type valueType) {
-        if (uiComponent is Slider slider) {
+        if (uiComponent is Scrollbar scrollbar) {
             if (value is float floatValue)
-                slider.value = floatValue;
+                scrollbar.SetValueWithoutNotify(floatValue);
             else if (value is int intValue)
-                slider.value = intValue;
+                scrollbar.SetValueWithoutNotify(intValue);
         }
     }
 
     // Returns an opaque token used for listener removal
     public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType) {
-        if (uiComponent is Slider slider) {
+        if (uiComponent is Scrollbar scrollbar) {
             UnityAction<float> listener = val => onValueChanged(val);
-            slider.onValueChanged.AddListener(listener);
+            scrollbar.onValueChanged.AddListener(listener);
             return listener; // Return the listener as the token
         }
         return null;
     }
 
     public void RemoveListener(object uiComponent, object token) {
-        if (uiComponent is Slider slider && token is UnityAction<float> listener) {
-            slider.onValueChanged.RemoveListener(listener);
+        if (uiComponent is Scrollbar scrollbar && token is UnityAction<float> listener) {
+            scrollbar.onValueChanged.RemoveListener(listener);
         }
     }
 }
@@ -355,14 +356,14 @@ public class SliderAdapter : IUIListenerAdapter {
 
 #### Registering Custom Adapters
 
-Register your adapters at runtime using [`UIAdapterRegistry.RegisterAdapter()`](Runtime/UIAdapters.cs:71):
+Register your adapters at runtime using [`UIAdapterRegistry.RegisterAdapter()`](Runtime/UIAdapters.cs):
 
 ```csharp
 using SavableObservable;
 
 public class AdapterSetup : MonoBehaviour {
     void Awake() {
-        UIAdapterRegistry.RegisterAdapter(new SliderAdapter());
+        UIAdapterRegistry.RegisterAdapter(new ScrollbarAdapter());
         UIAdapterRegistry.RegisterAdapter(new ProgressBarAdapter());
     }
 }
@@ -372,15 +373,8 @@ public class AdapterSetup : MonoBehaviour {
 
 The registry provides two methods for adapter lookup:
 
-- [`UIAdapterRegistry.GetAdapter(Type)`](Runtime/UIAdapters.cs:89) — Returns an [`IUIAdapter`](Runtime/UIAdapters.cs:13) for the given UI component type, or `null` if none found.
-- [`UIAdapterRegistry.TryGetListenerAdapter(Type, out IUIListenerAdapter)`](Runtime/UIAdapters.cs:166) — Returns `true` and provides an [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) if the adapter supports two-way binding. Use this when you need to check if an adapter can propagate user input back to the model.
-
-#### Migration Note
-
-If you have existing custom adapters from a previous version:
-
-1. **Display-only adapters**: Remove any no-op `AddListener`/`RemoveListener` implementations and implement only [`IUIAdapter`](Runtime/UIAdapters.cs:13).
-2. **Interactive adapters**: Move listener methods into the [`IUIListenerAdapter`](Runtime/UIAdapters.cs:34) interface implementation. The `AddListener` method now returns an opaque token (instead of `void`) for proper listener cleanup.
+- [`UIAdapterRegistry.GetAdapter(Type)`](Runtime/UIAdapters.cs) — Returns an [`IUIAdapter`](Runtime/UIAdapters.cs) for the given UI component type, or `null` if none found.
+- [`UIAdapterRegistry.TryGetListenerAdapter(Type, out IUIListenerAdapter)`](Runtime/UIAdapters.cs) — Returns `true` and provides an [`IUIListenerAdapter`](Runtime/UIAdapters.cs) if the adapter supports two-way binding. Use this when you need to check if an adapter can propagate user input back to the model.
 
 #### Approach 2: ObservableHandler (For Custom Logic)
 
@@ -831,13 +825,3 @@ By combining the `ISharedSingleton` interface with a `Services` locator and an i
 * **Reactive Singletons**: Observable presenters implementing `IObservablePresenter` (or extending `BaseObservablePresenter<M>`) can be bound cleanly using `Observable.SetListeners(subscriber)` or `Observable.SetListeners(subscriber, model)`.
 * **Strict One MMVC Unit per GameObject**: Each GameObject must hold exactly one Model, at most one Logic, and at most one Presenter. The explicit-model overloads `Observable.SetListeners(subscriber, model)` and `Observable.SetAutoBindListeners(subscriber, model)` strictly require the model to be on the subscriber's own GameObject. Access other units via their presenter (`presenter.GetModel()`), never by holding or binding another GameObject's model directly.
 
----
-
-## Migration from Legacy Framework
-
-If you are migrating from an older version of this framework that used:
-- Legacy typed observable classes (e.g., `Observable.ObservableInt32`, `Observable.ObservableString`)
-- The `OnModelValueChanged()` universal handler pattern
-- The `InitFields()` method
-
-Please refer to the [Migration Guide](../plans/UniversalHandler-Migration-Guide.md) for detailed instructions on updating your code to the modern attribute-based system.

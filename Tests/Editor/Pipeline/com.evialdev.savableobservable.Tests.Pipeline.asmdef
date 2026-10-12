@@ -1,0 +1,33 @@
+{
+  "name": "com.evialdev.savableobservable.Tests.Pipeline",
+  "rootNamespace": "SavableObservable.Editor",
+  "references": [
+    "com.evialdev.savableobservable",
+    "com.evialdev.savableobservable.Editor",
+    "com.evialdev.savableobservable.Samples",
+    "Unity.Pipeline",
+    "Unity.Pipeline.Attributes",
+    "Unity.TextMeshPro",
+    "UnityEngine.UI"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS",
+    "HAS_UNITY_PIPELINE"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.pipeline",
+      "expression": "",
+      "define": "HAS_UNITY_PIPELINE"
+    }
+  ],
+  "noEngineReferences": false
+}

@@ -191,6 +191,31 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
+        public void ObservableList_PreviousValue_PopulatedWithoutSubscribers() {
+            var list = new ObservableList<string>();
+
+            // Mutation without any OnChanged subscriber registered
+            list.Add("Alpha");
+            Assert.AreEqual(0, list.PreviousValue.Count, "Initial mutation PreviousValue should capture empty snapshot");
+
+            list.Add("Beta");
+            Assert.AreEqual(1, list.PreviousValue.Count, "Second mutation PreviousValue should capture pre-mutation items");
+            Assert.AreEqual("Alpha", list.PreviousValue[0]);
+
+            list[0] = "Gamma";
+            Assert.AreEqual("Alpha", list.PreviousValue[0], "Indexer mutation PreviousValue should capture state prior to edit");
+
+            list.Remove("Beta");
+            Assert.AreEqual(2, list.PreviousValue.Count, "Removal mutation PreviousValue should capture 2 items prior to remove");
+            Assert.AreEqual("Gamma", list.PreviousValue[0]);
+            Assert.AreEqual("Beta", list.PreviousValue[1]);
+
+            list.Clear();
+            Assert.AreEqual(1, list.PreviousValue.Count, "Clear mutation PreviousValue should capture items before clearing");
+            Assert.AreEqual("Gamma", list.PreviousValue[0]);
+        }
+
+        [Test]
         public void ObservableVariable_CustomStructAndEnum_WorksCorrectly() {
             var structVar = new ObservableVariable<Vector2Int> { Value = new Vector2Int(1, 2) };
             Vector2Int observed = Vector2Int.zero;

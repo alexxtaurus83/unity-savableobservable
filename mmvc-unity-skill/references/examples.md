@@ -352,26 +352,26 @@ using System;
 using SavableObservable;
 using UnityEngine.Events;
 
-public class FloatSliderAdapter : IUIListenerAdapter {
+public class ScrollbarAdapter : IUIListenerAdapter {
     public int Priority => 100;
-    public bool CanHandle(Type type) => typeof(UnityEngine.UI.Slider).IsAssignableFrom(type);
+    public bool CanHandle(Type type) => typeof(UnityEngine.UI.Scrollbar).IsAssignableFrom(type);
 
     public void SetValue(object component, object value, Type valueType) {
-        if (component is UnityEngine.UI.Slider slider && value is float number)
-            slider.SetValueWithoutNotify(number);
+        if (component is UnityEngine.UI.Scrollbar scrollbar && value is float number)
+            scrollbar.SetValueWithoutNotify(number);
     }
 
     public object AddListener(object component, Action<object> onChanged, Type valueType) {
-        if (!(component is UnityEngine.UI.Slider slider) || valueType != typeof(float))
+        if (!(component is UnityEngine.UI.Scrollbar scrollbar) || valueType != typeof(float))
             return null;
         UnityAction<float> listener = value => onChanged(value);
-        slider.onValueChanged.AddListener(listener);
+        scrollbar.onValueChanged.AddListener(listener);
         return listener;
     }
 
     public void RemoveListener(object component, object token) {
-        if (component is UnityEngine.UI.Slider slider && token is UnityAction<float> listener)
-            slider.onValueChanged.RemoveListener(listener);
+        if (component is UnityEngine.UI.Scrollbar scrollbar && token is UnityAction<float> listener)
+            scrollbar.onValueChanged.RemoveListener(listener);
     }
 }
 ```
@@ -380,7 +380,7 @@ Register from the same initialization owner before SetListeners:
 
 ```csharp
 UIAdapterRegistry.RegisterAdapter(new FillViewAdapter());
-UIAdapterRegistry.RegisterAdapter(new FloatSliderAdapter());
+UIAdapterRegistry.RegisterAdapter(new ScrollbarAdapter());
 ```
 
-Use `UIAdapterRegistry.GetAdapter(typeof(FillView))` for display adapter lookup and `UIAdapterRegistry.TryGetListenerAdapter(typeof(UnityEngine.UI.Slider), out var adapter)` when interactive behavior is required. Configure slider limits and whole-number behavior to match model semantics. Supply an explicit initial refresh; registration and binding do not populate the initial value.
+Use `UIAdapterRegistry.GetAdapter(typeof(FillView))` for display adapter lookup and `UIAdapterRegistry.TryGetListenerAdapter(typeof(UnityEngine.UI.Scrollbar), out var adapter)` when interactive behavior is required. Configure scrollbar parameters to match model semantics. Supply an explicit initial refresh; registration and binding do not populate the initial value.
