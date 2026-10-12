@@ -1,5 +1,4 @@
-﻿using System.Reflection;
-using UnityEngine;
+﻿using UnityEngine;
 
 namespace SavableObservable {
 
@@ -18,8 +17,13 @@ namespace SavableObservable {
             ComponentAutoRequire.EnsureComponent<M>(this);
         }
 
+        private M _model;
+
         public M GetModel() {
-            return GetComponent<M>();
+            if (_model == null) {
+                _model = GetComponent<M>();
+            }
+            return _model;
         }
 
         /// <summary>
@@ -33,22 +37,18 @@ namespace SavableObservable {
         /// Applies a loaded state to the model and sets up observable event listeners.
         /// </summary>
         public virtual void LoadDataFromModel(object state) {
-            // Note: This uses reflection to call the LoadDataFromModel method on the specific model instance.
-            // This method is defined in the BaseObservableDataModel class.
-            var methodInfo = typeof(M).GetMethod("LoadDataFromModel", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (methodInfo == null) {
-                var modelType = typeof(M);
-                var modelInstance = GetModel();
-                var actualRuntimeType = modelInstance?.GetType();
-                Debug.LogError($"[LoaderWithModel] Method 'LoadDataFromModel' not found on model type '{modelType.FullName}'. Expected signature: void LoadDataFromModel(object state). Actual runtime type: {(actualRuntimeType != null ? actualRuntimeType.FullName : "null")}");
+            var model = GetModel();
+            if (model == null) {
+                Debug.LogError($"[LoaderWithModel] Model of type '{typeof(M).Name}' not found on '{gameObject.name}'.", this);
                 return;
             }
-            methodInfo.Invoke(GetModel(), new object[] { state });
+
+            model.LoadDataFromModel(state);
             
             // Set up listeners AFTER model state is loaded to prevent notifications during load.
             var presenter = GetComponent<BaseObservablePresenter<M>>();
             if (presenter != null) {
-                Observable.SetListeners(presenter, GetModel());
+                Observable.SetListeners(presenter, model);
             }
         }
     }

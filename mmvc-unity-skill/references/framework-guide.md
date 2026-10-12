@@ -112,13 +112,13 @@ Treat Inspector changes, runtime wrapper mutations, and raw backing-list changes
 | `TMPro.TMP_Text` / `TextMeshProUGUI` | Display value as text |
 | `UnityEngine.UI.Text` | Display value as text |
 | `UnityEngine.UI.Toggle` | Two-way boolean binding |
+| `UnityEngine.UI.Slider` | Two-way numeric binding |
 | `TMPro.TMP_InputField`, `UnityEngine.UI.InputField` | Two-way text with basic type conversion |
-| `UnityEngine.UI.Button` | Update child TMP text, not click actions |
 | `UnityEngine.UI.Image` | Set sprite |
 
-Wire button clicks separately to logic entry points. Validate input conversion for the requested type; do not assume complex types such as Vector2 are supported. Register custom adapters before binding. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter`.
+Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Validate input conversion for the requested type; do not assume complex types such as Vector2 are supported. Register custom adapters before binding. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter`.
 
-Use no-notify UI setters where appropriate to avoid feedback. Add a custom adapter for Slider; it is not a built-in adapter. Consult the complete adapter examples in `examples.md` for signatures, registration, and token-based cleanup. Register adapters before the first binding setup, and avoid changing adapter selection while live bindings depend on it.
+Use no-notify UI setters where appropriate to avoid feedback. Built-in adapters support TMP text, UI text, Toggle, Slider, InputField, and Image. Consult the complete adapter examples in `examples.md` for signatures, registration, and token-based cleanup. Register adapters before the first binding setup, and avoid changing adapter selection while live bindings depend on it.
 
 ## Lifetime and Cleanup
 
