@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
+using UnityEngine.TestTools.Constraints;
 using SavableObservable;
+using Is = UnityEngine.TestTools.Constraints.Is;
 
 namespace SavableObservable.Tests {
     [TestFixture]
@@ -213,6 +216,142 @@ namespace SavableObservable.Tests {
             list.Clear();
             Assert.AreEqual(1, list.PreviousValue.Count, "Clear mutation PreviousValue should capture items before clearing");
             Assert.AreEqual("Gamma", list.PreviousValue[0]);
+        }
+
+        [Test]
+        public void ObservableList_PreviousValue_MutationsWithoutSubscribers_RebuiltCorrectly() {
+            var list = new ObservableList<string> { "A", "C" };
+
+            // 1. Insert (middle)
+            list.Insert(1, "B");
+            Assert.AreEqual(2, list.PreviousValue.Count);
+            Assert.AreEqual("A", list.PreviousValue[0]);
+            Assert.AreEqual("C", list.PreviousValue[1]);
+
+            // 2. RemoveAt (first) - list is ["A", "B", "C"]
+            list.RemoveAt(0);
+            Assert.AreEqual(3, list.PreviousValue.Count);
+            Assert.AreEqual("A", list.PreviousValue[0]);
+            Assert.AreEqual("B", list.PreviousValue[1]);
+            Assert.AreEqual("C", list.PreviousValue[2]);
+
+            // 3. RemoveAt (middle) - list is ["B", "C"]
+            list.Add("D"); // list is ["B", "C", "D"]
+            list.RemoveAt(1); // removes "C", list is ["B", "D"]
+            Assert.AreEqual(3, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+            Assert.AreEqual("C", list.PreviousValue[1]);
+            Assert.AreEqual("D", list.PreviousValue[2]);
+
+            // 4. RemoveAt (last) - list is ["B", "D"]
+            list.RemoveAt(list.Count - 1); // removes "D", list is ["B"]
+            Assert.AreEqual(2, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+            Assert.AreEqual("D", list.PreviousValue[1]);
+
+            // 5. AddRange (array) - list is ["B"]
+            list.AddRange(new[] { "X", "Y" });
+            Assert.AreEqual(1, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+
+            // 6. AddRange (lazy IEnumerable) - list is ["B", "X", "Y"]
+            static IEnumerable<string> LazyItems() {
+                yield return "Z1";
+                yield return "Z2";
+            }
+            list.AddRange(LazyItems());
+            Assert.AreEqual(3, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+            Assert.AreEqual("X", list.PreviousValue[1]);
+            Assert.AreEqual("Y", list.PreviousValue[2]);
+
+            // 7. ForceNotify - list is ["B", "X", "Y", "Z1", "Z2"]
+            list.ForceNotify();
+            Assert.AreEqual(5, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+            Assert.AreEqual("Z2", list.PreviousValue[4]);
+
+            // 8. Value replacement
+            list.Value = new List<string> { "New1", "New2" };
+            Assert.AreEqual(5, list.PreviousValue.Count);
+            Assert.AreEqual("B", list.PreviousValue[0]);
+            Assert.AreEqual("Z2", list.PreviousValue[4]);
+
+            // 9. Indexer set on last element - list is ["New1", "New2"]
+            list[list.Count - 1] = "ReplacedLast";
+            Assert.AreEqual(2, list.PreviousValue.Count);
+            Assert.AreEqual("New1", list.PreviousValue[0]);
+            Assert.AreEqual("New2", list.PreviousValue[1]);
+        }
+
+        [Test]
+        public void ObservableList_PreviousValue_ReferencePersistsAcrossSubsequentMutations() {
+            var list = new ObservableList<string>();
+            list.Add("Alpha");
+            var prev1 = list.PreviousValue;
+            Assert.AreEqual(0, prev1.Count);
+
+            list.Add("Beta");
+            var prev2 = list.PreviousValue;
+            Assert.AreEqual(1, prev2.Count);
+            Assert.AreEqual("Alpha", prev2[0]);
+
+            // Ensure prev1 did not mutate when prev2 was created or list was mutated
+            Assert.AreEqual(0, prev1.Count);
+
+            list[0] = "Gamma";
+            var prev3 = list.PreviousValue;
+            Assert.AreEqual(2, prev3.Count);
+            Assert.AreEqual("Alpha", prev3[0]);
+            Assert.AreEqual("Beta", prev3[1]);
+
+            // Earlier references remain unchanged
+            Assert.AreEqual(0, prev1.Count);
+            Assert.AreEqual(1, prev2.Count);
+            Assert.AreEqual("Alpha", prev2[0]);
+        }
+
+        [Test]
+        public void ObservableList_PreviousValue_MultipleReadsWithoutMutation_ReturnsSameInstance() {
+            var list = new ObservableList<int>();
+            list.Add(10);
+            list.Add(20);
+
+            var firstRead = list.PreviousValue;
+            var secondRead = list.PreviousValue;
+
+            Assert.AreSame(firstRead, secondRead);
+        }
+
+        [Test]
+        public void ObservableList_Mutations_DoNotAllocateGCMemory() {
+            var list = new ObservableList<int>();
+            list.Value.Capacity = 64;
+
+            _ = list.OnChanged;
+            list.Add(1);
+
+            Assert.That(() => list.Add(2), Is.Not.AllocatingGCMemory());
+            Assert.That(() => list.Insert(1, 99), Is.Not.AllocatingGCMemory());
+            Assert.That(() => list[0] = 42, Is.Not.AllocatingGCMemory());
+            Assert.That(() => list.RemoveAt(1), Is.Not.AllocatingGCMemory());
+        }
+
+        [Test]
+        public void ObservableList_PreviousValue_WhenOutsideModificationOccurs_LogsWarningAndReturnsCurrent() {
+            var list = new ObservableList<string>();
+            list.Add("Alpha");
+
+            list.Value.Add("Beta");
+
+            LogAssert.Expect(LogType.Warning, "ObservableList: External modification of underlying items detected. Delta cannot be applied; returning current list as PreviousValue.");
+
+            IReadOnlyList<string> previous = null;
+            Assert.DoesNotThrow(() => previous = list.PreviousValue);
+            Assert.IsNotNull(previous);
+            Assert.AreEqual(2, previous.Count);
+            Assert.AreEqual("Alpha", previous[0]);
+            Assert.AreEqual("Beta", previous[1]);
         }
 
         [Test]

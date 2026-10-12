@@ -7,10 +7,10 @@
   - Stripped `Unity.Pipeline`, `Unity.Pipeline.Attributes`, and `com.unity.pipeline` versionDefines from `Editor/com.evialdev.savableobservable.Editor.asmdef`.
   - Moved developer CLI pipeline tools (`MmvcSceneBuilder.cs`, `MmvcSelfTest.cs`) to `Tests/Editor/Pipeline/` backed by a dedicated test assembly (`com.evialdev.savableobservable.Tests.Pipeline.asmdef`) constrained by `UNITY_INCLUDE_TESTS` and `HAS_UNITY_PIPELINE`.
   - Consumer projects importing this package now compile cleanly on any Unity version without requiring `com.unity.pipeline` installed.
-- **ObservableList `PreviousValue` Snapshotting:**
-  - `ObservableList<T>.CapturePrevious()` now unconditionally snapshots pre-mutation state across all mutation methods (`Add`, `AddRange`, `Clear`, `Insert`, `Remove`, `RemoveAt`, indexer assignments, `ForceNotify`), guaranteeing consistent `PreviousValue` access even when there are no active `OnChanged` subscribers.
+- **ObservableList Lazy Delta-Based `PreviousValue`:**
+  - `PreviousValue` is always available, rebuilt on read from a recorded mutation delta. There is no per-mutation allocation, except `Clear` and `Value` replacement.
 - **Added Regression Tests:**
-  - Added test validating `ObservableList.PreviousValue` population without event listeners.
+  - Added tests validating `ObservableList.PreviousValue` population without event listeners, allocation-free mutations via `Is.Not.AllocatingGCMemory()`, and mutation delta reconstruction.
   - Added test verifying two-way UI listener cleanup detaches correctly on `Observable.RemoveListeners`.
 
 ## [1.0.16] - 2026-10-08 - Performance, AOT/IL2CPP hardening & architecture simplification
