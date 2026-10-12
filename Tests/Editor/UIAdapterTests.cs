@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.UI;
@@ -174,6 +175,31 @@ namespace SavableObservable.Tests {
             Assert.IsTrue(modelVar.Value);
 
             adapter.RemoveListener(toggle, token);
+        }
+
+        private class DynamicTestComponent : MonoBehaviour { }
+
+        private class DynamicTestAdapter : IUIAdapter {
+            public int Priority => 200;
+            public bool CanHandle(Type uiComponentType) => uiComponentType == typeof(DynamicTestComponent);
+            public void SetValue(object uiComponent, object value, Type valueType) { }
+        }
+
+        [Test]
+        public void RegisterAdapter_AfterInitialization_RebuildsSnapshotAndResolvesAdapter() {
+            // Ensure built-in adapters are initialized
+            Assert.IsNotNull(UIAdapterRegistry.GetAdapter(typeof(TextMeshProUGUI)));
+
+            var dynamicAdapter = new DynamicTestAdapter();
+            try {
+                UIAdapterRegistry.RegisterAdapter(dynamicAdapter);
+
+                var resolved = UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent));
+                Assert.AreSame(dynamicAdapter, resolved, "Dynamically registered adapter should resolve immediately after initialization");
+            } finally {
+                var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
+                resetRegistry?.Invoke(null, null);
+            }
         }
     }
 }
