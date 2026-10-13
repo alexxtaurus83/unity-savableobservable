@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.17] - 2026-10-12 - UI listener unbinding unification, ASMDEF decoupling & ObservableList PreviousValue fix
+- **Fixed Redundant Two-Way UI Listener Removal:**
+  - Consolidated UI listener cleanup into `UnbindActions` closure tracking, eliminating the redundant `UiListenerTokens` list and ensuring `IUIListenerAdapter.RemoveListener` is invoked exactly once per token during subscriber detachment and data model destruction.
+- **Decoupled Core Editor Assembly & Isolated Unity Pipeline Tools:**
+  - Stripped `Unity.Pipeline`, `Unity.Pipeline.Attributes`, and `com.unity.pipeline` versionDefines from `Editor/com.evialdev.savableobservable.Editor.asmdef`.
+  - Moved developer CLI pipeline tools (`MmvcSceneBuilder.cs`, `MmvcSelfTest.cs`) to `Tests/Editor/Pipeline/` backed by a dedicated test assembly (`com.evialdev.savableobservable.Tests.Pipeline.asmdef`) constrained by `UNITY_INCLUDE_TESTS` and `HAS_UNITY_PIPELINE`.
+  - Consumer projects importing this package now compile cleanly on any Unity version without requiring `com.unity.pipeline` installed.
+- **ObservableList Lazy Delta-Based `PreviousValue`:**
+  - `PreviousValue` is always available, rebuilt on read from a recorded mutation delta. There is no per-mutation allocation, except `Clear` and `Value` replacement.
+- **Added Regression Tests:**
+  - Added tests validating `ObservableList.PreviousValue` population without event listeners, allocation-free mutations via `Is.Not.AllocatingGCMemory()`, and mutation delta reconstruction.
+  - Added test verifying two-way UI listener cleanup detaches correctly on `Observable.RemoveListeners`.
+
 ## [1.0.16] - 2026-10-08 - Performance, AOT/IL2CPP hardening & architecture simplification
 - **Unity 6.6 & Configurable Enter Play Mode Support (Domain Reload Disabled):**
   - Added `Unity.Scripting.LifecycleManagement` annotations (`[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`) and marked containing types with `partial` modifier to comply with Unity 6.5/6.6+ Roslyn analyzers (UAL0011-UAL0014) and source generation.

@@ -158,5 +158,31 @@ namespace SavableObservable.Tests {
             _model.playerName.Value = "Aragorn";
             Assert.AreEqual("Aragorn", _subscriber.nameDisplay.text);
         }
+
+        [Test]
+        public void AutoBind_TwoWayBinding_CleansUpOnRemoveListeners() {
+            var toggleObj = new GameObject("Toggle", typeof(Toggle));
+            toggleObj.transform.SetParent(_host.transform, false);
+            var toggle = toggleObj.GetComponent<Toggle>();
+
+            var presenter = _host.AddComponent<SamplePlayerPresenter>();
+            presenter.shieldToggle = toggle;
+
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
+            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
+
+            Observable.SetListeners(presenter, _model);
+
+            // Toggle change should update model (UI -> Model two-way)
+            toggle.isOn = true;
+            Assert.IsTrue(_model.isShieldActive.Value);
+
+            // Remove listeners
+            Observable.RemoveListeners(_model, presenter);
+
+            // Subsequent toggle change should no longer mutate model
+            toggle.isOn = false;
+            Assert.IsTrue(_model.isShieldActive.Value, "Model should retain value after RemoveListeners detaches two-way UI listener");
+        }
     }
 }

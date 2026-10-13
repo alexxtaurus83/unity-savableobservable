@@ -3,9 +3,6 @@
   "rootNamespace": "",
   "references": [
     "com.evialdev.savableobservable",
-    "com.evialdev.savableobservable.Samples",
-    "Unity.Pipeline",
-    "Unity.Pipeline.Attributes",
     "Unity.TextMeshPro",
     "UnityEngine.UI"
   ],
@@ -19,11 +16,6 @@
   "autoReferenced": true,
   "defineConstraints": [],
   "versionDefines": [
-    {
-      "name": "com.unity.pipeline",
-      "expression": "0.0.1",
-      "define": "HAS_UNITY_PIPELINE"
-    },
     {
       "name": "Unity",
       "expression": "6000.5",
