@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.17] - 2026-10-13 - Minor files fix
+
 ## [1.0.17] - 2026-10-12 - UI listener unbinding unification, ASMDEF decoupling & ObservableList PreviousValue fix
 - **Fixed Redundant Two-Way UI Listener Removal:**
   - Consolidated UI listener cleanup into `UnbindActions` closure tracking, eliminating the redundant `UiListenerTokens` list and ensuring `IUIListenerAdapter.RemoveListener` is invoked exactly once per token during subscriber detachment and data model destruction.
