@@ -1,9 +1,5 @@
-*.unity
-*.prefab
-*.mat
 *.anim
 *.controller
-*.asset
 *.shader
 *.csproj
 *.sln
