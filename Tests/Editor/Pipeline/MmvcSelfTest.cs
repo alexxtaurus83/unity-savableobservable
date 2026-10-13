@@ -16,7 +16,7 @@ using SavableObservable.Samples;
 namespace SavableObservable.Editor {
     /// <summary>
     /// Comprehensive MMVC CLI Pipeline self-test runner.
-    /// Exposes Unity Pipeline command 'mmvc_selftest' on Unity 6+ with Unity Pipeline.
+    /// Exposes Unity Pipeline command 'mmvc_selftest' on Unity 6+ with Unity Pipeline and an Editor menu item.
     /// </summary>
     public static class MmvcSelfTest {
         private class TestRunnerContext {
@@ -34,6 +34,12 @@ namespace SavableObservable.Editor {
                     Debug.LogWarning("[MmvcSelfTest] " + msg);
                 }
             }
+        }
+
+        [MenuItem("Tools/SavableObservable/Run Self-Test")]
+        public static void RunSelfTestMenu() {
+            var result = RunSelfTest("all");
+            Debug.Log(result);
         }
 
 #if (UNITY_6000_0_OR_NEWER || UNITY_6_OR_NEWER) && HAS_UNITY_PIPELINE

@@ -30,22 +30,6 @@ namespace SavableObservable {
             public FieldInfo[] CachedObservableFields { get; set; }
             public readonly object Lock = new object(); // For thread safety
             public bool IsInCleanup { get; set; }
-
-            // Track UI→Model listener tokens so they can be removed during cleanup.
-            // Key: subscriber object (e.g., presenter/Logic), Value: list of (uiComponent, token) pairs.
-            public Dictionary<object, List<UiListenerToken>> UiListenerTokens { get; } = new Dictionary<object, List<UiListenerToken>>();
-        }
-
-        // Helper struct to store UI listener token information
-        // Stored per subscriber to enable deterministic cleanup of UI→Model bindings
-        private struct UiListenerToken {
-            public UnityEngine.Object UiComponent; // Unity object reference
-            public object Token; // Opaque token returned by IUIAdapter.AddListener()
-
-            public UiListenerToken(UnityEngine.Object uiComponent, object token) {
-                UiComponent = uiComponent;
-                Token = token;
-            }
         }
 
         #region Metadata Caching
@@ -685,11 +669,6 @@ namespace SavableObservable {
                                         }
                                     }
                                 });
-
-                                if (!instanceData.UiListenerTokens.ContainsKey(obj)) {
-                                    instanceData.UiListenerTokens[obj] = new List<UiListenerToken>();
-                                }
-                                instanceData.UiListenerTokens[obj].Add(new UiListenerToken(unityUiComponent, token));
                             }
                         }
                     }
@@ -860,9 +839,6 @@ namespace SavableObservable {
                     RemoveSubscriptionsForSubscriber(dataModel, subscriber, instanceData);
                     instanceData.Subscriptions.Remove(subscriber);
                 }
-
-                // 3) UI listener tokens cleanup
-                RemoveUiListenersForSubscriber(dataModel, subscriber, instanceData);
             }
         }
 
@@ -897,44 +873,8 @@ namespace SavableObservable {
                         }
                         instanceData.Subscriptions.Clear();
                     }
-
-                    // 3) UI listener tokens cleanup
-                    foreach (var kvp in instanceData.UiListenerTokens) {
-                        RemoveUiTokens(kvp.Value);
-                    }
-                    instanceData.UiListenerTokens.Clear();
                 } finally {
                     instanceData.IsInCleanup = false;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Helper method to remove UI listener tokens for a specific subscriber.
-        /// Called by RemoveAllSubscriptions and CleanupSubscriptions.
-        /// </summary>
-        private static void RemoveUiListenersForSubscriber(BaseObservableDataModel dataModel, object subscriber, InstanceData instanceData) {
-            if (!instanceData.UiListenerTokens.TryGetValue(subscriber, out var tokens)) {
-                return;
-            }
-
-            RemoveUiTokens(tokens);
-            tokens.Clear();
-            instanceData.UiListenerTokens.Remove(subscriber);
-        }
-
-        private static void RemoveUiTokens(List<UiListenerToken> tokens) {
-            foreach (var uiToken in tokens) {
-                if (uiToken.UiComponent == null) {
-                    continue;
-                }
-
-                if (uiToken.Token != null && UIAdapterRegistry.TryGetListenerAdapter(uiToken.UiComponent.GetType(), out var listenerAdapter)) {
-                    try {
-                        listenerAdapter.RemoveListener(uiToken.UiComponent, uiToken.Token);
-                    } catch (Exception ex) {
-                        Debug.LogWarning($"[SavableObservable] Failed to remove UI listener token during cleanup: {ex.Message}");
-                    }
                 }
             }
         }
