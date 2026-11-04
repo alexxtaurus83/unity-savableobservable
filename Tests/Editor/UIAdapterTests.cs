@@ -197,9 +197,122 @@ namespace SavableObservable.Tests {
                 var resolved = UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent));
                 Assert.AreSame(dynamicAdapter, resolved, "Dynamically registered adapter should resolve immediately after initialization");
             } finally {
+                UIAdapterRegistry.UnregisterAdapter(dynamicAdapter);
+                UIAdapterRegistry.ClearCustomAdapters();
                 var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
                 resetRegistry?.Invoke(null, null);
             }
+        }
+
+        [Test]
+        public void TwoWayAdapters_ModelToUI_DoesNotBounceBackNotification() {
+            // 1. Toggle
+            var toggleObj = new GameObject("ToggleObj");
+            toggleObj.transform.SetParent(_host.transform, false);
+            var toggle = toggleObj.AddComponent<Toggle>();
+            var toggleAdapter = UIAdapterRegistry.GetAdapter(typeof(Toggle)) as IUIListenerAdapter;
+            var boolModel = new ObservableVariable<bool> { Value = false };
+
+            int boolModelChangeCount = 0;
+            boolModel.OnValueChanged.Add(v => {
+                boolModelChangeCount++;
+                toggleAdapter.SetValue(toggle, v.Value, typeof(bool));
+            }, null);
+
+            var toggleToken = toggleAdapter.AddListener(toggle, v => boolModel.Value = (bool)v, typeof(bool));
+
+            // Set Model -> UI: must update toggle.isOn and invoke boolModel.OnValueChanged EXACTLY ONCE
+            boolModel.Value = true;
+            Assert.IsTrue(toggle.isOn);
+            Assert.AreEqual(1, boolModelChangeCount, "Model update must invoke OnValueChanged exactly once without UI bounce-back");
+
+            // UI -> Model: must update model
+            toggle.isOn = false;
+            Assert.IsFalse(boolModel.Value, "User toggling UI control must update Model");
+            Assert.AreEqual(2, boolModelChangeCount);
+
+            toggleAdapter.RemoveListener(toggle, toggleToken);
+
+            // 2. Slider
+            var sliderObj = new GameObject("SliderObj");
+            sliderObj.transform.SetParent(_host.transform, false);
+            var slider = sliderObj.AddComponent<Slider>();
+            slider.minValue = 0f;
+            slider.maxValue = 100f;
+            var sliderAdapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
+            var floatModel = new ObservableVariable<float> { Value = 10f };
+
+            int floatModelChangeCount = 0;
+            floatModel.OnValueChanged.Add(v => {
+                floatModelChangeCount++;
+                sliderAdapter.SetValue(slider, v.Value, typeof(float));
+            }, null);
+
+            var sliderToken = sliderAdapter.AddListener(slider, v => floatModel.Value = (float)v, typeof(float));
+
+            // Set Model -> UI
+            floatModel.Value = 50f;
+            Assert.AreEqual(50f, slider.value);
+            Assert.AreEqual(1, floatModelChangeCount, "Slider Model update must invoke OnValueChanged exactly once without UI bounce-back");
+
+            // UI -> Model
+            slider.value = 75f;
+            Assert.AreEqual(75f, floatModel.Value, "User sliding control must update Model");
+            Assert.AreEqual(2, floatModelChangeCount);
+
+            sliderAdapter.RemoveListener(slider, sliderToken);
+
+            // 3. TMP_InputField
+            var inputObj = new GameObject("InputObj");
+            inputObj.transform.SetParent(_host.transform, false);
+            var input = inputObj.AddComponent<TMP_InputField>();
+            var textObj = new GameObject("TmpText", typeof(TextMeshProUGUI));
+            textObj.transform.SetParent(inputObj.transform, false);
+            input.textComponent = textObj.GetComponent<TextMeshProUGUI>();
+
+            var inputAdapter = UIAdapterRegistry.GetAdapter(typeof(TMP_InputField)) as IUIListenerAdapter;
+            var stringModel = new ObservableVariable<string> { Value = "A" };
+
+            int stringModelChangeCount = 0;
+            stringModel.OnValueChanged.Add(v => {
+                stringModelChangeCount++;
+                inputAdapter.SetValue(input, v.Value, typeof(string));
+            }, null);
+
+            var inputToken = inputAdapter.AddListener(input, v => stringModel.Value = (string)v, typeof(string));
+
+            // Set Model -> UI
+            stringModel.Value = "B";
+            Assert.AreEqual("B", input.text);
+            Assert.AreEqual(1, stringModelChangeCount, "InputField Model update must invoke OnValueChanged exactly once without UI bounce-back");
+
+            // UI -> Model
+            input.text = "C";
+            Assert.AreEqual("C", stringModel.Value, "User typing in InputField must update Model");
+            Assert.AreEqual(2, stringModelChangeCount);
+
+            inputAdapter.RemoveListener(input, inputToken);
+        }
+
+        [Test]
+        public void CustomAdapters_Survive_ResetRegistry_And_CanBeCleared() {
+            UIAdapterRegistry.ClearCustomAdapters();
+            var dynamicAdapter = new DynamicTestAdapter();
+            try {
+                UIAdapterRegistry.RegisterAdapter(dynamicAdapter);
+                Assert.AreSame(dynamicAdapter, UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent)));
+
+                // Simulate domain reload / Fast Play Mode subsystem registration
+                var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
+                resetRegistry?.Invoke(null, null);
+
+                // Custom adapter must still resolve after reset!
+                Assert.AreSame(dynamicAdapter, UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent)), "Custom adapter must survive ResetRegistry");
+            } finally {
+                UIAdapterRegistry.ClearCustomAdapters();
+            }
+
+            Assert.IsNull(UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent)), "Custom adapter should be cleared after ClearCustomAdapters");
         }
     }
 }

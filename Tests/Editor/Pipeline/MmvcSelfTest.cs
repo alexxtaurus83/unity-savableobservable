@@ -206,10 +206,10 @@ namespace SavableObservable.Editor {
                 var unitObj = new GameObject("PlayerUnit");
                 unitObj.transform.SetParent(root.transform, false);
 
-                var model = unitObj.AddComponent<SamplePlayerModel>();
-                var logic = unitObj.AddComponent<SamplePlayerLogic>();
-                var presenter = unitObj.AddComponent<SamplePlayerPresenter>();
-                var loader = unitObj.AddComponent<SamplePlayerLoader>();
+                var model = unitObj.GetComponent<SamplePlayerModel>() ?? unitObj.AddComponent<SamplePlayerModel>();
+                var logic = unitObj.GetComponent<SamplePlayerLogic>() ?? unitObj.AddComponent<SamplePlayerLogic>();
+                var presenter = unitObj.GetComponent<SamplePlayerPresenter>() ?? unitObj.AddComponent<SamplePlayerPresenter>();
+                var loader = unitObj.GetComponent<SamplePlayerLoader>() ?? unitObj.AddComponent<SamplePlayerLoader>();
 
                 // Phase 2: Hierarchy validation
                 var models = unitObj.GetComponents<BaseObservableDataModel>();

@@ -38,13 +38,6 @@ namespace SavableObservable.Samples {
         public int InventoryChangeEventsCount { get; private set; }
         public List<string> CurrentInventoryItems { get; } = new List<string>();
 
-        private void Start() {
-            var model = GetModel();
-            if (model != null) {
-                Observable.SetListeners(this, model);
-            }
-        }
-
         private void OnDestroy() {
             var model = GetModel();
             if (model != null) {
@@ -53,10 +46,7 @@ namespace SavableObservable.Samples {
         }
 
         public void InitializeBinding() {
-            var model = GetModel();
-            if (model != null) {
-                Observable.SetListeners(this, model);
-            }
+            EnsureInitialized();
         }
 
         [ObservableHandler("health")]

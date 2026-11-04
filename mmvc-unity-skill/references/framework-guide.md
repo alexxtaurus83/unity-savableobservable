@@ -10,33 +10,40 @@ Use this guide and the companion examples as the primary documentation. If a des
 
 ## Component Selection
 
-Every GameObject represents a single MMVC unit: exactly one Model, at most one Logic, at most one Presenter, and an optional Loader. All base classes are marked `[DisallowMultipleComponent]` to prevent duplicate instances. All generic parameters `M` are strictly constrained with `where M : BaseObservableDataModel` and logic parameters with `where LO : BaseLogic<M>`; non-observable models and interfaces are not supported. Other GameObjects must never reference a Model directly; access foreign units through their Presenter (`presenter.GetModel()`).
+Every GameObject represents a single MMVC unit: exactly one Model, at most one Logic, at most one Presenter, and an optional Loader. All base classes are marked `[DisallowMultipleComponent]` to prevent duplicate instances. All generic parameters `M` are strictly constrained with `where M : BaseObservableDataModel`, `P` with `where P : BaseObservablePresenter<M>`, and logic parameters with `where LO : BaseLogic`; non-observable models and interfaces are not supported. Other GameObjects must never reference a Presenter or Model directly; access foreign units through `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
+
+### Justified Component Shapes (No Dummy Components)
+
+Never create an empty model or presenter just to obtain a singleton or complete a trio:
+- **Coordination, operations, or service only (no observable model or view needed):** A plain `MonoBehaviour` implementing `ISharedSingleton` when global access is needed. Do not derive from `BaseLogic<M, P>` with dummy types.
+- **Observable/persisted state and logic without a view:** A meaningful model (`BaseObservableDataModel`) and a plain `MonoBehaviour, ISharedSingleton` service exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.
+- **Real MMVC view unit:** Model (`BaseObservableDataModel`), Presenter (`BaseObservablePresenter<M>`), and primary Logic (`BaseLogic<M, P>`).
 
 | Component | Responsibility |
 | --- | --- |
-| `BaseObservableDataModel` | MonoBehaviour holding observable and ordinary state fields (`[DisallowMultipleComponent]`) |
-| `BaseLogic<M>` | Rules and state changes through `GetModel()` (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`) |
+| `BaseObservableDataModel` | MonoBehaviour holding observable and ordinary state fields (`[DisallowMultipleComponent]`, `[DefaultExecutionOrder(-300)]`) |
+| `BaseLogic` | Non-generic root implementing `ISharedSingleton` with `singletonName` and `Name` property (`[DisallowMultipleComponent]`, `[DefaultExecutionOrder(0)]`) |
+| `BaseLogic<M, P>` | Primary MMVC component for rules and state changes through `GetModel()` (`where M : BaseObservableDataModel`, `where P : BaseObservablePresenter<M>`, `[DisallowMultipleComponent]`) |
 | `BasePresenter<M>` | Non-reactive presentation with same-object `GetModel()` (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`) |
-| `BaseObservablePresenter<M>` | Reactive presenter base; setup still requires an explicit caller (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`) |
-| `ObservablePresenterWithLogic<M, LO>` | Reactive presenter with `GetLogic()` (`where M : BaseObservableDataModel`, `where LO : BaseLogic<M>`, `[DisallowMultipleComponent]`) |
-| `LoaderWithModel<M>` | Model access, state application, then presenter binding (`where M : BaseObservableDataModel`) |
-| `LoaderWithModelAndLogic<M, LO>` | Loader with logic access (`where M : BaseObservableDataModel`, `where LO : BaseLogic<M>`) |
+| `BaseObservablePresenter<M>` | Reactive presenter base with `InitializePresenter()` and `EnsureInitialized()` (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`, `[DefaultExecutionOrder(-150)]`) |
+| `ObservablePresenterWithLogic<M, LO>` | Reactive presenter with `GetLogic()` (`where M : BaseObservableDataModel`, `where LO : BaseLogic`, `[DisallowMultipleComponent]`) |
+| `LoaderWithModel<M>` | Model access, state application, then presenter binding (`where M : BaseObservableDataModel`, `[DefaultExecutionOrder(-250)]`) |
+| `LoaderWithModelAndLogic<M, LO>` | Loader with logic access (`where M : BaseObservableDataModel`, `where LO : BaseLogic`) |
 
-Preserve the editor's same-object dependency provisioning. Verify runtime prefabs contain all required components; do not rely on `OnValidate` to create dependencies in a player.
+Preserve the editor's same-object dependency provisioning. Adding `BaseLogic<M, P>` to a GameObject in the Unity Editor automatically provisions both `M` (Model) and `P` (Presenter). Presenters do not auto-provision Model or Logic components, avoiding circular Inspector locks.
 
 | Added component | Editor-provisioned dependencies |
 | --- | --- |
-| `BasePresenter<M>` / `BaseObservablePresenter<M>` | Model `M` |
-| `ObservablePresenterWithLogic<M, L>` | Model `M` and logic `L` |
-| `BaseLogic<M>` | Model `M` |
+| `BaseLogic<M, P>` | Model `M` and Presenter `P` |
 | `LoaderWithModel<M>` | Model `M` |
 | `LoaderWithModelAndLogic<M, L>` | Model `M` and logic `L` |
+| `BasePresenter<M>` / `BaseObservablePresenter<M>` | *None* (`BaseLogic<M, P>` is primary) |
 
-Avoid redundant `[RequireComponent]` attributes solely to reproduce these editor dependencies. Preserve base `Reset` and `OnValidate` calls when overriding them. Use Inspector references for view objects and the supplied `GetModel()` / `GetLogic()` helpers for same-object dependencies.
+Avoid redundant `[RequireComponent]` attributes on concrete Presenter classes. Use Inspector references for view objects and the supplied `GetModel()` / `GetLogic()` helpers for same-object dependencies.
 
 ## Model State
 
-Declare reactive state as public `ObservableVariable<T>` fields. Access values through `.Value`; use `.PreviousValue` in notifications to compare changes. Initialize fields through `EnsureFieldsInitialized()` before accessing them, even when relying on automatic creation of null wrappers.
+Declare reactive state as public `ObservableVariable<T>` fields. Access values through `.Value`; use `.PreviousValue` in notifications to compare changes. Initialize fields through `EnsureFieldsInitialized()` before accessing them, even when relying on automatic creation of null wrappers. `BaseObservableDataModel.Awake()` (`-300`) and `GetModel()` automatically call `EnsureFieldsInitialized()`.
 
 ```csharp
 using System.Collections.Generic;
@@ -47,6 +54,10 @@ public class PlayerDataModel : BaseObservableDataModel {
     public ObservableVariable<int> health;
     public ObservableVariable<bool> isAlive;
     public ObservableList<string> inventory;
+
+    // Transient session/UI state not persisted by loaders
+    [NonSaved] public ObservableVariable<bool> isSessionActive;
+
     public List<string> achievements = new List<string>();
 }
 ```
@@ -57,15 +68,20 @@ Use `ForceNotify()` deliberately when a current value must be redisplayed withou
 
 ## Initialization and Binding
 
-Call `model.EnsureFieldsInitialized()` before early accesses. It creates null supported observable fields and assigns their parent model for subscription tracking. The model base has no automatic `Awake` initializer. Explicit field construction alone does not establish parent tracking.
+The framework uses a deterministic 5-stage initialization pipeline synchronized by `MMVCExecutionOrderSynchronizer`:
+1. `BaseObservableDataModel` (`-300`): `Awake()` calls `EnsureFieldsInitialized()`.
+2. `LoaderWithModel<M>` (`-250`): `Awake()` sets up persistence before singletons or logic run.
+3. `ServiceLocator` (`-200`): Registers all scene `ISharedSingleton` instances in Pass 1, then calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive) in Pass 2.
+4. `BaseObservablePresenter<M>` (`-150`): `Awake()` calls `EnsureInitialized()`, which is an idempotent no-op once bound and binds dynamically instantiated prefabs automatically.
+5. `BaseLogic<M, P>` & services (`0`): Business logic startup (`Start()`).
 
-Call `Observable.SetListeners(subscriber)` on a MonoBehaviour with the model on the same GameObject. If using `Observable.SetListeners(subscriber, model)` or `SetAutoBindListeners(subscriber, model)`, the model must be on the subscriber's own GameObject; cross-GameObject binding is strictly rejected with `Debug.LogError` to prevent lifecycle leaks. Multiple models or presenters on one GameObject violate the one-unit rule, log a `Debug.LogError`, and bind to the resolved model. The implementation removes existing tracked subscriptions for that subscriber, initializes fields, wires attributed handlers, and wires UI adapters.
+Because `ServiceLocator` registers all services in Pass 1 before initializing presenters in Pass 2, `Services.Get<T>()` is guaranteed non-null inside `InitializePresenter()`.
 
-Treat repeated setup as replacement, not an additive call: it removes tracked manual subscriptions associated with that subscriber as well. Add manual callbacks after setup when both mechanisms are needed. Do not use `SetAutoBindListeners` directly as an idempotent substitute.
+Calling `EnsureInitialized()` on `BaseObservablePresenter<M>` is strictly idempotent after binding: subsequent calls will not destructively re-bind or duplicate listeners. In contrast, explicit calls to `Observable.SetListeners(subscriber, model)` (e.g. from `LoaderWithModel.LoadDataFromModel`) retain their explicit rebind behavior, replacing existing subscriptions cleanly.
 
-Refresh the initial display explicitly. Neither handler wiring nor AutoBind wiring dispatches current model values. `ObservableVariable<T>.ForceNotify()` can refresh bindings, but invokes every attached handler for that observable, including effects or gameplay callbacks. Prefer a presentation-only refresh when those effects must not replay.
+Override `protected virtual void InitializePresenter()` in `BaseObservablePresenter<M>` to configure static UI controls (slider min/max, dropdown options, button listeners, initial CanvasGroup state). It runs once before `Observable.SetListeners` attaches handlers.
 
-Do not depend on a startup warning for uninitialized bindings or call a nonexistent `base.Start()`. Make initialization ownership explicit.
+Call `Observable.SetListeners(subscriber)` on a MonoBehaviour with the model on the same GameObject. If using `Observable.SetListeners(subscriber, model)` or `SetAutoBindListeners(subscriber, model)`, the model must be on the subscriber's own GameObject; cross-GameObject binding is strictly rejected with `Debug.LogError` to prevent lifecycle leaks.
 
 ## AutoBind Usage
 
@@ -95,15 +111,9 @@ Treat the sample `T` as the actual field value type, not a wrapper parameter. Us
 
 Use `ObservableList<T>.Add`, `Remove`, `Clear`, indexer assignment, and similar methods to notify. Avoid `list.Value.Add(...)`, which mutates the underlying `List<T>` without the wrapper's notification. `Value` is `List<T>` and `PreviousValue` is `IReadOnlyList<T>`; list-handler signatures must match those types, not `T` and `T`. The `OnValueChanged` alias supports reflection-based handlers; manual subscriptions can use `OnChanged.Add(Action<ObservableList<T>>, subscriber)`.
 
-Do not assume a list has a built-in visual adapter or deep snapshots. Previous collection contents are shallow snapshots. Assigning `Value` replaces the underlying list reference and notifies; it does not clone the incoming list.
-
 ## Inspector Editing and Undo/Redo
 
 Use the framework's `ObservableList<T>` property drawer for Inspector editing. It draws the serialized backing list, captures a pre-edit snapshot through `OnBeginGui()`, applies serialized changes, and calls the observable's editor-only `OnValidate()`. Validation compares the list with its captured or last validated snapshot and updates `PreviousValue` before notifying when contents differ.
-
-Distinguish Unity's serialized undo/redo from observable notification delivery. SerializedProperty editing participates in Unity's undo system, but the list wrapper is not a MonoBehaviour and does not receive Unity lifecycle callbacks itself. Its validation method can process restored data when invoked; the drawer does not register an `Undo.undoRedoPerformed` callback. Do not promise every undo/redo automatically emits an observable event. When custom editor tooling requires that behavior, explicitly arrange validation after restoration and test undo and redo as well as ordinary Inspector edits. Keep editor-only hooks out of player code.
-
-Treat Inspector changes, runtime wrapper mutations, and raw backing-list changes as separate paths when diagnosing missing notifications. Do not use snapshot support as a substitute for a gameplay undo system.
 
 ## UI Adapters
 
@@ -116,63 +126,40 @@ Treat Inspector changes, runtime wrapper mutations, and raw backing-list changes
 | `TMPro.TMP_InputField`, `UnityEngine.UI.InputField` | Two-way text with basic type conversion |
 | `UnityEngine.UI.Image` | Set sprite |
 
-Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Validate input conversion for the requested type; do not assume complex types such as Vector2 are supported. Register custom adapters before binding. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter`.
-
-Use no-notify UI setters where appropriate to avoid feedback. Built-in adapters support TMP text, UI text, Toggle, Slider, InputField, and Image. Consult the complete adapter examples in `examples.md` for signatures, registration, and token-based cleanup. Register adapters before the first binding setup, and avoid changing adapter selection while live bindings depend on it.
+Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter`.
 
 ## Lifetime and Cleanup
 
-Recognize `ObservableTrackedAction<T>` as the framework's event container, not a standard C# `event` or UnityEvent. Its type parameter is an observable wrapper implementing `IObservableVariable`: `ObservableVariable<int>.OnValueChanged` uses `ObservableTrackedAction<ObservableVariable<int>>`, while `ObservableList<string>.OnChanged` uses `ObservableTrackedAction<ObservableList<string>>`. Manual callbacks therefore receive the wrapper; attributed handlers receive its extracted values.
+Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity.
 
-Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity. Let observable setters/mutation methods dispatch through `Invoke`; use the observable's `ForceNotify()` when an explicit notification is needed rather than directly invoking its event container. Use `HandlerCount` for targeted diagnostics, not as a substitute for correct lifetime ownership.
+Use `.Add(handler, subscriber)` after parent initialization. Tracking requires both a non-null subscriber and a parent model; subscriptions made before parent linkage are not retroactively tracked.
 
-Use `.Add(handler, subscriber)` after parent initialization. Tracking requires both a non-null subscriber and a parent model; subscriptions made before parent linkage are not retroactively tracked. `+=` calls Add with no subscriber and requires explicit `-=` cleanup.
+Preserve `BaseObservableDataModel.OnDestroy()`, which calls `Observable.CleanupSubscriptions(this)`.
 
-Preserve `BaseObservableDataModel.OnDestroy()`, which calls `Observable.CleanupSubscriptions(this)`. Do not infer subscriber-lifetime safety from the ConditionalWeakTable: subscriber keys and delegates can remain strongly referenced while the model lives.
-
-Call `Observable.RemoveListeners(model, subscriber)` to remove tracked model callbacks and UI listener tokens for one subscriber. Remove untracked/manual delegates explicitly with their corresponding event API. Neither subscriber destruction nor `OnDisable` automatically tears down these bindings in the presenter base. For pooling, detach on disable and establish an intentional rebind/refresh on enable. Preserve other lifecycle ownership when introducing those hooks.
-
-| Subscription style | Tracking | Teardown responsibility |
-| --- | --- | --- |
-| `[AutoBind]` / `[ObservableHandler]` after setup | Model-associated | Model destruction; explicit detach for shorter-lived subscribers |
-| `.Add(handler, this)` after model initialization | Model-associated | Same lifetime rule; `.Remove(handler)` for one callback |
-| `+= handler` | Untracked | Always use `-= handler` |
-
-Store named methods or delegate instances for removal; do not create a different lambda while attempting to unsubscribe. Pair manual attach/detach at consistent lifecycle boundaries. Preserve `base.OnDestroy()` in derived models.
-
-Perform observable operations on the Unity main thread; internal locks do not make Unity UI updates safe from worker threads.
+Call `Observable.RemoveListeners(model, subscriber)` to remove tracked model callbacks and UI listener tokens for one subscriber.
 
 ## Persistence
 
-Treat `GetModelToSave()` as returning the live model component, not a detached DTO or serialized snapshot. Integrate with an actual save system and establish its serialization contract.
+Decorate transient `ObservableVariable<T>` or `ObservableList<T>` fields with `[NonSaved]`. `BaseObservableDataModel.LoadDataFromModel` automatically skips these fields when applying saved state.
 
-Initialize target observable fields before `LoaderWithModel.LoadDataFromModel(state)`. The base loader does not initialize before loading: it reflects into the model loader first and binds one matching presenter afterward.
+Initialize target observable fields before `LoaderWithModel.LoadDataFromModel(state)`.
 
-Pass a source compatible with the destination model's reflected members. The loader reads destination `FieldInfo`/`PropertyInfo` directly from the supplied object; an arbitrary similarly named DTO or dictionary is not supported automatically. Override the loader's virtual method to map a custom DTO explicitly when appropriate.
+Binding setup (`Observable.SetListeners`) does not replay current model values. Initial refresh after loading data must be performed explicitly, either by invoking presentation refresh methods or by calling `ForceNotify()` on loaded model observables.
 
-Expect observable fields to copy their `Value`, ordinary fields/properties to be assigned directly, and Unity-defined properties to be skipped. Null source model logs an error; null source observable wrappers are skipped. A null value inside a compatible wrapper is distinct from a null wrapper. Missing target wrappers are skipped with an error. Lists and ordinary reference fields may share references after copying; do not promise deep cloning.
+## Shared Services and Domain Reload (Fast Play Mode)
 
-Do not promise notification suppression on reload. Existing listeners can fire when `.Value` is assigned before rebinding. Separate teardown, data application, binding, and initial rendering if the feature requires a silent restore. Do not remove unrelated subscribers merely to silence a presenter.
-
-## Shared Services
-
-Use an existing service registry when a manager must be globally accessible. A marker interface such as `ISharedSingleton` can identify participants; register all services before initializing their consumers. Bind registered presenters and refresh their initial display after registration. Reject duplicate registrations explicitly rather than silently selecting an arbitrary manager.
-
-Treat the marker, registry, scene discovery, and startup order as application code, not SavableObservable APIs. Reuse the project's equivalents when available. See the self-contained singleton example in `examples.md` when a concrete pattern is needed.
+Use `SavableObservable.ServiceLocator`, `SavableObservable.Services`, and `SavableObservable.ISharedSingleton` for shared singletons.
+- `BaseLogic` automatically implements `ISharedSingleton`.
+- Custom non-MMVC services implement `MonoBehaviour, ISharedSingleton`.
+- Presenters and Models must **never** implement `ISharedSingleton` or register in `ServiceLocator`.
+- Access units via `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
+- Multiple instances of the same Logic class require distinct `singletonName` values on `BaseLogic`. Unnamed duplicates are evicted from singleton lookup while local presentation remains bound.
+- **Domain Reload Disabled (Fast Play Mode):**
+  - When Enter Play Mode options disable Domain Reload, C# statics persist across Play Mode sessions.
+  - Framework registries provide `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` hooks to clear statics (`ServiceLocator.instance`, `Services.instance`, `Observable`, `UIAdapterRegistry`).
+  - Types holding mutable static fields use `[AutoStaticsCleanup]` and must be declared `partial`.
+  - Always validate service registration, subscriptions, and teardown across at least **two consecutive Play Mode runs without script recompilation**.
 
 ## Performance and Migration
 
-Use generic observable values without assuming the entire notification pipeline is allocation-free. Reflection, compiled expression setup, delegate invocation snapshots, formatting, and UI adapters can allocate or box values. Initialize at lifecycle boundaries rather than every frame. Profile high-frequency model changes and actual target builds before optimizing.
-
-When migrating legacy observable wrappers, replace them with `ObservableVariable<T>` and preserve serialized data through the project's migration strategy. Replace universal `OnModelValueChanged()` branching with field-specific handlers or AutoBind. Replace legacy initialization calls with `EnsureFieldsInitialized()` at the actual owner boundary. Do not mechanically rename methods or change persisted field names without checking consumers and saves.
-
-| Legacy identifier to search for | Replacement direction |
-| --- | --- |
-| `Observable.ObservableInt32` | `ObservableVariable<int>` |
-| `Observable.ObservableString` | `ObservableVariable<string>` |
-| `OnModelValueChanged()` | Field-specific `[ObservableHandler]` methods and/or `[AutoBind]` |
-| `InitFields()` | `EnsureFieldsInitialized()` before first access, plus owner-controlled `Observable.SetListeners` for binding |
-
-Treat these as migration cues, not drop-in textual replacements. Preserve serialized field compatibility, translate callback signatures, and test save/load and initial display after migrating.
-
-When upgrading custom adapters, keep display-only behavior in `IUIAdapter`; move interactive listeners into `IUIListenerAdapter`. Return and retain the actual delegate token so cleanup removes exactly the registered listener.
+Use generic observable values without assuming the entire notification pipeline is allocation-free. Reflection, compiled expression setup, delegate invocation snapshots, formatting, and UI adapters can allocate or box values. Initialize at lifecycle boundaries rather than every frame.

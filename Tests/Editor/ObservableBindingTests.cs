@@ -2,6 +2,7 @@ using System;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.TestTools;
 using TMPro;
 using SavableObservable;
@@ -168,9 +169,6 @@ namespace SavableObservable.Tests {
             var presenter = _host.AddComponent<SamplePlayerPresenter>();
             presenter.shieldToggle = toggle;
 
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
-
             Observable.SetListeners(presenter, _model);
 
             // Toggle change should update model (UI -> Model two-way)
@@ -183,6 +181,72 @@ namespace SavableObservable.Tests {
             // Subsequent toggle change should no longer mutate model
             toggle.isOn = false;
             Assert.IsTrue(_model.isShieldActive.Value, "Model should retain value after RemoveListeners detaches two-way UI listener");
+        }
+
+        public abstract class BaseModalPresenter<M, L> : BaseObservablePresenter<M>
+            where M : BaseObservableDataModel
+            where L : BaseLogic
+        {
+            [AutoBind("title")]
+            private TextMeshProUGUI _titleText;
+
+            public int BasePrivateHandlerCount { get; private set; }
+
+            [ObservableHandler("isOpen")]
+            private void OnIsOpenChanged(bool open) {
+                BasePrivateHandlerCount++;
+            }
+
+            public TextMeshProUGUI GetTitleText() => _titleText;
+            public void SetTitleText(TextMeshProUGUI text) => _titleText = text;
+        }
+
+        public class ConcreteModalModel : BaseObservableDataModel {
+            public ObservableVariable<bool> isOpen = new ObservableVariable<bool>();
+            public ObservableVariable<string> title = new ObservableVariable<string>();
+        }
+
+        public class ConcreteModalLogic : BaseLogic<ConcreteModalModel, ConcreteModalPresenter> { }
+
+        public class ConcreteModalPresenter : BaseModalPresenter<ConcreteModalModel, ConcreteModalLogic> {
+            public int DerivedHandlerCount { get; private set; }
+
+            [ObservableHandler("isOpen")]
+            private void OnDerivedIsOpen(bool open) {
+                DerivedHandlerCount++;
+            }
+        }
+
+        [Test]
+        public void Observable_SetListeners_DiscoversPrivateBaseClassHandlersAndAutoBindFields() {
+            var modalHost = new GameObject("ModalHost");
+            try {
+                var model = modalHost.AddComponent<ConcreteModalModel>();
+                model.EnsureFieldsInitialized();
+
+                var presenter = modalHost.AddComponent<ConcreteModalPresenter>();
+                var textObj = new GameObject("TitleText", typeof(TextMeshProUGUI));
+                textObj.transform.SetParent(modalHost.transform, false);
+                var textComp = textObj.GetComponent<TextMeshProUGUI>();
+                presenter.SetTitleText(textComp);
+
+                Observable.SetListeners(presenter, model);
+
+                // AutoBind on private base field should populate the UI text when model changes
+                model.title.Value = "Initial Title";
+                Assert.AreEqual("Initial Title", textComp.text);
+
+                // Changing isOpen should invoke both private base handler and derived handler
+                model.isOpen.Value = true;
+                Assert.AreEqual(1, presenter.BasePrivateHandlerCount, "Private [ObservableHandler] on generic base presenter must be invoked");
+                Assert.AreEqual(1, presenter.DerivedHandlerCount, "Handler on derived presenter must be invoked");
+
+                // AutoBind UI updates when title changes again
+                model.title.Value = "Updated Title";
+                Assert.AreEqual("Updated Title", textComp.text);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(modalHost);
+            }
         }
     }
 }

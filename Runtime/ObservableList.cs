@@ -164,6 +164,7 @@ namespace SavableObservable {
         /// Captures list snapshot before drawing editor controls.
         /// </summary>
         public void OnBeginGui() {
+            if (_items == null) _items = new List<T>();
             _editorGuiSnapshot = _items.ToArray();
             _hasEditorGuiSnapshot = true;
 
@@ -177,6 +178,7 @@ namespace SavableObservable {
         /// Handles editor validation (including undo/redo) and emits change notifications with accurate previous snapshots.
         /// </summary>
         public void OnValidate() {
+            if (_items == null) _items = new List<T>();
             var previous = _hasEditorGuiSnapshot
                 ? _editorGuiSnapshot
                 : (_hasLastValidatedSnapshot ? _lastValidatedSnapshot : _items.ToArray());

@@ -40,24 +40,46 @@ namespace SavableObservable {
             public readonly HashSet<string> AutoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
 
             public SubscriberMetadata(Type subscriberType) {
-                foreach (var method in subscriberType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)) {
-                    var attr = method.GetCustomAttribute<ObservableHandlerAttribute>();
-                    if (attr != null && !string.IsNullOrWhiteSpace(attr.VariableName)) {
-                        if (!HandlerMethods.TryGetValue(attr.VariableName, out var list)) {
-                            list = new List<MethodInfo>();
-                            HandlerMethods[attr.VariableName] = list;
-                        }
-                        list.Add(method);
-                    }
-                }
+                var seenVirtualBaseDefs = new HashSet<MethodInfo>();
 
-                foreach (var field in subscriberType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)) {
-                    var attr = field.GetCustomAttribute<AutoBindAttribute>();
-                    if (attr != null) {
-                        var targetName = string.IsNullOrWhiteSpace(attr.VariableName) ? field.Name : attr.VariableName;
-                        AutoBindFields.Add((field, targetName));
-                        if (!string.IsNullOrWhiteSpace(targetName)) {
-                            AutoBindTargetNames.Add(targetName);
+                for (var t = subscriberType; t != null && t != typeof(MonoBehaviour) && t != typeof(BaseObservableDataModel) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
+                    var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly);
+                    foreach (var method in methods) {
+                        MethodInfo baseDef = null;
+                        if (method.IsVirtual) {
+                            baseDef = method.GetBaseDefinition();
+                            if (seenVirtualBaseDefs.Contains(baseDef)) {
+                                continue;
+                            }
+                        }
+
+                        var attr = method.GetCustomAttribute<ObservableHandlerAttribute>();
+                        if (attr == null && method.IsVirtual && baseDef != null) {
+                            attr = baseDef.GetCustomAttribute<ObservableHandlerAttribute>();
+                        }
+
+                        if (method.IsVirtual && baseDef != null) {
+                            seenVirtualBaseDefs.Add(baseDef);
+                        }
+
+                        if (attr != null && !string.IsNullOrWhiteSpace(attr.VariableName)) {
+                            if (!HandlerMethods.TryGetValue(attr.VariableName, out var list)) {
+                                list = new List<MethodInfo>();
+                                HandlerMethods[attr.VariableName] = list;
+                            }
+                            list.Add(method);
+                        }
+                    }
+
+                    var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                    foreach (var field in fields) {
+                        var attr = field.GetCustomAttribute<AutoBindAttribute>();
+                        if (attr != null) {
+                            var targetName = string.IsNullOrWhiteSpace(attr.VariableName) ? field.Name : attr.VariableName;
+                            AutoBindFields.Add((field, targetName));
+                            if (!string.IsNullOrWhiteSpace(targetName)) {
+                                AutoBindTargetNames.Add(targetName);
+                            }
                         }
                     }
                 }
@@ -90,10 +112,15 @@ namespace SavableObservable {
             public ModelMetadata(Type modelType) {
                 var supported = new List<FieldInfo>();
                 var byName = new Dictionary<string, FieldInfo>();
-                foreach (var field in modelType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)) {
-                    if (IsSupportedFieldType(field)) {
-                        supported.Add(field);
-                        byName[field.Name] = field;
+                for (var t = modelType; t != null && t != typeof(BaseObservableDataModel) && t != typeof(MonoBehaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
+                    var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                    foreach (var field in fields) {
+                        if (IsSupportedFieldType(field)) {
+                            if (!byName.ContainsKey(field.Name)) {
+                                supported.Add(field);
+                                byName[field.Name] = field;
+                            }
+                        }
                     }
                 }
                 ObservableFields = supported.ToArray();
@@ -407,10 +434,13 @@ namespace SavableObservable {
         }
 
         private static void SetListenersCore(MonoBehaviour monoBehaviour, object subscriber, BaseObservableDataModel model) {
+            model.EnsureFieldsInitialized();
+            if (subscriber is IObservablePresenter presenter) {
+                presenter.EnsurePresenterInitialized();
+            }
+
             // Remove existing subscriptions before adding new ones to ensure idempotent setup.
             RemoveAllSubscriptions(model, subscriber);
-
-            model.EnsureFieldsInitialized();
 
             var subMetadata = GetSubscriberMetadata(subscriber.GetType());
             var modelMetadata = GetModelMetadata(model.GetType());
@@ -474,7 +504,7 @@ namespace SavableObservable {
                 Debug.LogError(
                     $"[SavableObservable] Cross-GameObject binding rejected in {api}: subscriber '{mb.GetType().Name}' is on GameObject '{mb.gameObject.name}', " +
                     $"but model '{model.GetType().Name}' is on GameObject '{model.gameObject.name}'. " +
-                    $"Rule: One GameObject = one MMVC unit. To access another unit's model, get its presenter and call presenter.GetModel() or subscribe to individual events manually.",
+                    $"Rule: One GameObject = one MMVC unit. To access another unit's model, call Services.Get<TLogic>().GetModel() or Services.GetModel<TModel>() or subscribe to individual events manually.",
                     mb);
                 return false;
             }

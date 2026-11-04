@@ -1,0 +1,24 @@
+# Ignore non-code artifacts and metadata
+.kilo/
+.codegraphcontext/
+*.md
+*.json
+*.txt
+*.yml
+*.yaml
+*.ps1
+*.sh
+*.cmd
+data/
+old-data/
+models/
+runs/
+artifacts/
+experiments/
+reused-code/
+reused-code-all-references/
+Samples/
+Scenes/
+Tests/
+bin/
+obj/

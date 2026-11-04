@@ -11,7 +11,12 @@ namespace SavableObservable {
     /// <summary>Abstract DataModel class to keep observable keep data with ObservableVariable types</summary>    
     [Serializable]
     [DisallowMultipleComponent]
+    [DefaultExecutionOrder(-300)]
     public abstract partial class BaseObservableDataModel : MonoBehaviour {
+        protected virtual void Awake() {
+            EnsureFieldsInitialized();
+        }
+
         /// <summary>
         /// Gets the cached observable fields for this data model.
         /// </summary>
@@ -52,31 +57,45 @@ namespace SavableObservable {
             public readonly FieldInfo[] PlainFields;
 
             public ModelLoadDescriptor(Type type) {
-                var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var props  = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
                 var validProps = new List<PropertyInfo>();
-                foreach (var prop in props) {
-                    if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
-                    if (IsUnityComponentProperty(prop)) continue;
-                    validProps.Add(prop);
-                }
-                Properties = validProps.ToArray();
+                var seenPropNames = new HashSet<string>(StringComparer.Ordinal);
 
                 var obsFields = new List<(FieldInfo, PropertyInfo, Type)>();
                 var plainFields = new List<FieldInfo>();
+                var seenFieldNames = new HashSet<string>(StringComparer.Ordinal);
 
-                foreach (var field in fields) {
-                    if (Observable.IsSupportedFieldType(field)) {
-                        var valueProp = field.FieldType.GetProperty("Value");
-                        if (valueProp != null && valueProp.CanRead && valueProp.CanWrite) {
-                            obsFields.Add((field, valueProp, valueProp.PropertyType));
+                for (var t = type; t != null && t != typeof(BaseObservableDataModel) && t != typeof(MonoBehaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
+                    var props = t.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                    foreach (var prop in props) {
+                        if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
+                        if (IsUnityComponentProperty(prop)) continue;
+                        if (seenPropNames.Add(prop.Name)) {
+                            validProps.Add(prop);
                         }
-                    } else {
-                        plainFields.Add(field);
+                    }
+
+                    var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                    foreach (var field in fields) {
+                        if (field.IsDefined(typeof(NonSavedAttribute), true)) {
+                            continue;
+                        }
+
+                        if (!seenFieldNames.Add(field.Name)) {
+                            continue;
+                        }
+
+                        if (Observable.IsSupportedFieldType(field)) {
+                            var valueProp = field.FieldType.GetProperty("Value");
+                            if (valueProp != null && valueProp.CanRead && valueProp.CanWrite) {
+                                obsFields.Add((field, valueProp, valueProp.PropertyType));
+                            }
+                        } else {
+                            plainFields.Add(field);
+                        }
                     }
                 }
 
+                Properties = validProps.ToArray();
                 ObservableFields = obsFields.ToArray();
                 PlainFields = plainFields.ToArray();
             }
@@ -101,6 +120,38 @@ namespace SavableObservable {
             }
         }
 
+        private static object CloneIfListOrArray(object value, Type targetType) {
+            if (value == null) return null;
+            if (value is Array arr) {
+                return arr.Clone();
+            }
+            if (value is System.Collections.IList list) {
+                var listType = targetType;
+                if (listType.IsGenericType && listType.GetGenericTypeDefinition() == typeof(List<>)) {
+                    var itemType = listType.GetGenericArguments()[0];
+                    var constructed = typeof(List<>).MakeGenericType(itemType);
+                    var clonedList = (System.Collections.IList)Activator.CreateInstance(constructed);
+                    for (int i = 0; i < list.Count; i++) {
+                        clonedList.Add(list[i]);
+                    }
+                    return clonedList;
+                } else if (value is ICloneable cloneable) {
+                    return cloneable.Clone();
+                } else {
+                    try {
+                        var clonedList = (System.Collections.IList)Activator.CreateInstance(value.GetType());
+                        for (int i = 0; i < list.Count; i++) {
+                            clonedList.Add(list[i]);
+                        }
+                        return clonedList;
+                    } catch {
+                        return value;
+                    }
+                }
+            }
+            return value;
+        }
+
         /// <summary>
         /// Loads the data from saved model of <see cref="BaseObservableDataModel" /> to the <see cref="ObservableVariable" /> types at current <see cref="BaseObservableDataModel" /> model.
         /// </summary>
@@ -117,6 +168,7 @@ namespace SavableObservable {
             foreach (var prop in descriptor.Properties) {
                 try {
                     var modelValue = prop.GetValue(model);
+                    modelValue = CloneIfListOrArray(modelValue, prop.PropertyType);
                     prop.SetValue(this, modelValue);
                 }
                 catch (Exception ex) {
@@ -147,6 +199,7 @@ namespace SavableObservable {
                         continue;
                     }
 
+                    sourceValue = CloneIfListOrArray(sourceValue, destType);
                     valueProp.SetValue(thisValue, sourceValue);
                 }
                 catch (Exception ex) {
@@ -157,6 +210,7 @@ namespace SavableObservable {
             foreach (var field in descriptor.PlainFields) {
                 try {
                     var modelValue = field.GetValue(model);
+                    modelValue = CloneIfListOrArray(modelValue, field.FieldType);
                     field.SetValue(this, modelValue);
                 }
                 catch (Exception ex) {

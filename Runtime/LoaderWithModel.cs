@@ -7,14 +7,15 @@ namespace SavableObservable {
     /// Generic parameter <typeparamref name="M"/> must derive from <see cref="BaseObservableDataModel"/>.
     /// Non-observable models and interfaces (e.g. IModel) are not supported.
     /// </summary>
+    [DefaultExecutionOrder(-250)]
     public abstract class LoaderWithModel<M> : MonoBehaviour where M : BaseObservableDataModel
     {
         protected virtual void Reset() {
-            ComponentAutoRequire.EnsureComponent<M>(this);
+            ComponentAutoRequire.EnsureComponent<M>(this, delayed: false);
         }
 
         protected virtual void OnValidate() {
-            ComponentAutoRequire.EnsureComponent<M>(this);
+            ComponentAutoRequire.EnsureComponent<M>(this, delayed: true);
         }
 
         private M _model;
@@ -23,6 +24,7 @@ namespace SavableObservable {
             if (_model == null) {
                 _model = GetComponent<M>();
             }
+            _model?.EnsureFieldsInitialized();
             return _model;
         }
 

@@ -7,6 +7,40 @@ using Unity.Scripting.LifecycleManagement;
 
 namespace SavableObservable {
     /// <summary>
+    /// Non-generic companion for <see cref="ObservableTrackedAction{T}"/> providing deterministic
+    /// main-thread capture at subsystem registration and domain load.
+    /// </summary>
+    public static class ObservableTrackedAction {
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [NoAutoStaticsCleanup]
+#endif
+        private static int _mainThreadId = -1;
+
+        static ObservableTrackedAction() {
+            CaptureMainThread();
+        }
+
+#if UNITY_EDITOR
+        [UnityEditor.InitializeOnLoadMethod]
+#endif
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        public static void CaptureMainThread() {
+            _mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        }
+
+        internal static int MainThreadId {
+            get {
+                if (_mainThreadId == -1) {
+                    CaptureMainThread();
+                }
+                return _mainThreadId;
+            }
+        }
+
+        internal static bool IsMainThread => System.Threading.Thread.CurrentThread.ManagedThreadId == MainThreadId;
+    }
+
+    /// <summary>
     /// A custom action implementation that automatically tracks subscriptions for memory management.
     /// <para>
     /// Thread-safety contract: All operations (Add, Remove, Invoke) must be called from the Unity main thread.
@@ -20,16 +54,6 @@ namespace SavableObservable {
         private readonly object _lock = new object();
         private bool _isInvoking;
         private bool _pending;
-
-        // Main thread assertion support
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static int _mainThreadId = -1;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly object _mainThreadInitLock = new object();
 
         public static ObservableTrackedAction<T> operator +(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
             if (trackedAction == null) {
@@ -142,24 +166,15 @@ namespace SavableObservable {
 
         /// <summary>
         /// Asserts that the current thread is the Unity main thread.
-        /// Captures the main thread ID on first use.
+        /// Captures the main thread ID on startup / first use on the main thread.
         /// Logs an error in player builds and throws in development builds when violated.
         /// </summary>
         private static void AssertMainThread() {
             int currentThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-
-            // Capture main thread ID on first use
-            if (_mainThreadId == -1) {
-                lock (_mainThreadInitLock) {
-                    if (_mainThreadId == -1) {
-                        _mainThreadId = currentThreadId;
-                        return; // First call is always considered valid
-                    }
-                }
-            }
+            int mainThreadId = ObservableTrackedAction.MainThreadId;
 
             // Check if we're on the main thread
-            if (currentThreadId != _mainThreadId) {
+            if (currentThreadId != mainThreadId) {
                 string message = $"[SavableObservable] ObservableTrackedAction<{typeof(T).Name}> accessed from non-main thread (thread {currentThreadId}). All ObservableTrackedAction operations must be called from the Unity main thread.";
                 
 #if UNITY_EDITOR || DEBUG || UNITY_ENABLE_CHECKS

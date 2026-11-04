@@ -9,20 +9,13 @@ namespace SavableObservable {
     /// </summary>
     [DisallowMultipleComponent]
     public abstract class BasePresenter<M> : MonoBehaviour where M : BaseObservableDataModel {
-        protected virtual void Reset() {
-            ComponentAutoRequire.EnsureComponent<M>(this);
-        }
-
-        protected virtual void OnValidate() {
-            ComponentAutoRequire.EnsureComponent<M>(this);
-        }
-
         private M _model;
 
         public M GetModel() {
             if (_model == null) {
                 _model = GetComponent<M>();
             }
+            _model?.EnsureFieldsInitialized();
             return _model;
         }
     }

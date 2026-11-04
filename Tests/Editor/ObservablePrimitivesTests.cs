@@ -333,7 +333,7 @@ namespace SavableObservable.Tests {
 
             Assert.That(() => list.Add(2), Is.Not.AllocatingGCMemory());
             Assert.That(() => list.Insert(1, 99), Is.Not.AllocatingGCMemory());
-            Assert.That(() => list[0] = 42, Is.Not.AllocatingGCMemory());
+            Assert.That(() => { list[0] = 42; }, Is.Not.AllocatingGCMemory());
             Assert.That(() => list.RemoveAt(1), Is.Not.AllocatingGCMemory());
         }
 

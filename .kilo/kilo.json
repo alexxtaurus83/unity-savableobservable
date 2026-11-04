@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "CodeGraphContext": {
+      "environment": {
+        "FALKORDB_GRAPH_NAME": "unity_savableobservable"
+      }
+    }
+  }
+}

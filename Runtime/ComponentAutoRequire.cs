@@ -9,8 +9,8 @@ namespace SavableObservable {
         /// <summary>
         /// Ensures a component of type <typeparamref name="T"/> exists on the same GameObject.
         /// </summary>
-        internal static void EnsureComponent<T>(MonoBehaviour owner) {
-            EnsureComponent(owner, typeof(T));
+        internal static void EnsureComponent<T>(MonoBehaviour owner, bool delayed = false) {
+            EnsureComponent(owner, typeof(T), delayed);
         }
 
         /// <summary>
@@ -18,6 +18,16 @@ namespace SavableObservable {
         /// Adds it automatically in the Unity Editor (non-play mode).
         /// </summary>
         internal static void EnsureComponent(MonoBehaviour owner, Type componentType) {
+            EnsureComponent(owner, componentType, false);
+        }
+
+        /// <summary>
+        /// Ensures a component of <paramref name="componentType"/> exists on the same GameObject.
+        /// Adds it automatically in the Unity Editor (non-play mode).
+        /// When <paramref name="delayed"/> is true (e.g. during <c>OnValidate</c>), defers addition
+        /// via <c>EditorApplication.delayCall</c> to avoid SendMessage warnings.
+        /// </summary>
+        internal static void EnsureComponent(MonoBehaviour owner, Type componentType, bool delayed) {
             if (owner == null || componentType == null) return;
 
             if (!typeof(Component).IsAssignableFrom(componentType)) {
@@ -29,8 +39,22 @@ namespace SavableObservable {
 
 #if UNITY_EDITOR
             if (!Application.isPlaying) {
-                owner.gameObject.AddComponent(componentType);
-                Debug.Log($"[SavableObservable] Auto-added required component '{componentType.Name}' to '{owner.gameObject.name}' for '{owner.GetType().Name}'.", owner);
+                if (UnityEditor.PrefabUtility.IsPartOfPrefabAsset(owner)) {
+                    return;
+                }
+
+                if (delayed) {
+                    UnityEditor.EditorApplication.delayCall += () => {
+                        if (owner == null || owner.gameObject == null) return;
+                        if (owner.GetComponent(componentType) != null) return;
+
+                        owner.gameObject.AddComponent(componentType);
+                        Debug.Log($"[SavableObservable] Auto-added required component '{componentType.Name}' to '{owner.gameObject.name}' for '{owner.GetType().Name}'.", owner);
+                    };
+                } else {
+                    owner.gameObject.AddComponent(componentType);
+                    Debug.Log($"[SavableObservable] Auto-added required component '{componentType.Name}' to '{owner.gameObject.name}' for '{owner.GetType().Name}'.", owner);
+                }
             }
 #endif
         }

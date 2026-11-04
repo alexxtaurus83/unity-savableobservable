@@ -5,10 +5,10 @@ using SavableObservable;
 namespace SavableObservable.Samples {
     /// <summary>
     /// Sample business logic manipulating SamplePlayerModel state.
-    /// Derives from BaseLogic&lt;SamplePlayerModel&gt;.
+    /// Derives from BaseLogic&lt;SamplePlayerModel, SamplePlayerPresenter&gt;.
     /// </summary>
     [DisallowMultipleComponent]
-    public class SamplePlayerLogic : BaseLogic<SamplePlayerModel> {
+    public class SamplePlayerLogic : BaseLogic<SamplePlayerModel, SamplePlayerPresenter> {
         public void SetPlayerName(string newName) {
             var model = GetModel();
             if (model != null) {

@@ -142,5 +142,63 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(88, model.health.Value);
             Assert.IsTrue(model.inventory.Contains("HolySword"));
         }
+
+        private class BaseTestModelWithPrivateField : BaseObservableDataModel {
+            [SerializeField] private ObservableVariable<int> _baseSecret = new ObservableVariable<int>();
+            public int BaseSecret {
+                get => _baseSecret.Value;
+                set => _baseSecret.Value = value;
+            }
+        }
+
+        private class DerivedListModel : BaseTestModelWithPrivateField {
+            public ObservableList<string> items = new ObservableList<string>();
+            public System.Collections.Generic.List<int> numbers = new System.Collections.Generic.List<int>();
+        }
+
+        [Test]
+        public void LoadDataFromModel_ClonesListsAndCopiesPrivateBaseFieldsWithoutAliasing() {
+            var target = _unitA.AddComponent<DerivedListModel>();
+            var source = _unitB.AddComponent<DerivedListModel>();
+
+            target.EnsureFieldsInitialized();
+            source.EnsureFieldsInitialized();
+
+            source.BaseSecret = 99;
+            source.items.Add("Alpha");
+            source.items.Add("Beta");
+            source.numbers.Add(10);
+            source.numbers.Add(20);
+
+            target.LoadDataFromModel(source);
+
+            // Verify base private observable field copied
+            Assert.AreEqual(99, target.BaseSecret);
+
+            // Verify lists copied accurately
+            Assert.AreEqual(2, target.items.Count);
+            Assert.AreEqual("Alpha", target.items[0]);
+            Assert.AreEqual("Beta", target.items[1]);
+            Assert.AreEqual(2, target.numbers.Count);
+            Assert.AreEqual(10, target.numbers[0]);
+
+            // Mutate target: must NOT mutate source
+            target.items.Add("Gamma");
+            target.numbers.Add(30);
+
+            Assert.AreEqual(3, target.items.Count);
+            Assert.AreEqual(3, target.numbers.Count);
+            Assert.AreEqual(2, source.items.Count, "Mutating target ObservableList must not affect source model");
+            Assert.AreEqual(2, source.numbers.Count, "Mutating target List must not affect source model");
+
+            // Mutate source: must NOT mutate target
+            source.items.Add("Delta");
+            source.numbers.Add(40);
+
+            Assert.AreEqual(3, source.items.Count);
+            Assert.AreEqual(3, source.numbers.Count);
+            Assert.AreEqual(3, target.items.Count, "Mutating source ObservableList must not affect target model");
+            Assert.AreEqual(3, target.numbers.Count, "Mutating source List must not affect target model");
+        }
     }
 }

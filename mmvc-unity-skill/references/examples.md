@@ -4,7 +4,7 @@ Adapt these examples to the current project's naming and namespaces. Split publi
 
 ## Score Feature
 
-Keep state, rules, and rendering in separate components. Keep bootstrap ownership explicit rather than adding an automatic `Start` binding to every presenter.
+Keep state, rules, and rendering in separate components. `BaseLogic<M, P>` is the primary component that auto-requires `Model` and `Presenter` on the same GameObject.
 
 ```csharp
 using SavableObservable;
@@ -13,7 +13,7 @@ public class ScoreDataModel : BaseObservableDataModel {
     public ObservableVariable<int> score;
 }
 
-public class ScoreLogic : BaseLogic<ScoreDataModel> {
+public class ScoreLogic : BaseLogic<ScoreDataModel, ScorePresenter> {
     public void AddScore(int amount) {
         GetModel().score.Value += amount;
     }
@@ -28,8 +28,8 @@ public class ScorePresenter : ObservablePresenterWithLogic<ScoreDataModel, Score
     [AutoBind(nameof(ScoreDataModel.score))]
     [SerializeField] private TMPro.TextMeshProUGUI scoreText;
 
-    public void Initialize() {
-        Observable.SetListeners(this);
+    protected override void InitializePresenter() {
+        base.InitializePresenter();
         RefreshDisplay();
     }
 
@@ -41,56 +41,52 @@ public class ScorePresenter : ObservablePresenterWithLogic<ScoreDataModel, Score
 }
 ```
 
-Attach all three components to one GameObject, assign the text reference, and call Initialize from the owning bootstrap after configuration. Initialize fields earlier if logic runs before that point. Wire any requested button action separately; bind labels directly to TextMeshProUGUI or Text components.
+Attach `ScoreLogic` to a GameObject. The Unity Editor automatically provisions `ScoreDataModel` and `ScorePresenter`. `ServiceLocator` automatically discovers `ScoreLogic` in Pass 1 and initializes/binds `ScorePresenter` in Pass 2.
 
 ## Dynamic Prefab
 
-Use a complete prefab and configure the model before binding and initial presentation:
+Instantiate the `Logic` component directly:
 
 ```csharp
+using SavableObservable;
 using UnityEngine;
 
 public class ScoreFactory : MonoBehaviour {
-    [SerializeField] private ScorePresenter prefab;
+    [SerializeField] private ScoreLogic prefab;
 
-    public ScorePresenter Spawn(Transform parent, int startingScore) {
-        var presenter = Instantiate(prefab, parent);
-        var model = presenter.GetModel();
-        model.EnsureFieldsInitialized();
+    public ScoreLogic Spawn(Transform parent, int startingScore) {
+        var scoreLogic = Instantiate(prefab, parent);
+        var model = scoreLogic.GetModel();
         model.score.Value = startingScore;
-        presenter.Initialize();
-        return presenter;
+        return scoreLogic;
     }
 }
 ```
 
-Account for `Awake`/`OnEnable` running during active instantiation, before factory configuration. Keep those callbacks independent of uninitialized state or initialize explicitly at their required boundary. For pooling, add deliberate detach/rebind lifecycle behavior rather than copying this one-shot spawn flow unchanged.
+`scoreLogic.GetModel()` automatically initializes model fields and privately triggers `EnsureInitialized()` on its sibling `ScorePresenter`, so even inactive prefabs are initialized and bound without manual `SetListeners` calls.
 
 ## Manual Subscriber Lifetime
 
-Initialize the model before registering, and detach when the subscriber stops participating. Use this pattern when the model outlives the observing UI. Cross-component observers access the foreign model through its presenter (`presenter.GetModel()`), never via a direct serialized model reference. Do not also run SetListeners for this subscriber afterward without reattaching its manual handler.
+Cross-component observers access the foreign model through `Services.GetModel<M>()` or `Services.Get<Logic>().GetModel()`, never via a direct Presenter reference:
 
 ```csharp
 using SavableObservable;
 using UnityEngine;
 
 public class ScoreObserver : MonoBehaviour {
-    [SerializeField] private ScorePresenter presenter;
     [SerializeField] private TMPro.TextMeshProUGUI label;
 
     private void OnEnable() {
-        if (presenter == null) return;
-        var model = presenter.GetModel();
+        var model = Services.GetModel<ScoreDataModel>();
         if (model == null) return;
-        model.EnsureFieldsInitialized();
         model.score.OnValueChanged.Add(OnScoreChanged, this);
         OnScoreChanged(model.score);
     }
 
     private void OnDisable() {
-        if (presenter != null) {
-            var model = presenter.GetModel();
-            if (model != null) Observable.RemoveListeners(model, this);
+        var model = Services.GetModel<ScoreDataModel>();
+        if (model != null) {
+            Observable.RemoveListeners(model, this);
         }
     }
 
@@ -102,7 +98,7 @@ public class ScoreObserver : MonoBehaviour {
 
 ## Custom Save-System Integration
 
-Use this loader pattern only with a save system that can supply a compatible model instance. Treat the interface below as an example project contract, not a framework API. Do not construct MonoBehaviours with `new` or assume a JSON serializer can round-trip them.
+Use this loader pattern only with a save system that can supply a compatible model instance.
 
 ```csharp
 using SavableObservable;
@@ -118,7 +114,6 @@ public class ScoreLoader : LoaderWithModel<ScoreDataModel>, IExampleSaveable {
     }
 
     public void LoadState(object state) {
-        GetModel().EnsureFieldsInitialized();
         LoadDataFromModel(state);
         var presenter = GetComponent<ScorePresenter>();
         if (presenter != null) presenter.RefreshDisplay();
@@ -126,114 +121,73 @@ public class ScoreLoader : LoaderWithModel<ScoreDataModel>, IExampleSaveable {
 }
 ```
 
-For a DTO-based save system, map DTO values explicitly in the custom loader instead of passing an unrelated DTO to the base implementation. Test reload while listeners are already attached: this example does not suppress their notifications.
+## Shared Singleton & Multi-Instance Examples
 
-## Optional Singleton Integration
+The framework provides built-in service locator support via `SavableObservable.Services`.
 
-Use the following application-level example only when the project needs a service registry and does not already provide one. Keep it separate from framework code. Register all services first, then bind and refresh; defer consumer access until initialization has completed.
+### 1. Single-Instance Lookup
 
 ```csharp
-using System;
-using System.Collections.Generic;
 using SavableObservable;
 using UnityEngine;
 
-public interface ISharedSingleton { }
-
-public static class ExampleServices {
-    private static readonly Dictionary<Type, MonoBehaviour> Items = new();
-
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-    private static void Reset() => Items.Clear();
-
-    public static void Register(MonoBehaviour service) {
-        var type = service.GetType();
-        if (Items.TryGetValue(type, out var existing) && existing != null)
-            throw new InvalidOperationException($"Duplicate service: {type.Name}");
-        Items[type] = service;
-    }
-
-    public static T Get<T>() where T : MonoBehaviour, ISharedSingleton {
-        return Items.TryGetValue(typeof(T), out var service) ? service as T : null;
-    }
-
-    public static void Unregister(MonoBehaviour service) {
-        var type = service.GetType();
-        if (Items.TryGetValue(type, out var existing) && existing == service)
-            Items.Remove(type);
-    }
-}
-
-public class SharedScorePresenter : ObservablePresenterWithLogic<ScoreDataModel, ScoreLogic>, ISharedSingleton {
-    [AutoBind(nameof(ScoreDataModel.score))]
-    [SerializeField] private TMPro.TextMeshProUGUI scoreText;
-
-    public void Initialize() {
-        Observable.SetListeners(this);
-        scoreText.text = GetModel().score.Value.ToString();
-    }
-
-    private void OnDestroy() => ExampleServices.Unregister(this);
-}
-
-public class ExampleServiceBootstrap : MonoBehaviour {
-    [SerializeField] private SharedScorePresenter scoreService;
-
+public class ScoreConsumer : MonoBehaviour {
     private void Start() {
-        ExampleServices.Register(scoreService);
-        scoreService.Initialize();
-        ExampleServices.Get<SharedScorePresenter>().GetLogic().AddScore(1);
-    }
-}
-```
-
-Assign the service reference and required model/logic/UI components in the scene. For multiple services, register every instance before binding any of them. Do not rely on unrelated components' `Start` ordering; invoke dependent initialization explicitly from the bootstrap. For additive scenes and persistent managers, define ownership and unregister lifetimes deliberately.
-
-### Optional Automatic Service Discovery
-
-As an alternative to serialized service references, discover scene components implementing the marker interface. Use this bootstrap instead of `ExampleServiceBootstrap`, not alongside it. Reuse the `ISharedSingleton` and `ExampleServices` definitions above. Add the following application-level interface to services participating in this discovery flow, and have `SharedScorePresenter` implement it using its existing Initialize method:
-
-```csharp
-public interface IInitializableSharedService : ISharedSingleton {
-    void Initialize();
-}
-```
-
-```csharp
-using System;
-using System.Collections.Generic;
-using UnityEngine;
-
-public class DiscoveringServiceBootstrap : MonoBehaviour {
-    private void Start() {
-        var services = new List<MonoBehaviour>();
-        var types = new HashSet<Type>();
-        foreach (var component in FindObjectsByType<MonoBehaviour>(
-            FindObjectsInactive.Include, FindObjectsSortMode.None)) {
-            if (!(component is IInitializableSharedService)) continue;
-            if (!component.gameObject.scene.IsValid() || !component.gameObject.scene.isLoaded)
-                continue;
-            if (!types.Add(component.GetType()))
-                throw new InvalidOperationException($"Duplicate service: {component.GetType().Name}");
-            services.Add(component);
+        // Resolve Logic directly:
+        var scoreLogic = Services.Get<ScoreLogic>();
+        if (scoreLogic != null) {
+            scoreLogic.AddScore(10);
         }
 
-        foreach (var service in services)
-            ExampleServices.Register(service);
-
-        foreach (var service in services)
-            ((IInitializableSharedService)service).Initialize();
+        // Resolve Model directly:
+        var scoreModel = Services.GetModel<ScoreDataModel>();
+        if (scoreModel != null) {
+            Debug.Log($"Current score: {scoreModel.score.Value}");
+        }
     }
 }
 ```
 
-Let each service's Initialize method own binding and initial rendering; do not bind it again in the discovery loop. Registration completes before initialization begins, but unsorted discovery does not establish initialization dependency order. Use an explicit dependency order if one service requires another to be fully initialized, not merely registered. Call consumer startup after these passes rather than relying on unrelated `Start` methods.
+### 2. Named Multi-Instance Lookup
 
-Include inactive objects only intentionally. Ensure services selected this way can initialize while inactive, and define what happens when later additive scenes introduce another instance. Run discovery at the owning startup boundary, not every frame.
+When multiple instances of the same Logic class exist in a scene, assign distinct `singletonName` values in the Inspector:
+
+```csharp
+using SavableObservable;
+using UnityEngine;
+
+public class GameRulesCoordinator : MonoBehaviour {
+    private void Start() {
+        // DevSettings, BlueAISettings, RedAISettings share the BaseAISettingsLogic class
+        var blueAI = Services.Get<BaseAISettingsLogic>("BlueAISettings");
+        var redAI = Services.Get<BaseAISettingsLogic>("RedAISettings");
+
+        var blueModel = Services.GetModel<BaseAISettingsDataModel>("BlueAISettings");
+    }
+}
+```
+
+### 3. Custom Non-MMVC MonoBehaviour Services
+
+Plain `MonoBehaviour` services that need global access implement `ISharedSingleton`:
+
+```csharp
+using SavableObservable;
+using UnityEngine;
+
+public class AudioService : MonoBehaviour, ISharedSingleton {
+    public void PlaySound(string soundName) {
+        // play audio
+    }
+}
+
+// Access from anywhere:
+Services.Get<AudioService>()?.PlaySound("Click");
+```
 
 ## Timer with AutoBind and a Handler
 
-Keep ticking and state transitions in logic. Use a handler for visibility and explicit initial rendering to avoid replaying transition effects.
+Keep ticking and state transitions in logic. Use `InitializePresenter()` for initial setup:
 
 ```csharp
 using SavableObservable;
@@ -245,7 +199,7 @@ public class TimerDataModel : BaseObservableDataModel {
     public ObservableVariable<float> timerValue;
 }
 
-public class TimerLogic : BaseLogic<TimerDataModel> {
+public class TimerLogic : BaseLogic<TimerDataModel, TimerPresenter> {
     public void StartTimer() {
         GetModel().status.Value = "Timer Running";
         GetModel().timerEnabled.Value = true;
@@ -263,9 +217,9 @@ public class TimerPresenter : ObservablePresenterWithLogic<TimerDataModel, Timer
     [SerializeField] private TMPro.TextMeshProUGUI timeText;
     [SerializeField] private GameObject timerPanel;
 
-    public void Initialize() {
-        Observable.SetListeners(this);
-        statusText.text = GetModel().status.Value;
+    protected override void InitializePresenter() {
+        base.InitializePresenter();
+        if (statusText != null) statusText.text = GetModel().status.Value;
         OnTimeChanged(GetModel().timerValue.Value);
         OnEnabledChanged(GetModel().timerEnabled.Value);
     }
@@ -273,14 +227,16 @@ public class TimerPresenter : ObservablePresenterWithLogic<TimerDataModel, Timer
     public void OnStartClicked() => GetLogic().StartTimer();
 
     [ObservableHandler(nameof(TimerDataModel.timerValue))]
-    private void OnTimeChanged(float value) => timeText.text = value.ToString("F1");
+    private void OnTimeChanged(float value) {
+        if (timeText != null) timeText.text = value.ToString("F1");
+    }
 
     [ObservableHandler(nameof(TimerDataModel.timerEnabled))]
-    private void OnEnabledChanged(bool enabled) => timerPanel.SetActive(enabled);
+    private void OnEnabledChanged(bool enabled) {
+        if (timerPanel != null) timerPanel.SetActive(enabled);
+    }
 }
 ```
-
-Assign all view references; keep the presenter outside the panel it hides. Call Initialize from the owner before input is enabled, and call Tick from the game loop with the desired scaled or unscaled delta time. Wire the button to OnStartClicked. Do not place time progression in a rendering handler.
 
 ## Reactive Inventory
 
@@ -295,7 +251,7 @@ public class InventoryDataModel : BaseObservableDataModel {
     public ObservableList<string> items;
 }
 
-public class InventoryLogic : BaseLogic<InventoryDataModel> {
+public class InventoryLogic : BaseLogic<InventoryDataModel, InventoryPresenter> {
     public void AddItem(string item) => GetModel().items.Add(item);
     public void RemoveItem(string item) => GetModel().items.Remove(item);
 }
@@ -303,23 +259,25 @@ public class InventoryLogic : BaseLogic<InventoryDataModel> {
 public class InventoryPresenter : BaseObservablePresenter<InventoryDataModel> {
     [SerializeField] private TMPro.TextMeshProUGUI contents;
 
-    public void Initialize() {
-        Observable.SetListeners(this);
-        contents.text = string.Join(", ", GetModel().items.Value);
+    protected override void InitializePresenter() {
+        base.InitializePresenter();
+        if (contents != null) {
+            contents.text = string.Join(", ", GetModel().items.Value);
+        }
     }
 
     [ObservableHandler(nameof(InventoryDataModel.items))]
     private void OnItemsChanged(List<string> current, IReadOnlyList<string> previous) {
-        contents.text = string.Join(", ", current);
+        if (contents != null) {
+            contents.text = string.Join(", ", current);
+        }
     }
 }
 ```
 
-Use `previous` for presentation that needs a before/after comparison. Avoid `items.Value.Add`, which bypasses notifications. For manual observation, use `items.OnChanged.Add(handler, subscriber)` with a handler accepting `ObservableList<string>` and pair it with teardown as shown in the manual subscriber example.
-
 ## Custom Display Adapter
 
-Bind a float model value to an Image's fill amount through an explicit view component, avoiding replacement of the built-in Image sprite adapter:
+Bind a float model value to an Image's fill amount through an explicit view component:
 
 ```csharp
 using System;
@@ -341,11 +299,9 @@ public class FillViewAdapter : IUIAdapter {
 }
 ```
 
-Configure the Image as Filled, assign it on FillView, and bind a serialized FillView field using AutoBind. Register the adapter before initializing the presenter.
-
 ## Custom Interactive Adapter
 
-Implement both value propagation and exact listener removal. Keep this example restricted to float observables rather than claiming arbitrary numeric conversion:
+Implement both value propagation and exact listener removal:
 
 ```csharp
 using System;
@@ -375,12 +331,3 @@ public class ScrollbarAdapter : IUIListenerAdapter {
     }
 }
 ```
-
-Register from the same initialization owner before SetListeners:
-
-```csharp
-UIAdapterRegistry.RegisterAdapter(new FillViewAdapter());
-UIAdapterRegistry.RegisterAdapter(new ScrollbarAdapter());
-```
-
-Use `UIAdapterRegistry.GetAdapter(typeof(FillView))` for display adapter lookup and `UIAdapterRegistry.TryGetListenerAdapter(typeof(UnityEngine.UI.Scrollbar), out var adapter)` when interactive behavior is required. Configure scrollbar parameters to match model semantics. Supply an explicit initial refresh; registration and binding do not populate the initial value.

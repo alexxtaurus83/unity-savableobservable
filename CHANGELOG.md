@@ -1,6 +1,53 @@
 # Changelog
 
-## [1.0.17] - 2026-10-13 - Minor files fix
+## [1.0.20] - 2026-11-04 - MMVC Framework Hardening & Unity Lifecycle Fixes
+- **Dynamic & Additive `ISharedSingleton` / `BaseLogic` Lifecycle:**
+  - Added `ServiceLocator.Unregister(ISharedSingleton service, string name = null)` and `Services.Unregister` to remove an instance from tracking and reconcile its key so surviving collided instances recover lookup cleanly.
+  - Added `Awake()` and `OnDestroy()` lifecycle hooks on `BaseLogic`: dynamically instantiated (`Instantiate`/`AddComponent`) or additively loaded `BaseLogic` units auto-register in `Awake()` and unregister in `OnDestroy()`.
+  - Added `IsRegistered<T>(string name = null)` generic convenience overloads on `ServiceLocator` and `Services`.
+  - Fixed scene validity checks in `ServiceLocator.InitializeSharedSingletons()` to check `!scene.IsValid() || !scene.isLoaded` instead of `scene.name == null`, ensuring untitled and test scenes register properly.
+  - Removed unused and redundant `_boundPresenters` from `ServiceLocator`, relying on `BaseObservablePresenter.EnsureInitialized()` idempotency.
+- **Base-Class Private/Protected `[ObservableHandler]` & `[AutoBind]` Inheritance:**
+  - `SubscriberMetadata` in `Observable.cs` now traverses the type hierarchy using `BindingFlags.DeclaredOnly` (stopping before `MonoBehaviour` / `BaseObservableDataModel`), discovering `private` `[ObservableHandler]` methods and `private` `[AutoBind]` fields declared on intermediate generic/abstract base presenters while deduplicating virtual overrides by base definition.
+  - `ModelMetadata` in `Observable.cs` and `ModelLoadDescriptor` in `BaseObservableDataModel.cs` traverse the type hierarchy to discover `private [SerializeField]` observable fields declared on base model classes while strictly excluding engine internals.
+- **Deep List Cloning in `BaseObservableDataModel.LoadDataFromModel`:**
+  - Resolved shallow-copy list aliasing in `LoadDataFromModel`: cloning `ObservableList<T>` elements and `PlainFields` implementing `IList` so mutating a loaded model never mutates the source snapshot or template model.
+- **Two-Way UI Adapter Bounce-Back Prevention & Fast Play Mode Custom Adapters:**
+  - Replaced mutating property setters with `SetIsOnWithoutNotify`, `SetValueWithoutNotify`, and `SetTextWithoutNotify` plus re-entrancy suppression in `ToggleAdapter`, `SliderAdapter`, `TMPInputFieldAdapter`, and `InputFieldAdapter` to eliminate redundant `Model -> UI -> Model` notifications while preserving full `UI -> Model` user interactivity.
+  - Handled numeric fallback parsing using `CultureInfo.InvariantCulture` and default value initialization when clearing input fields.
+  - Preserved custom adapters across Fast Play Mode (`ResetRegistry`) via `_customAdapters` while exposing `UIAdapterRegistry.UnregisterAdapter` and `ClearCustomAdapters()` for clean test teardown.
+- **Deterministic Main-Thread Capture in `ObservableTrackedAction`:**
+  - Added non-generic companion `ObservableTrackedAction` with `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` and static constructor to latch `_mainThreadId` deterministically on the Unity main thread at startup.
+- **Safe Component Provisioning & Minor Guards:**
+  - Guarded against prefab disk assets and deferred `AddComponent` via `EditorApplication.delayCall` during `OnValidate` in `ComponentAutoRequire`, eliminating `SendMessage` warnings.
+  - Added null guards for `_items` in `ObservableList.OnBeginGui()` and `OnValidate()`.
+  - Removed `UnityEditor.TestRunner` reference from `Tests/Runtime/com.evialdev.savableobservable.RuntimeTests.asmdef`.
+  - Corrected `README.md` `ObservableTrackedAction` callback parameter signature example.
+
+## [1.0.19] - 2026-11-04 - Built-in ServiceLocator & ISharedSingleton, Primary BaseLogic<M, P>, Collision-Eviction & Deterministic Execution-Order Pipeline
+- **Built-in `ServiceLocator`, `Services`, `ISharedSingleton`, and `RegistrationResult`:**
+  - Added `ISharedSingleton`, `ServiceLocator`, `Services`, and `RegistrationResult` (`Added`, `SameInstance`, `EvictedDuplicate`, `Rejected`) to the `SavableObservable` runtime assembly with zero external dependencies.
+  - `ServiceLocator.Awake()` (`[DefaultExecutionOrder(-200)]`) automatically discovers and registers all scene `ISharedSingleton` instances (`FindObjectsInactive.Include`) in Pass 1, and initializes/binds all scene `IObservablePresenter` instances in Pass 2 so `Services.Get<T>()` is guaranteed ready inside `InitializePresenter()`.
+  - Added `Services.GetModel<M>(string name = null)` to resolve a registered MMVC unit's `BaseObservableDataModel` directly by model type (and optional `Logic.Name`).
+  - Strictly rejected `IObservablePresenter`, `BasePresenter<M>`, `BaseObservableDataModel`, and interface types from `ServiceLocator.TryRegister` and Editor `TypeCache` validation: only `BaseLogic` and custom non-MMVC `MonoBehaviour` services may be registered as shared singletons.
+- **Primary `BaseLogic<M, P>` & Automatic `ISharedSingleton` Inheritance:**
+  - Added non-generic root `BaseLogic : MonoBehaviour, ISharedSingleton` with built-in `[SerializeField] protected string singletonName` and `Name` property (returning `singletonName` when assigned or `GetType().Name` otherwise, never `gameObject.name`).
+  - Replaced 1-parameter `BaseLogic<M>` with `BaseLogic<M, P> : BaseLogic where M : BaseObservableDataModel where P : BaseObservablePresenter<M>` as the primary MMVC component.
+  - Adding `BaseLogic<M, P>` to a GameObject in the Unity Editor automatically provisions both `M` (Model) and `P` (Presenter) via `ComponentAutoRequire.EnsureComponent` in `Reset()` and `OnValidate()`.
+  - Removed `ComponentAutoRequire` from `BasePresenter<M>` and `ObservablePresenterWithLogic<M, LO>`, eliminating circular dependency locks in the Unity Inspector.
+  - `BaseLogic<M, P>` exposes `GetModel()` and intentionally omits `GetPresenter()` so logic never calls presenter methods directly.
+  - `BaseLogic<M, P>.GetModel()` defensively initializes model fields and privately calls `EnsureInitialized()` on its sibling presenter `P` on first access, ensuring even prefabs instantiated at runtime in a disabled (`inactive`) state have their presenter initialized and bound before logic mutates the model.
+- **Live-Instance Collision-Eviction Rule:**
+  - `ServiceLocator` tracks live instances per `(Type, key)` (pruned via Unity object liveness checks).
+  - When two or more live instances share the same `(Type, Name)` key (e.g., multi-instance prefabs like board cells or unnamed duplicate modals), `ServiceLocator` silently evicts the key from `_serviceBindings` and `_modelBindings` during registration while still initializing and binding each GameObject's local presenter.
+  - Calling `Services.Get<T>()` or `Services.GetModel<M>()` for an evicted key (checked before any single-entry fallback) logs a descriptive `Debug.LogError` instructing the developer to assign distinct `singletonName` values in the Inspector.
+- **Deterministic 5-Stage Execution-Order Pipeline & `InitializePresenter()`:**
+  - Added `[DefaultExecutionOrder]` pipeline and `Editor/MMVCExecutionOrderSynchronizer.cs` (`[InitializeOnLoad]`) to automatically synchronize `MonoImporter` execution order for project scripts under `"Assets/"`: `BaseObservableDataModel` (`-300`) -> `LoaderWithModel<M>` (`-250`) -> `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`) -> `BaseLogic` (`0`).
+  - Added `EnsureInitialized()`, `EnsurePresenterInitialized()`, and `protected virtual void InitializePresenter()` to `BaseObservablePresenter<M>`. `Observable.SetListenersCore` invokes `EnsurePresenterInitialized()` before wiring handlers, guaranteeing static UI control setup (slider ranges, dropdown options, button listeners, initial CanvasGroup state) always executes once before bindings are attached.
+- **Added `[NonSaved]` Attribute for Transient Observable Fields:**
+  - Added `[NonSavedAttribute]` (`Runtime/NonSavedAttribute.cs`) to mark runtime/UI-only `ObservableVariable<T>` and `ObservableList<T>` fields that must be skipped during `BaseObservableDataModel.LoadDataFromModel` and persistence serialization.
+
+## [1.0.18] - 2026-10-13 - Minor files fix
 
 ## [1.0.17] - 2026-10-12 - UI listener unbinding unification, ASMDEF decoupling & ObservableList PreviousValue fix
 - **Fixed Redundant Two-Way UI Listener Removal:**

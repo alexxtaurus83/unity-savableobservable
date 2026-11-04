@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
@@ -60,6 +61,10 @@ namespace SavableObservable
 #if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
 #endif
+        private static readonly List<IUIAdapter> _customAdapters = new List<IUIAdapter>();
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [NoAutoStaticsCleanup]
+#endif
         private static readonly object _lock = new object();
 #if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
@@ -103,12 +108,49 @@ namespace SavableObservable
 
             lock (_lock)
             {
-                if (_adapters.Contains(adapter)) return;
+                EnsureInitialized();
 
-                _adapters.Add(adapter);
-                _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
-                
-                // Rebuild snapshot and invalidate caches when adapters are modified
+                if (!_customAdapters.Contains(adapter))
+                {
+                    _customAdapters.Add(adapter);
+                }
+
+                if (!_adapters.Contains(adapter))
+                {
+                    _adapters.Add(adapter);
+                    _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
+                    _adaptersSnapshot = _adapters.ToArray();
+                    _adapterCache.Clear();
+                    _negativeCache.Clear();
+                }
+            }
+        }
+
+        public static void UnregisterAdapter(IUIAdapter adapter)
+        {
+            if (adapter == null) return;
+
+            lock (_lock)
+            {
+                _customAdapters.Remove(adapter);
+                if (_adapters.Remove(adapter))
+                {
+                    _adaptersSnapshot = _adapters.ToArray();
+                    _adapterCache.Clear();
+                    _negativeCache.Clear();
+                }
+            }
+        }
+
+        public static void ClearCustomAdapters()
+        {
+            lock (_lock)
+            {
+                for (int i = 0; i < _customAdapters.Count; i++)
+                {
+                    _adapters.Remove(_customAdapters[i]);
+                }
+                _customAdapters.Clear();
                 _adaptersSnapshot = _adapters.ToArray();
                 _adapterCache.Clear();
                 _negativeCache.Clear();
@@ -172,18 +214,33 @@ namespace SavableObservable
             {
                 if (_initialized) return;
 
-                RegisterAdapter(new TMPInputFieldAdapter());
-                RegisterAdapter(new TextMeshProAdapter());
-                RegisterAdapter(new InputFieldAdapter());
-                RegisterAdapter(new UnityTextAdapter());
-                RegisterAdapter(new ToggleAdapter());
-                RegisterAdapter(new SliderAdapter());
-                RegisterAdapter(new ImageAdapter());
+                RegisterBuiltInAdapter(new TMPInputFieldAdapter());
+                RegisterBuiltInAdapter(new TextMeshProAdapter());
+                RegisterBuiltInAdapter(new InputFieldAdapter());
+                RegisterBuiltInAdapter(new UnityTextAdapter());
+                RegisterBuiltInAdapter(new ToggleAdapter());
+                RegisterBuiltInAdapter(new SliderAdapter());
+                RegisterBuiltInAdapter(new ImageAdapter());
 
-                // Build immutable snapshot after all adapters are registered
+                for (int i = 0; i < _customAdapters.Count; i++)
+                {
+                    var custom = _customAdapters[i];
+                    if (!_adapters.Contains(custom))
+                    {
+                        _adapters.Add(custom);
+                    }
+                }
+
+                _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
                 _adaptersSnapshot = _adapters.ToArray();
                 _initialized = true;
             }
+        }
+
+        private static void RegisterBuiltInAdapter(IUIAdapter adapter)
+        {
+            if (adapter == null || _adapters.Contains(adapter)) return;
+            _adapters.Add(adapter);
         }
 
         /// <summary>
@@ -204,6 +261,8 @@ namespace SavableObservable
     /// </summary>
     public class TMPInputFieldAdapter : IUIListenerAdapter
     {
+        [ThreadStatic] private static bool _isSettingValue;
+
         public int Priority => 110; // Higher priority than TextMeshProAdapter
 
         public bool CanHandle(Type uiComponentType)
@@ -218,7 +277,15 @@ namespace SavableObservable
                 string stringValue = value?.ToString() ?? string.Empty;
                 if (inputField.text != stringValue)
                 {
-                    inputField.text = stringValue;
+                    _isSettingValue = true;
+                    try
+                    {
+                        inputField.SetTextWithoutNotify(stringValue);
+                    }
+                    finally
+                    {
+                        _isSettingValue = false;
+                    }
                 }
             }
         }
@@ -229,13 +296,34 @@ namespace SavableObservable
             {
                 UnityAction<string> listener = val =>
                 {
+                    if (_isSettingValue) return;
                     try
                     {
                         object convertedValue = val;
                         if (valueType != typeof(string))
                         {
-                            if (string.IsNullOrEmpty(val)) return;
-                            convertedValue = Convert.ChangeType(val, valueType);
+                            if (string.IsNullOrEmpty(val))
+                            {
+                                if (valueType.IsValueType)
+                                {
+                                    convertedValue = Activator.CreateInstance(valueType);
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
+                                }
+                                catch
+                                {
+                                    convertedValue = Convert.ChangeType(val, valueType);
+                                }
+                            }
                         }
                         onValueChanged(convertedValue);
                     }
@@ -264,6 +352,8 @@ namespace SavableObservable
     /// </summary>
     public class InputFieldAdapter : IUIListenerAdapter
     {
+        [ThreadStatic] private static bool _isSettingValue;
+
         public int Priority => 110; // Higher priority than UnityTextAdapter
 
         public bool CanHandle(Type uiComponentType)
@@ -278,7 +368,15 @@ namespace SavableObservable
                 string stringValue = value?.ToString() ?? string.Empty;
                 if (inputField.text != stringValue)
                 {
-                    inputField.text = stringValue;
+                    _isSettingValue = true;
+                    try
+                    {
+                        inputField.SetTextWithoutNotify(stringValue);
+                    }
+                    finally
+                    {
+                        _isSettingValue = false;
+                    }
                 }
             }
         }
@@ -289,13 +387,34 @@ namespace SavableObservable
             {
                 UnityAction<string> listener = val =>
                 {
+                    if (_isSettingValue) return;
                     try
                     {
                         object convertedValue = val;
                         if (valueType != typeof(string))
                         {
-                            if (string.IsNullOrEmpty(val)) return;
-                            convertedValue = Convert.ChangeType(val, valueType);
+                            if (string.IsNullOrEmpty(val))
+                            {
+                                if (valueType.IsValueType)
+                                {
+                                    convertedValue = Activator.CreateInstance(valueType);
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
+                                }
+                                catch
+                                {
+                                    convertedValue = Convert.ChangeType(val, valueType);
+                                }
+                            }
                         }
                         onValueChanged(convertedValue);
                     }
@@ -367,6 +486,8 @@ namespace SavableObservable
     /// </summary>
     public class ToggleAdapter : IUIListenerAdapter
     {
+        [ThreadStatic] private static bool _isSettingValue;
+
         public int Priority => 100;
 
         public bool CanHandle(Type uiComponentType)
@@ -380,11 +501,17 @@ namespace SavableObservable
             {
                 if (value is bool boolValue)
                 {
-                    // Temporarily disable the listener to avoid infinite loops if needed,
-                    // but usually checking value != current prevents this.
                     if (toggle.isOn != boolValue)
                     {
-                        toggle.isOn = boolValue;
+                        _isSettingValue = true;
+                        try
+                        {
+                            toggle.SetIsOnWithoutNotify(boolValue);
+                        }
+                        finally
+                        {
+                            _isSettingValue = false;
+                        }
                     }
                 }
                 else if (value != null)
@@ -398,7 +525,11 @@ namespace SavableObservable
         {
             if (uiComponent is Toggle toggle)
             {
-                UnityAction<bool> listener = val => onValueChanged(val);
+                UnityAction<bool> listener = val =>
+                {
+                    if (_isSettingValue) return;
+                    onValueChanged(val);
+                };
                 toggle.onValueChanged.AddListener(listener);
                 return listener;
             }
@@ -419,6 +550,8 @@ namespace SavableObservable
     /// </summary>
     public class SliderAdapter : IUIListenerAdapter
     {
+        [ThreadStatic] private static bool _isSettingValue;
+
         public int Priority => 100;
 
         public bool CanHandle(Type uiComponentType)
@@ -432,10 +565,18 @@ namespace SavableObservable
             {
                 try
                 {
-                    float floatValue = Convert.ToSingle(value);
+                    float floatValue = Convert.ToSingle(value, CultureInfo.InvariantCulture);
                     if (!Mathf.Approximately(slider.value, floatValue))
                     {
-                        slider.value = floatValue;
+                        _isSettingValue = true;
+                        try
+                        {
+                            slider.SetValueWithoutNotify(floatValue);
+                        }
+                        finally
+                        {
+                            _isSettingValue = false;
+                        }
                     }
                 }
                 catch
@@ -451,18 +592,26 @@ namespace SavableObservable
             {
                 UnityAction<float> listener = val =>
                 {
+                    if (_isSettingValue) return;
                     try
                     {
                         object convertedValue = val;
                         if (valueType != typeof(float))
                         {
-                            convertedValue = Convert.ChangeType(val, valueType);
+                            try
+                            {
+                                convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
+                            }
+                            catch
+                            {
+                                convertedValue = Convert.ChangeType(val, valueType);
+                            }
                         }
                         onValueChanged(convertedValue);
                     }
                     catch
                     {
-                        onValueChanged(val);
+                        // Conversion failed, ignore update
                     }
                 };
                 slider.onValueChanged.AddListener(listener);

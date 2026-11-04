@@ -75,39 +75,104 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
+        public void DomainReload_SubsystemRegistration_ServicesAndServiceLocator_ResetCleanly() {
+            var testState = Services.CaptureTestState();
+            try {
+                var locatorGo = new GameObject("TestLocator");
+                var locator = locatorGo.AddComponent<ServiceLocator>();
+                Services.SetTestLocator(locator);
+
+                Assert.AreSame(locator, ServiceLocator.instance);
+                Assert.AreSame(locator, Services.instance);
+
+                // Invoke SubsystemRegistration reset hook on ServiceLocator
+                var resetLocatorMethod = typeof(ServiceLocator).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
+                Assert.IsNotNull(resetLocatorMethod, "ResetStaticsOnSubsystemRegistration should exist on ServiceLocator");
+                resetLocatorMethod.Invoke(null, null);
+
+                Assert.IsNull(ServiceLocator.instance, "ServiceLocator.instance must be null after SubsystemRegistration reset");
+
+                // Invoke SubsystemRegistration reset hook on Services
+                var resetServicesMethod = typeof(Services).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
+                Assert.IsNotNull(resetServicesMethod, "ResetStaticsOnSubsystemRegistration should exist on Services");
+                resetServicesMethod.Invoke(null, null);
+
+                Assert.IsNull(Services.instance, "Services.instance must be null after SubsystemRegistration reset");
+
+                UnityEngine.Object.DestroyImmediate(locatorGo);
+            } finally {
+                Services.RestoreTestState(testState);
+            }
+        }
+
+        [Test]
+        public void Services_DestroyedCachedLocator_IsNotReused() {
+            var testState = Services.CaptureTestState();
+            try {
+                var locatorGo = new GameObject("TestLocator");
+                var locator = locatorGo.AddComponent<ServiceLocator>();
+
+                Services.SetTestLocator(locator);
+                Assert.AreSame(locator, Services.instance);
+
+                // Destroy the locator GameObject
+                UnityEngine.Object.DestroyImmediate(locatorGo);
+
+                // Accessing Services.instance must detect the destroyed Unity object and not return stale reference
+                Assert.IsNull(Services.instance, "Destroyed ServiceLocator must not stay cached in Services.instance");
+            } finally {
+                Services.RestoreTestState(testState);
+            }
+        }
+
+        [Test]
         public void SimulateMultiPlayRuns_WithFastPlayMode_NoStaleSubscriptionsOrLeaks() {
             var resetObservable = typeof(Observable).GetMethod("ResetInstanceData", BindingFlags.NonPublic | BindingFlags.Static);
             var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
+            var resetLocator = typeof(ServiceLocator).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
+            var resetServices = typeof(Services).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
 
-            // --- RUN 1 (Play mode run 1) ---
-            var run1Host = new GameObject("Run1_Host");
-            var model1 = run1Host.AddComponent<SamplePlayerModel>();
-            var presenter1 = run1Host.AddComponent<SamplePlayerPresenter>();
-            model1.InitializeDefaults();
-            Observable.SetListeners(presenter1, model1);
+            var testState = Services.CaptureTestState();
+            try {
+                // --- RUN 1 (Play mode run 1) ---
+                var run1Host = new GameObject("Run1_Host");
+                var locator1 = run1Host.AddComponent<ServiceLocator>();
+                var model1 = run1Host.AddComponent<SamplePlayerModel>();
+                var presenter1 = run1Host.AddComponent<SamplePlayerPresenter>();
+                model1.InitializeDefaults();
+                Observable.SetListeners(presenter1, model1);
 
-            model1.health.Value = 75;
-            Assert.AreEqual(75, presenter1.LastObservedHealth);
+                model1.health.Value = 75;
+                Assert.AreEqual(75, presenter1.LastObservedHealth);
 
-            // Teardown Run 1 (Scene unload / exit play mode)
-            UnityEngine.Object.DestroyImmediate(run1Host);
+                // Teardown Run 1 (Scene unload / exit play mode)
+                UnityEngine.Object.DestroyImmediate(run1Host);
 
-            // Fast Play Mode entry: SubsystemRegistration reset is called by Unity runtime
-            resetObservable?.Invoke(null, null);
-            resetRegistry?.Invoke(null, null);
+                // Fast Play Mode entry: SubsystemRegistration reset is called by Unity runtime
+                resetObservable?.Invoke(null, null);
+                resetRegistry?.Invoke(null, null);
+                resetLocator?.Invoke(null, null);
+                resetServices?.Invoke(null, null);
 
-            // --- RUN 2 (Play mode run 2 without script recompilation) ---
-            var run2Host = new GameObject("Run2_Host");
-            var model2 = run2Host.AddComponent<SamplePlayerModel>();
-            var presenter2 = run2Host.AddComponent<SamplePlayerPresenter>();
-            model2.InitializeDefaults();
-            Observable.SetListeners(presenter2, model2);
+                Assert.IsNull(ServiceLocator.instance);
+                Assert.IsNull(Services.instance);
 
-            model2.health.Value = 40;
-            Assert.AreEqual(40, presenter2.LastObservedHealth);
-            Assert.AreEqual(1, presenter2.HealthChangeEventsCount, "Run 2 must only have its own event invocations");
+                // --- RUN 2 (Play mode run 2 without script recompilation) ---
+                var run2Host = new GameObject("Run2_Host");
+                var locator2 = run2Host.AddComponent<ServiceLocator>();
+                var model2 = run2Host.AddComponent<SamplePlayerModel>();
+                var presenter2 = run2Host.AddComponent<SamplePlayerPresenter>();
+                model2.InitializeDefaults();
+                Observable.SetListeners(presenter2, model2);
 
-            UnityEngine.Object.DestroyImmediate(run2Host);
+                model2.health.Value = 40;
+                Assert.AreEqual(40, presenter2.LastObservedHealth);
+                Assert.AreEqual(1, presenter2.HealthChangeEventsCount, "Run 2 must only have its own event invocations");
+
+                UnityEngine.Object.DestroyImmediate(run2Host);
+            } finally {
+                Services.RestoreTestState(testState);
+            }
         }
 
         private class DummyCustomComponent : MonoBehaviour { }
@@ -118,18 +183,28 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void CustomAdapterRegistration_IsClearedOnSubsystemRegistrationReset() {
+        public void CustomAdapterRegistration_SurvivesSubsystemRegistrationReset_And_CanBeClearedExplicitly() {
+            UIAdapterRegistry.ClearCustomAdapters();
             var customAdapter = new DummyCustomAdapter();
-            UIAdapterRegistry.RegisterAdapter(customAdapter);
+            try {
+                UIAdapterRegistry.RegisterAdapter(customAdapter);
 
-            Assert.IsNotNull(UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
-            Assert.AreSame(customAdapter, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
+                Assert.IsNotNull(UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
+                Assert.AreSame(customAdapter, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
 
-            // Reset registry (as occurs on domain reload / subsystem registration)
-            var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
-            resetRegistry?.Invoke(null, null);
+                // Reset registry (as occurs on domain reload / subsystem registration in Fast Play Mode)
+                var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
+                resetRegistry?.Invoke(null, null);
 
-            Assert.IsNull(UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)), "Custom adapter must be cleared upon SubsystemRegistration reset");
+                // Custom adapters survive Fast Play Mode SubsystemRegistration reset
+                Assert.AreSame(customAdapter, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)), "Custom adapter must survive SubsystemRegistration reset");
+
+                // Explicit clear cleans up custom adapters
+                UIAdapterRegistry.ClearCustomAdapters();
+                Assert.IsNull(UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)), "Custom adapter must be cleared upon ClearCustomAdapters");
+            } finally {
+                UIAdapterRegistry.ClearCustomAdapters();
+            }
         }
 #endif
 
