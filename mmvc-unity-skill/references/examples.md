@@ -96,6 +96,88 @@ public class ScoreObserver : MonoBehaviour {
 }
 ```
 
+## Anti-Pattern: Logic Reaching into Presenter
+
+Logic must never get, store, or call a Presenter. Direct presenter pushes bypass the observable pipeline and couple logic to presentation lifecycles.
+
+### Don't: Calling Presenter from Logic
+
+```csharp
+// Anti-pattern: Logic calling Presenter methods directly
+public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
+    public void PlayHitEffect() {
+        // VIOLATION: Never GetComponent a Presenter or invoke view methods directly
+        GetComponent<PlayerPresenter>()?.FlashDamage();
+    }
+}
+```
+
+### Do: Event-Token Pattern for One-Shot View Commands
+
+For transient view triggers (such as VFX, animations, or one-shot audio), publish an event token via the Model:
+
+```csharp
+using System;
+using SavableObservable;
+using UnityEngine;
+
+public enum PlayerFxKind { None = 0, Hit = 1, LevelUp = 2 }
+
+[Serializable]
+public struct PlayerFxEvent {
+    public PlayerFxKind Kind;
+    public int Intensity;
+}
+
+public class PlayerDataModel : BaseObservableDataModel {
+    [NonSaved] public ObservableVariable<int> eventToken;
+    [NonSaved] public PlayerFxEvent latestEvent;
+
+    public override void EnsureFieldsInitialized() {
+        base.EnsureFieldsInitialized();
+        if (eventToken == null) eventToken = new ObservableVariable<int> { Value = 0 };
+    }
+}
+
+public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
+    public void PlayHitEffect(int intensity) {
+        var model = GetModel();
+        if (model == null) return;
+        model.latestEvent = new PlayerFxEvent {
+            Kind = PlayerFxKind.Hit,
+            Intensity = intensity
+        };
+        model.eventToken.Value++;
+    }
+}
+
+public class PlayerPresenter : BaseObservablePresenter<PlayerDataModel> {
+    [ObservableHandler(nameof(PlayerDataModel.eventToken))]
+    private void OnEventTokenChanged(int token) {
+        if (token <= 0) return;
+        var model = GetModel();
+        if (model == null) return;
+
+        switch (model.latestEvent.Kind) {
+            case PlayerFxKind.Hit:
+                FlashDamage(model.latestEvent.Intensity);
+                break;
+            case PlayerFxKind.LevelUp:
+                PlayCelebrationFx();
+                break;
+        }
+    }
+
+    private void FlashDamage(int intensity) {
+        // Play visual effect
+    }
+
+    private void PlayCelebrationFx() {
+        // Play celebration effect
+    }
+}
+```
+
 ## Custom Save-System Integration
 
 Use this loader pattern only with a save system that can supply a compatible model instance.
@@ -115,8 +197,6 @@ public class ScoreLoader : LoaderWithModel<ScoreDataModel>, IExampleSaveable {
 
     public void LoadState(object state) {
         LoadDataFromModel(state);
-        var presenter = GetComponent<ScorePresenter>();
-        if (presenter != null) presenter.RefreshDisplay();
     }
 }
 ```

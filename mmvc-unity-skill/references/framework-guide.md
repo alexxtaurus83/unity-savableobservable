@@ -10,7 +10,68 @@ Use this guide and the companion examples as the primary documentation. If a des
 
 ## Component Selection
 
-Every GameObject represents a single MMVC unit: exactly one Model, at most one Logic, at most one Presenter, and an optional Loader. All base classes are marked `[DisallowMultipleComponent]` to prevent duplicate instances. All generic parameters `M` are strictly constrained with `where M : BaseObservableDataModel`, `P` with `where P : BaseObservablePresenter<M>`, and logic parameters with `where LO : BaseLogic`; non-observable models and interfaces are not supported. Other GameObjects must never reference a Presenter or Model directly; access foreign units through `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
+Every GameObject represents a single MMVC unit: exactly one Model, at most one Logic, at most one Presenter, and an optional Loader. All base classes are marked `[DisallowMultipleComponent]` to prevent duplicate instances. All generic parameters `M` are strictly constrained with `where M : BaseObservableDataModel`, `P` with `where P : BaseObservablePresenter<M>`, and logic parameters with `where LO : BaseLogic`; non-observable models and interfaces are not supported. Other GameObjects and Logic on the same GameObject must never reference a Presenter directly; access foreign units through `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
+
+### Presenter Access Rule
+
+> Logic never gets, stores, or calls a Presenter (no `GetComponent<XPresenter>()`, no `[SerializeField]` presenter field, no `Find*`). Logic writes Model observables; the Presenter reacts through `[AutoBind]` / `[ObservableHandler]`. To affect another MMVC unit, call that unit's Logic (`Services.Get<OtherLogic>()`) or work with its Model (`Services.GetModel<M>()`). This is a convention: C# cannot block `GetComponent`, so it is enforced by review only.
+
+```csharp
+// DON'T: Logic reaching into Presenter
+public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
+    public void FlashPlayer() {
+        GetComponent<PlayerPresenter>()?.Flash(); // VIOLATION
+    }
+}
+
+// DO: Logic writes Model, Presenter reacts
+public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
+    public void FlashPlayer() {
+        GetModel().isFlashing.Value = true;
+    }
+}
+```
+
+#### One-Shot Command Pattern (Event Tokens)
+
+When Logic needs to trigger a transient, one-shot visual command (animations, VFX, node repaints) rather than steady state:
+1. Add an `[NonSaved] public ObservableVariable<int> eventToken;` and an event payload struct/field `[NonSaved] public MyEvent latestEvent;` to the Model.
+2. In Logic, write the payload to `model.latestEvent` and increment `model.eventToken.Value++`.
+3. In Presenter, decorate a handler with `[ObservableHandler(nameof(MyDataModel.eventToken))]` to switch on `model.latestEvent.Kind` and execute the view action.
+
+```csharp
+// Model
+public class BoardGraphDataModel : BaseObservableDataModel {
+    [NonSaved] public ObservableVariable<int> eventToken;
+    [NonSaved] public BoardGraphEvent latestEvent;
+}
+
+// Logic: publishes the event
+public void SetNodeVisual(int row, int col, PlayerColor owner, bool animate) {
+    var model = GetModel();
+    model.latestEvent = new BoardGraphEvent {
+        Kind = BoardGraphEventKind.NodeVisual,
+        Row = row,
+        Col = col,
+        Owner = owner,
+        Animate = animate
+    };
+    model.eventToken.Value++;
+}
+
+// Presenter: reacts via [ObservableHandler]
+[ObservableHandler(nameof(BoardGraphDataModel.eventToken))]
+private void OnEventTokenChanged(int token) {
+    if (token <= 0) return;
+    var model = GetModel();
+    if (model == null) return;
+    switch (model.latestEvent.Kind) {
+        case BoardGraphEventKind.NodeVisual:
+            SetNodeVisual(model.latestEvent.Row, model.latestEvent.Col, model.latestEvent.Owner, model.latestEvent.Animate);
+            break;
+    }
+}
+```
 
 ### Justified Component Shapes (No Dummy Components)
 

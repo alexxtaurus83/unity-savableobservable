@@ -96,11 +96,21 @@ The `Logic` component acts as the "Controller" or "ViewModel." It contains the b
 
 **Key Features:**
 
-* It inherits from `BaseLogic<M, P>`, where `M` is the type of the `Model` and `P` is the type of the `Presenter`.
+* It inherits from `BaseLogic<M, P>`, where `M` is the type of the `Model` and `P` is the type of the `Presenter`. Note that the `P` parameter on `BaseLogic<M, P>` is only for auto-provisioning and presenter initialization, not an access handle.
 * `BaseLogic<M, P>` is the **primary MMVC component** added to a GameObject:
   * Automatically provisions `M` (Model) and `P` (Presenter) in the Editor (`Reset`/`OnValidate`).
   * Automatically implements `ISharedSingleton` (via non-generic root `BaseLogic`) with an optional serialized `singletonName` field (`Name` property) for differentiating multiple instances of the same Logic class.
-  * Exposes `GetModel()` and intentionally does **not** expose `GetPresenter()`—external callers and Logic must **never** call methods on Presenters directly.
+  * Exposes `GetModel()` and intentionally does **not** expose `GetPresenter()`.
+
+> Logic never gets, stores, or calls a Presenter (no `GetComponent<XPresenter>()`, no `[SerializeField]` presenter field, no `Find*`). Logic writes Model observables; the Presenter reacts through `[AutoBind]` / `[ObservableHandler]`. To affect another MMVC unit, call that unit's Logic (`Services.Get<OtherLogic>()`) or work with its Model (`Services.GetModel<M>()`). This is a convention: C# cannot block `GetComponent`, so it is enforced by review only.
+
+```csharp
+// DON'T: Logic reaching into Presenter
+GetComponent<PlayerPresenter>().Flash();
+
+// DO: Logic writes Model, Presenter handles the reaction
+GetModel().isHit.Value = true; // PlayerPresenter reacts via [ObservableHandler(nameof(PlayerDataModel.isHit))]
+```
 
 ```csharp
 public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
@@ -140,7 +150,7 @@ Each GameObject represents a single MMVC unit containing:
 
 #### Cross-Component Access
 
-Components on other GameObjects must **never** hold a direct serialized reference to another GameObject's Presenter, nor call methods on Presenters from outside.
+Components on other GameObjects must **never** hold a direct serialized reference to another GameObject's Presenter, nor call methods on Presenters, including Logic on the same GameObject.
 Instead, access another MMVC unit via `Services.Get<ScoreLogic>()` (or `[SerializeField] private ScoreLogic scoreLogic;`) or `Services.GetModel<ScoreDataModel>()`, and subscribe to its model's `ObservableVariable<T>.OnValueChanged.Add(handler, this)`:
 
 ```csharp

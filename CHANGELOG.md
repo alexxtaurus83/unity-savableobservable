@@ -23,6 +23,10 @@
   - Added null guards for `_items` in `ObservableList.OnBeginGui()` and `OnValidate()`.
   - Removed `UnityEditor.TestRunner` reference from `Tests/Runtime/com.evialdev.savableobservable.RuntimeTests.asmdef`.
   - Corrected `README.md` `ObservableTrackedAction` callback parameter signature example.
+- **Documentation & Architecture Rule Clarification:**
+  - Clarified strict MMVC rule: Logic must never get, store, or call a Presenter (`GetComponent<XPresenter>()`, `[SerializeField]`, `Find*`). Logic writes Model observables; Presenter reacts via `[AutoBind]` / `[ObservableHandler]`.
+  - Documented the canonical one-shot command pattern (Model event token + payload, e.g. `latestEvent` and `eventToken++`) as the standard alternative for transient view commands.
+  - Removed outdated `ScorePresenter` direct access example from `ScoreLoader.LoadState`.
 
 ## [1.0.19] - 2026-11-04 - Built-in ServiceLocator & ISharedSingleton, Primary BaseLogic<M, P>, Collision-Eviction & Deterministic Execution-Order Pipeline
 - **Built-in `ServiceLocator`, `Services`, `ISharedSingleton`, and `RegistrationResult`:**

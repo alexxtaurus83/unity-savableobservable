@@ -281,7 +281,8 @@ F:\github\repo\unity-savableobservable\                  <-- Unity Project Root 
 │           │   └── Pipeline\
 │           │       ├── com.evialdev.savableobservable.Tests.Pipeline.asmdef
 │           │       ├── MmvcSceneBuilder.cs
-│           │       └── MmvcSelfTest.cs
+│           │       ├── MmvcSelfTest.cs
+│           │       └── MmvcUnattendedTestGuard.cs           <-- NEW: Auto-saves dirty scenes & handles unattended TestRunnerApi runs
 │           └── Runtime\
 │               ├── com.evialdev.savableobservable.RuntimeTests.asmdef
 │               ├── MmvcPlayModeTests.cs
@@ -472,10 +473,118 @@ Using the `unity-cli` and `unity-pipeline` skills, there are **two distinct exec
 
 | Scenario | How Tests Execute | Command / Mechanism | Manual Action Required? |
 |---|---|---|---|
-| **Mode A: Live Open Unity Editor** (via `com.unity.pipeline`) | Fast in-process execution via Pipeline server (`ports 7800–7849`). Avoids Editor startup cost and runs even when Editor is open. | 1. `unity status --project-path <path> --format json`<br>2. `unity command set_autotick --enable true --project-path <path>`<br>3. `unity recompile --project-path <path> --format json`<br>4. `unity command run_tests --mode editor --project-path <path>`<br>5. `unity command run_tests --mode playmode --project-path <path>`<br>6. `unity command mmvc_selftest --mode all --project-path <path>` | **None**, unless the Editor is in Safe Mode, blocked by a modal OS/Editor dialog (`blocked_by_dialog`), or the Pipeline package was just added to `manifest.json` while the Editor was open (requiring a one-time window focus to trigger asset import). |
-| **Mode B: Unattended Batch / CLI** (No Editor open for that project, or CI) | Headless/batch execution via `unity test` and `unity run --command`. Writes NUnit3 XML + JUnit XML reports directly. | 1. `unity test <path> --mode EditMode --report-format nunit,junit --output <dir>/editmode.xml --timeout 600 --format json`<br>2. `unity test <path> --mode PlayMode --report-format nunit,junit --output <dir>/playmode.xml --timeout 900 --format json`<br>3. `unity run <path> --command mmvc_selftest --format json --timeout 300 -- --mode all` | **None**, unless a Unity Editor is *already open* on that project (in which case `unity test` exits `6` with `"already open in a running Editor"` — our PowerShell script automatically detects this and routes to Mode A or fails fast if the Editor is mid-PlayMode). |
+| **Mode A: Live Open Unity Editor** (via `com.unity.pipeline`) | Fast in-process execution via Pipeline server (`ports 7800–7849`). Avoids Editor startup cost and runs even when Editor is open. | 1. `unity status --project-path <path> --format json`<br>2. Pre-flight auto-recovery (stop PlayMode if running, answer/dismiss open modal dialogs, force-save all dirty scenes/assets via `editor save_all` / `EditorSceneManager.SaveOpenScenes()`)<br>3. `unity command set_autotick --enable true --project-path <path>`<br>4. `unity recompile --project-path <path> --format json`<br>5. `unity command mmvc_run_tests_unattended --mode <editor\|playmode> --output <xmlPath> --project-path <path>` (or `run_tests` with automatic popup/dirty-scene recovery)<br>6. `unity command mmvc_selftest --mode all --project-path <path>` | **None** for dirty scenes, active PlayMode, or standard modal popups (Save Scene, TMP Importer, Asset Modification, API Updater), which the runner + helper automatically clear! Only "Enter Safe Mode?" before Pipeline boots or OS-level crash/firewall prompts require human intervention (unless `-ForceRestartStuckEditor` is passed). |
+| **Mode B: Unattended Batch / CLI** (No Editor open for that project, or CI) | Headless/batch execution via `unity test` and `unity run --command`. Writes NUnit3 XML + JUnit XML reports directly (`-batchmode` suppresses GUI dialogs natively). | 1. `unity test <path> --mode EditMode --report-format nunit,junit --output <dir>/editmode.xml --timeout 600 --format json`<br>2. `unity test <path> --mode PlayMode --report-format nunit,junit --output <dir>/playmode.xml --timeout 900 --format json`<br>3. `unity run <path> --command mmvc_selftest --format json --timeout 300 -- --mode all` | **None.** If an Editor *is* open on that project, `Invoke-UnityTests.ps1` detects it up front and routes to Mode A instead of failing with `already open in a running Editor`. |
 
-### 7.2 Design of the Unified PowerShell Test Runner (`Tools/Invoke-UnityTests.ps1`)
+### 7.2 Unattended Popup, Dirty-Scene & Editor-State Recovery Architecture
+
+A core requirement of the unattended runner is that **Unity must never block or fail a test run because of an unsaved scene ("Scene(s) Have Been Modified — Do you want to save the changes you made in the scenes?") or other modal Editor popups**, regardless of whether a human, a previous test, or an agent modified the scene.
+
+#### Why Unity Shows the "Save Scene" Popup or Fails During Tests
+There are **four distinct places** where a dirty scene or modal popup interrupts test execution:
+1. **Before PlayMode Tests Start:** When Unity's `TestRunnerApi` (or `run_tests --mode playmode`) transitions the Editor into PlayMode or loads the test bootstrap scene, `EditorSceneManager` checks if the currently open scene(s) have `isDirty == true`. In an interactive Editor, Unity pops up the native modal dialog `"Scene(s) Have Been Modified"` (`Save` / `Don't Save` / `Cancel`), which freezes the Editor main thread and causes CLI commands to fail with `STATUS_BLOCKED_BY_DIALOG` or time out!
+2. **Inside `AttaxUnity`'s `ScenarioFixtureBase.OneTimeSetUp` (`Assets\Tests\Scenarios\ScenarioFixtureBase.cs:40`):**
+   ```csharp
+   if (EditorSceneManager.GetActiveScene().isDirty) {
+       Assert.Fail("Active scene has unsaved changes. Save or revert before running scenario tests.");
+   }
+   ```
+   Even if Unity itself didn't show a modal dialog yet, `ScenarioFixtureBase` explicitly fails the test run if `GetActiveScene().isDirty` is `true`!
+3. **During or Between Tests (Mid-Run Scene Modifications):** An EditMode test, PlayMode test, or `MmvcSceneBuilder` may dirty the active scene (or open a temporary scene without saving it), causing the *next* test fixture or scene transition to trigger the `"Scene(s) Have Been Modified"` dialog mid-run.
+4. **Other Blocking Modal Popups in Unity Editor:**
+   - `"TMP Importer"` (TextMeshPro Essential Resources window blocking focus/input)
+   - `"Save Assets"` / `"Reload Modified Scene(s)?"` (when external git/file operations touch `.unity` or `.prefab` files on disk)
+   - `"API Updating Required"` / `"Script Updating Consent"`
+   - `"Active Input Handling"` / `"Build Target Switch"` confirmation dialogs
+   - Editor left in **Play Mode** or **Paused** state from a previous session (`EditorApplication.isPlaying == true`), or stuck in a **Prefab Stage** (`PrefabStageUtility.GetCurrentPrefabStage() != null`).
+
+#### Three-Layer Defense Against Dirty Scenes & Modal Popups
+
+To guarantee 100% unattended execution, we combine **Proactive Pre-Flight Scene Saving (Layer 1)**, **In-Editor Test Lifecycle Auto-Save Hooks (Layer 2)**, and **Reactive CLI Dialog Recovery & Retry Loop in PowerShell (Layer 3)**:
+
+##### Layer 1: Proactive Pre-Flight Preparation (Before Any Test Command Runs)
+Before running `recompile`, `run_tests`, or `mmvc_selftest` against a live Editor, `Invoke-UnityTests.ps1` executes a deterministic pre-flight sequence:
+1. **Clear Any Already-Open Modal Dialogs First:**
+   - Checks `unity status --project-path $ProjectPath --format json` and `unity command editor_status --project-path $ProjectPath --format json`.
+   - If `status == "blocked_by_dialog"` or `errors[0].code == "STATUS_BLOCKED_BY_DIALOG"` (or `unity command editor.dialog list` returns open dialogs):
+     - Inspects the innermost dialog (`dialogs[-1]`):
+       - **Save Scene / Save Assets Dialog** (title/message matches `Save|Modified|Scene|Asset`): Calls `unity command editor.dialog answer <id> "Save"` (or button index `0` / `"Yes"`).
+       - **Scene Reloaded Externally Dialog** (`Reload|Externally modified`): Calls `unity command editor.dialog answer <id> "Reload"` (or `"Ignore"` if saving local state is preferred).
+       - **API Updater / Upgrade Dialog** (`API Update|Update Scripts|Backup`): Calls `unity command editor.dialog answer <id> "Yes"` / `"I Made a Backup. Go Ahead!"`.
+       - **Informational / OK-only / TMP Window**: Calls `unity command editor.dialog dismiss <id>` or answers `"OK"` / `"Close"`.
+     - Loops until `dialogs` is empty (handling stacked/cascading dialogs where answering one spawns another).
+   - **Windows Win32 Fallback (for Unity 6000.6 where `editor.dialog` may not be registered):**
+     - Includes a built-in PowerShell Win32 P/Invoke helper (`Clear-UnityModalDialogsWin32 -ProcessId $editorPid`) that enumerates top-level popup windows (`#32770` standard Win32 dialog class) owned by the Unity Editor's `PID`. If a popup titled `"Scene(s) Have Been Modified"`, `"Unity"`, or `"Save Scene"` is blocking the main thread, it sends `BM_CLICK` to the `"Save"` / `"Yes"` / `"OK"` button handle (or `WM_COMMAND` `IDOK`) so even Unity versions prior to `6000.7` never stay stuck on a native modal box!
+2. **Exit Play Mode & Close Open Prefab Stages:**
+   - If `editor_status` reports `playMode != "stopped"` (`playing` or `paused`), executes `unity command editor.playmode stop --project-path $ProjectPath` (or `editor_stop`) and waits with `unity status --until-ready`.
+   - Closes any open Prefab editing stage (saving prefab changes first) so scene operations are not blocked by Prefab Mode.
+3. **Unconditionally Save All Open Scenes & Assets (`ForceSaveAllScenesAndAssets`):**
+   - Runs `unity command scene save --project-path $ProjectPath` and `unity command editor save_all --project-path $ProjectPath` (and via our C# Pipeline helper: iterates every loaded scene in `EditorSceneManager`, saves any scene with a valid disk path via `EditorSceneManager.SaveScene(scene)`, saves any untitled dirty scene to `Temp/UnattendedAutoSavedScene.unity` or clears its dirty flag via `EditorSceneManager.MarkSceneDirty` cleanup, and calls `AssetDatabase.SaveAssets()`).
+   - This guarantees `EditorSceneManager.GetActiveScene().isDirty == false` before `TestRunnerApi` or `ScenarioFixtureBase` ever starts!
+
+##### Layer 2: In-Editor C# Pipeline Test Guard (`MmvcUnattendedTestGuard.cs`)
+Inside `Packages/com.evialdev.savableobservable/Tests/Editor/Pipeline/MmvcUnattendedTestGuard.cs` (automatically shared with `AttaxUnity` because `AttaxUnity` references the package!), we register:
+1. **`ICallbacks` / `[InitializeOnLoad]` Auto-Save Hook for `TestRunnerApi`:**
+   - Subscribes a lightweight `ITestRunnerCallbacks` (or pre-test hook) that runs in `RunStarted` and between test fixtures:
+     - Checks all loaded scenes (`for (int i = 0; i < EditorSceneManager.sceneCount; i++)`).
+     - If any loaded scene has `scene.isDirty == true`:
+       - If `!string.IsNullOrEmpty(scene.path)` and it is a real project scene (`Assets/...`), automatically calls `EditorSceneManager.SaveScene(scene)` **before** Unity's internal PlayMode transition or `ScenarioFixtureBase.OneTimeSetUp` can pop up a dialog or fail `Assert.Fail("Active scene has unsaved changes")`!
+       - Calls `AssetDatabase.SaveAssets()`.
+2. **Custom Pipeline Command `[CliCommand("mmvc_prepare_unattended", ...)]` and `[CliCommand("mmvc_run_tests_unattended", ...)]`:**
+   - `mmvc_prepare_unattended`:
+     - Stops PlayMode if active.
+     - Exits Prefab Stage if active.
+     - Saves all dirty scenes with paths (`EditorSceneManager.SaveOpenScenes()`), saves dirty assets (`AssetDatabase.SaveAssets()`), and returns a JSON summary of saved scenes.
+   - `mmvc_run_tests_unattended`:
+     - Calls `mmvc_prepare_unattended` first.
+     - Runs EditMode or PlayMode tests via `TestRunnerApi` and writes a complete NUnit3 XML file directly to the requested `--output` path (solving the `unity-pipeline` caveat where built-in `run_tests` can return an opaque failure message without XML details!).
+     - Calls `mmvc_prepare_unattended` again in `RunFinished` so any scene dirtied by the test suite is saved cleanly before returning control.
+
+##### Layer 3: Reactive Mid-Command Failure / Timeout Popup Check & Automatic Retry Loop in `Invoke-UnityTests.ps1`
+Even with Layers 1 and 2, if a command or test fails, times out, or returns an unexpected error during execution, `Invoke-UnityTests.ps1` wraps every Editor command in `Invoke-UnityCommandWithPopupRecovery`:
+```text
+[Send Unity Command (or Poll Async Test Job)]
+       │
+       ├──> Succeeded (Exit 0) ──> Continue
+       │
+       └──> Failed (Exit 6, 8, 12, 14) or Timed Out while Polling
+              │
+              ▼
+   [Step A: Inspect Failure & Probe Editor Dialog State]
+   1. Check unity status / editor_status / editor.dialog list / Win32 #32770 popup windows.
+   2. Check if failure text contains "unsaved changes", "isDirty", "blocked_by_dialog",
+      "Scene(s) Have Been Modified", or timeout while Editor main thread was blocked.
+              │
+              ├──> Popup / Dirty Scene Detected!
+              │      1. Log recovery event: "[Recovery] Detected blocking popup/dirty scene: <title>"
+              │      2. If "Save Scene" / "Scene(s) Have Been Modified" -> Click "Save" (via editor.dialog answer or Win32 BM_CLICK).
+              │      3. If other modal dialog -> Auto-answer/dismiss according to safe policy table.
+              │      4. Wait for Editor ready (`unity status --until-ready`).
+              │      5. Force-save all open scenes (`mmvc_prepare_unattended` / `editor save_all`).
+              │      6. If command was rejected pre-flight OR failed due to dirty scene assertion:
+              │            --> AUTOMATICALLY RETRY the failed command/test run (up to $MaxPopupRetries = 2)!
+              │      7. If command was an already-running async job (`unity job` / `test_status`):
+              │            --> Resume polling `test_status` / `unity job wait` without double-submitting!
+              │
+              └──> Genuine Test Assertion Failure (Exit 8, no popup, no dirty-scene error)
+                     --> Record test failure in NUnit XML / Markdown report (do not mask real test bugs).
+```
+
+#### Comprehensive Edge-Case Matrix Handled by `Invoke-UnityTests.ps1`
+
+| # | Edge Case / Popup Scenario | How It Manifests | Automated Detection & Recovery Action in `Invoke-UnityTests.ps1` |
+|---|---|---|---|
+| **EC-1** | **"Scene(s) Have Been Modified" native popup** before or during PlayMode / scene load | Main thread freezes; `status` reports `STATUS_BLOCKED_BY_DIALOG` or Win32 `#32770` popup exists | **Prevented** by Layer 1 (`mmvc_prepare_unattended` + `editor save_all`) and Layer 2 (`TestRunnerCallbacks` auto-save). **Recovered** by Layer 3: answers `"Save"` via `editor.dialog answer` / Win32 button click, calls `editor save_all`, and retries/resumes the test command. |
+| **EC-2** | **`ScenarioFixtureBase` fails with `"Active scene has unsaved changes"`** (`ScenarioFixtureBase.cs:40`) | NUnit reports test failure in `OneTimeSetUp` with message `"Active scene has unsaved changes"` | **Prevented** by Layer 1 & Layer 2 saving the active scene before `OneTimeSetUp`. **Recovered** by Layer 3: if any test failure message matches `"Active scene has unsaved changes"`, the script runs `mmvc_prepare_unattended` (`EditorSceneManager.SaveOpenScenes()`) and automatically re-runs the failed test filter! |
+| **EC-3** | **Untitled / Temporary Dirty Scene** (`scene.path == ""` and `scene.isDirty == true`) left behind by an interrupted test | `EditorSceneManager.SaveOpenScenes()` prompts for a file path with an OS `SaveFilePanel` modal dialog! | **Crucial Trap Avoided:** Calling `SaveOpenScenes()` on an *untitled* scene (`string.IsNullOrEmpty(scene.path)`) opens an OS Save-As file dialog that blocks forever! Therefore, `mmvc_prepare_unattended` checks `!string.IsNullOrEmpty(scene.path)`: real scenes (`Assets/...`) are saved in-place via `EditorSceneManager.SaveScene(scene)`, whereas untitled scratch scenes are either saved to `Temp/AutoSavedScratchScene.unity` or replaced by opening the project's first EditorBuildSettings scene so `SaveFilePanel` **never** opens! |
+| **EC-4** | **Editor Left in Play Mode or Paused** when script starts or after a crashed test | `run_tests` or `unity test` refuses to start while `isPlaying == true` | Pre-flight checks `editor_status`; if `playMode` is `playing` or `paused`, calls `editor.playmode stop`, waits for `unity status --until-ready`, saves scenes, and proceeds. |
+| **EC-5** | **Editor Unfocused / Minimized Throttling** | PlayMode tests, coroutines, or domain reloads stall at frame 1 when Unity is in the background | Script always calls `unity command set_autotick --enable true --project-path $ProjectPath` (`Application.runInBackground = true` + Pipeline editor tick pump) before compiling or running tests. |
+| **EC-6** | **External Scene / Asset Modification Popup** (`"Reload Modified Scene(s)?"`) | Triggered when git or a script modifies `.unity`/`.prefab` while Editor is open | Dialog handler answers `"Reload"` (or saves first if dirty), waits for asset import to finish (`unity status --until-ready`), and continues. |
+| **EC-7** | **Editor in Safe Mode or `"Enter Safe Mode?"` Startup Prompt** | `unity status` reports `STATUS_SAFE_MODE` or `STATUS_BLOCKED_BY_DIALOG_SAFE_MODE` | Script extracts exact `safeMode.compileErrors` (`file`, `line`, `code`, `message`) from `unity status --format json` (or `Logs/Editor.log`), writes them directly into `test-summary.md`, and exits with code `6` (compile failure) immediately instead of hanging. |
+| **EC-8** | **Open Editor with Pending Pipeline Package Load (`STATUS_PIPELINE_LOAD_PENDING`)** | `manifest.json` has `com.unity.pipeline`, but Editor hasn't focused to import it | Script uses a lightweight Win32 `SetForegroundWindow` pulse on the Unity Editor process main window handle (`MainWindowHandle`) to trigger Unity's focus-refresh asset import automatically, then waits on `unity status --until-ready`! |
+| **EC-9** | **Batch Mode Lock Contention (`already open in a running Editor`)** | Running `unity test` while the project is open in an Editor fails with exit `6` | Script never blindly calls batch `unity test` first; it always checks `unity status --project-path` (and checks for a running Unity process lockfile in `<Project>/Temp/UnityLockfile`). If an Editor is open, it routes to Live Pipeline Mode A; if no Editor is open, it routes to Batch CLI Mode B. |
+
+### 7.3 Design of the Unified PowerShell Test Runner (`Tools/Invoke-UnityTests.ps1`)
 A single, self-contained PowerShell 7+ script (`Invoke-UnityTests.ps1`) that runs unattended against **either or both** repositories (`F:\github\repo\unity-savableobservable` and `F:\Unity_projects\AttaxUnity`), requiring zero subagents or test-by-test manual runs.
 
 #### Parameters & Interface
@@ -491,6 +600,7 @@ param(
     [string]$Filter = '',                     # Optional NUnit test filter (e.g. "SavableObservable.Tests")
     [switch]$ExcludeSlowScenarios,            # In Attax PlayMode, excludes long soak/scenario tests by default unless -IncludeScenarios is set
     [switch]$IncludeScenarios,                # Includes Attax PlayMode Scenario tests
+    [int]$MaxPopupRetries = 2,                # Automatic retries when a popup or dirty scene interrupts a command
     [string]$OutputDirectory = "$env:TEMP\mmvc-test-reports",
     [int]$TimeoutSeconds = 900,
     [string]$FrameworkProjectPath = 'F:\github\repo\unity-savableobservable',
@@ -504,26 +614,32 @@ param(
    - Stores all XML/JSON/Markdown artifacts **outside** both git repositories (default `$env:TEMP\mmvc-test-reports\<timestamp>\`) so git working trees remain 100% clean (as required by `unity-cli` `build-run-test.md` guidelines).
 2. **Smart Dual-Path Routing (Live Pipeline vs. Batch CLI) per Project:**
    - Queries `unity status --project-path $ProjectPath --format json`.
-   - **If `state == "ready"` (Editor is open and idle):**
-     - Enables background ticking: `unity command set_autotick --enable true --project-path $ProjectPath`.
-     - Runs `unity recompile --project-path $ProjectPath --format json` and checks for compile errors (`exitCode != 0` or `failed == true`). If compilation fails, records exact file/line compiler diagnostics and skips test runs for that project.
-     - Executes EditMode and PlayMode tests via `unity command run_tests` (or if full NUnit XML artifacts are needed and user permits, uses a custom Pipeline `[CliCommand("mmvc_export_test_xml")]` wrapper over `TestRunnerApi` that runs tests in the live Editor AND writes standard NUnit XML to disk!).
+   - **If Editor is open (`state == "ready"`, `starting`, `STATUS_BLOCKED_BY_DIALOG`, or `STATUS_PIPELINE_LOAD_PENDING`):**
+     - **Step 2a (Auto-Focus if `STATUS_PIPELINE_LOAD_PENDING`):** Pulses window focus via Win32 `SetForegroundWindow` so Unity imports any pending `manifest.json` changes, then waits on `unity status --until-ready`.
+     - **Step 2b (Clear Blocking Popups & Stop PlayMode):** Runs `Clear-UnityBlockingDialogs` (`editor.dialog list` / `answer` / `dismiss` + Win32 `#32770` dialog button clicker) and stops PlayMode if active.
+     - **Step 2c (Enable Background Ticking & Recompile):** Runs `unity command set_autotick --enable true --project-path $ProjectPath`, then `unity recompile --project-path $ProjectPath --format json` (wrapped in popup recovery). If compilation fails, records exact file/line compiler diagnostics and skips test runs for that project.
+     - **Step 2d (Unconditional Scene & Asset Save):** Invokes `unity command mmvc_prepare_unattended --project-path $ProjectPath` (and `editor save_all` / `scene save`) to save all modified scenes regardless of who modified them, ensuring `isDirty == false` before tests begin.
+     - **Step 2e (Execute Tests with Popup Watchdog & Auto-Retry):**
+       - Runs EditMode and PlayMode suites via `mmvc_run_tests_unattended` (or `run_tests` + `test_status` polling).
+       - While polling or if any command exits non-zero, runs `Invoke-UnityCommandWithPopupRecovery`: checks if a `"Save Scene"` or other modal dialog appeared, saves the scene, dismisses the popup, and resumes/retries automatically up to `$MaxPopupRetries` times.
+     - **Step 2f (Post-Run Scene Save):** Saves any scenes dirtied during the test run so the Editor is left in a clean, saved state.
    - **If `STATUS_NO_INSTANCES` (Editor is closed):**
      - Runs batch CLI `unity test $ProjectPath --mode EditMode --report-format nunit,junit --output $editXml --timeout $TimeoutSeconds --format json --no-banner`.
      - Runs batch CLI `unity test $ProjectPath --mode PlayMode --report-format nunit,junit --output $playXml --timeout $TimeoutSeconds --format json --no-banner`.
      - Runs `unity run $ProjectPath --command mmvc_selftest --format json --timeout 300 -- --mode all`.
-   - **If `STATUS_SAFE_MODE` or `blocked_by_dialog`:**
-     - Immediately captures `safeMode.compileErrors` or `dialog.title`/`dialog.message` from JSON and writes it to the failure report without hanging.
+   - **If `STATUS_SAFE_MODE` or `STATUS_BLOCKED_BY_DIALOG_SAFE_MODE`:**
+     - Captures `safeMode.compileErrors` from JSON / `Editor.log` and writes them directly to the failure report without hanging.
 3. **Report Aggregation & Readable Output Generation:**
    - Parses the NUnit3 XML files (`<test-run>`, `<test-case>`, `<failure><message>`, `<stack-trace>`) and `mmvc_selftest` output.
    - Generates two outputs:
      1. **`test-summary.md` (Readable Markdown Report):**
         - Overall Verdict (`PASS` / `FAIL`), total duration, Editor version, execution mode (`Live Editor Pipeline` vs `Batch CLI`).
+        - **Auto-Recovery Log Section:** Lists any dirty scenes auto-saved or modal popups auto-answered during the run.
         - Per-repository, per-mode summary table (`Total`, `Passed`, `Failed`, `Skipped`, `Duration`).
         - Grouped failure details with exact test full name, duration, assertion message, and trimmed stack trace (`file:line`).
         - Console warnings/errors captured during the run.
      2. **`test-summary.json` (Machine-Readable Summary):**
-        - Structured JSON for CI or agent consumption in a single file read.
+        - Structured JSON (including `autoSavedScenes` and `handledDialogs` arrays) for CI or agent consumption in a single file read.
    - Prints a concise color-coded summary table to the terminal and exits with `0` (all passed), `8` (test failures), or `6` (compile/infrastructure error).
 
 ---
@@ -535,16 +651,16 @@ In accordance with Goal 3 and Deliverable 8, here is every step where manual act
 | Step | When It Occurs | Manual Action Required? | Reason & What You Need to Do (If Applicable) |
 |---|---|---|---|
 | **1. Converting `unity-savableobservable` into a Unity 6000.6.7f1 Project** | Phase 1 of execution | **NO (Automated via CLI)**, *unless* Unity license/auth is expired | `unity projects create` or scaffolding `ProjectSettings/` + `Packages/manifest.json` + `unity pipeline install` runs headlessly via CLI. You only need to act if `unity license status` reports no active license (`unity auth login`). |
-| **2. Updating `AttaxUnity` Package Path if `AttaxUnity` Editor Is Currently Open** | Phase 1 (after moving package into `Packages/com.evialdev.savableobservable`) | **YES, if `AttaxUnity` is open in Unity Editor** | When `AttaxUnity/Packages/manifest.json` changes its local `file:` path, an already-open Unity Editor will not resolve the new package path until the Editor window regains OS focus (or is closed and reopened). If `AttaxUnity` is closed during Phase 1, **no manual action is needed**. |
-| **3. Dismissing First-Time TMP Essential Resources / Safe Mode Modal Dialogs** | First open of the new framework Unity project in GUI Editor | **ONLY if opened interactively and blocked by a modal dialog** | In batch mode (`unity test`), Unity runs with `-batchmode` and suppresses modal popups. If you open the new framework project interactively in the Unity Editor GUI and a modal popup appears, `unity command editor_status` will report `status: "blocked_by_dialog"`, which requires a manual click or `unity command editor.dialog dismiss`. |
-| **4. Running EditMode, PlayMode, and CLI Tests via `Invoke-UnityTests.ps1`** | Phase 4 (Validation) | **YES, ONLY if you have the target project open in Play Mode or with unsaved dirty scenes** | - Batch `unity test` refuses to launch if the project is already open in a Unity Editor (`exit 6`).<br>- Live Pipeline `run_tests` and `ScenarioFixtureBase` (`ScenarioFixtureBase.cs:38–40`) refuse to run if the open Editor is currently in Play Mode or if the active scene has unsaved changes (`EditorSceneManager.GetActiveScene().isDirty`).<br>- **Action:** Before running the unattended test script, either save any dirty scene and exit Play Mode in the open Editor, or close the Editor so batch mode can run cleanly. |
+| **2. Updating `AttaxUnity` Package Path if `AttaxUnity` Editor Is Currently Open** | Phase 1 (after moving package into `Packages/com.evialdev.savableobservable`) | **NO (Automated via Win32 Focus Pulse)**, *unless* the Editor is minimized on a locked desktop | `Invoke-UnityTests.ps1` automatically sends a Win32 `SetForegroundWindow` pulse to trigger Unity's package refresh if `unity status` reports `STATUS_PIPELINE_LOAD_PENDING`. Manual focus is only needed if the workstation desktop is locked. |
+| **3. Dirty Scenes ("Save Scene" Popup), Active Play Mode, or Standard Modal Popups During Tests** | Phase 4 / Whenever `Invoke-UnityTests.ps1` runs | **NO (100% Automated by 3-Layer Recovery)** | Handled automatically: `Invoke-UnityTests.ps1` + `MmvcUnattendedTestGuard` stop PlayMode, force-save all dirty scenes regardless of who modified them (`editor save_all` / `EditorSceneManager.SaveScene`), answer/dismiss `"Scene(s) Have Been Modified"` and other modal popups via `editor.dialog answer` + Win32 `#32770` button-click fallback, and automatically retry/resume the interrupted test run. |
+| **4. Pre-Boot `"Enter Safe Mode?"` Modal Prompt (Before Pipeline Server Starts)** | Only if a GUI Editor is freshly opened while C# code has compile errors | **NO if C# errors are fixed in source**, or **YES if a GUI Editor is left sitting on `"Enter Safe Mode?"`** | When a GUI Editor boots with broken C# code, the Pipeline server does not load in Safe Mode. The runner script still extracts the exact `error CS####` lines from `unity status` / `Editor.log` and reports them (and can optionally dismiss the `"Enter Safe Mode?"` dialog via its Win32 helper once the source files are fixed). |
 | **5. CI Execution (GitHub Actions)** | When running in CI | **YES (One-time CI repository setup)** | In GitHub Actions, `F:\github\repo\unity-savableobservable` is referenced by `AttaxUnity` via a local path (`file:F:/github/repo/...`). For CI runners to run `AttaxUnity` tests, either the CI workflow must checkout `unity-savableobservable` to the expected path/relative path or reference its git URL, and `UNITY_LICENSE_SERIAL` / service account secrets must be configured in the repo's GitHub Actions secrets. |
 
 ---
 
 ## 9. Step-by-Step Execution Plan & Ordering Rationale (Deliverable 1)
 
-The implementation (to be executed after plan approval) is ordered specifically so that **project structure and package resolution are stabilized first**, **shared test contracts are built second**, **universal tests and new gap-filling tests are added third**, **AttaxUnity consumes the shared contracts fourth**, and **the unattended PowerShell test runner validates both repositories last**.
+The implementation (to be executed after plan approval) is ordered specifically so that **project structure and package resolution are stabilized first**, **shared test contracts are built second**, **universal tests and new gap-filling tests are added third**, **AttaxUnity consumes the shared contracts fourth**, and **the unattended PowerShell test runner + C# auto-save test guard validate both repositories last**.
 
 ### Phase 1: Convert `unity-savableobservable` into a Clean Default Unity `6000.6.7f1` Project
 * **Reasoning for Ordering:** Everything else depends on the repository having a valid Unity project structure (`Assets/`, `Packages/`, `ProjectSettings/`) and `AttaxUnity` resolving the package at its new location without broken references.
@@ -601,9 +717,11 @@ The implementation (to be executed after plan approval) is ordered specifically 
    - Add concrete subclasses of `MmvcTriadContractTestsBase` for `PlayerSettings`, `NoticeModal`, `GameOverBanner`, `OnlineLobby`, `PrivateRoom`, `HelpModal`, `PlayerProgress`, `AIvsAIMenu`, `BaseAISettings`, `AbilityPopup`, `AbilityTargetingBar`, `AppState`, `MatchTimer`, `BoardGraph`, `ByteCode`, `MoveHint`, `PlayerChip`, and `MenuBackground`.
    - Add `AttaxAssemblyAuditTests : MmvcAssemblyAuditTestsBase` to automatically audit every MMVC class in `AttaxUnity`.
 
-### Phase 5: Implement & Verify the Unattended PowerShell Test Runner (`Tools/Invoke-UnityTests.ps1`)
-* **Reasoning for Ordering:** With both projects structured and all tests in place, build the unattended runner script to execute EditMode, PlayMode, and Pipeline self-tests across both repositories and generate the unified Markdown/JSON report.
-1. **Create `F:\github\repo\unity-savableobservable\Tools\Invoke-UnityTests.ps1`:**
-   - Implement live-Editor Pipeline detection (`unity status`), automatic `set_autotick`, `recompile`, `unity test` batch execution (`EditMode` & `PlayMode`), `mmvc_selftest` execution, NUnit3 XML parsing, and `test-summary.md` + `test-summary.json` report generation.
-2. **Run Full Verification Across Both Repositories:**
+### Phase 5: Implement the Unattended C# Test Guard & PowerShell Test Runner (`Tools/Invoke-UnityTests.ps1`)
+* **Reasoning for Ordering:** With both projects structured and all tests in place, build the C# unattended test guard and PowerShell runner script to execute EditMode, PlayMode, and Pipeline self-tests across both repositories with full dirty-scene auto-saving and modal-popup recovery.
+1. **Create `Packages/com.evialdev.savableobservable/Tests/Editor/Pipeline/MmvcUnattendedTestGuard.cs`:**
+   - Implement `[CliCommand("mmvc_prepare_unattended", ...)]` and `[CliCommand("mmvc_run_tests_unattended", ...)]` + `ITestRunnerCallbacks` that unconditionally save dirty scenes (`EditorSceneManager.SaveScene` for path-backed scenes, safe scratch handling for untitled scenes so `SaveFilePanel` never pops up), save dirty assets (`AssetDatabase.SaveAssets()`), exit PlayMode/Prefab Stage prior to test runs, and export NUnit3 XML directly from live Editor runs.
+2. **Create `F:\github\repo\unity-savableobservable\Tools\Invoke-UnityTests.ps1`:**
+   - Implement live-Editor Pipeline detection (`unity status`), Win32 focus-pulse for `STATUS_PIPELINE_LOAD_PENDING`, 3-layer popup & dirty-scene auto-recovery (`editor.dialog list`/`answer`/`dismiss` + Win32 `#32770` native dialog clicker fallback + `mmvc_prepare_unattended` + `editor save_all` + automatic command retry on popup/dirty-scene interruption), `set_autotick`, `recompile`, batch `unity test` (`EditMode` & `PlayMode`), `mmvc_selftest`, NUnit3 XML parsing, and `test-summary.md` + `test-summary.json` report generation.
+3. **Run Full Verification Across Both Repositories:**
    - Execute `.\Tools\Invoke-UnityTests.ps1 -Target Both -Suite All` and verify 100% pass rate and clean reports.

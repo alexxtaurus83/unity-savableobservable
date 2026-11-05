@@ -671,12 +671,29 @@ namespace SavableObservable {
         public bool InitializeSharedSingletons() {
             ValidateSharedSingletonTypes();
 
-            var allMonoBehaviours = FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include);
+            var allMonoBehaviours = new List<MonoBehaviour>();
+            var scene = gameObject.scene;
+            if (scene.IsValid() && scene.isLoaded) {
+                var roots = scene.GetRootGameObjects();
+                for (int r = 0; r < roots.Length; r++) {
+                    if (roots[r] != null) {
+                        allMonoBehaviours.AddRange(roots[r].GetComponentsInChildren<MonoBehaviour>(true));
+                    }
+                }
+            } else {
+                var found = FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include);
+                if (found != null) {
+                    for (int f = 0; f < found.Length; f++) {
+                        var item = found[f];
+                        if (item != null) allMonoBehaviours.Add(item);
+                    }
+                }
+            }
 
             // Pass 1: Register all ISharedSingleton services & Logics FIRST
-            for (int i = 0; i < allMonoBehaviours.Length; i++) {
+            for (int i = 0; i < allMonoBehaviours.Count; i++) {
                 var mb = allMonoBehaviours[i];
-                if (mb == null || !mb.gameObject.scene.IsValid() || !mb.gameObject.scene.isLoaded) continue;
+                if (mb == null) continue;
 
                 if (mb is ISharedSingleton service) {
                     TryRegister(service);
@@ -684,9 +701,9 @@ namespace SavableObservable {
             }
 
             // Pass 2: Initialize and bind all scene IObservablePresenter components SECOND
-            for (int i = 0; i < allMonoBehaviours.Length; i++) {
+            for (int i = 0; i < allMonoBehaviours.Count; i++) {
                 var mb = allMonoBehaviours[i];
-                if (mb == null || !mb.gameObject.scene.IsValid() || !mb.gameObject.scene.isLoaded) continue;
+                if (mb == null) continue;
 
                 if (mb is IObservablePresenter) {
                     BindPresenter(mb);
