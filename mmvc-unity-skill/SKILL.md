@@ -17,6 +17,8 @@ Build and maintain the custom Model-Model-View-Controller architecture using `Sa
 
 ## Implement a Feature
 
+*(Optional Kilo integration: projects using Kilo can install the companion guard plugin `mmvc-guard` from `mmvc-kilo-plugin/` to enforce mandatory skill loading and lint new framework violations before C# mutations.)*
+
 1. Select the smallest justified component shape (do not create empty models or presenters just to complete a trio):
    - **Service / Coordination only (no view, no model needed):** Plain `MonoBehaviour` implementing `ISharedSingleton` when global access is needed. Do not derive from `BaseLogic<M, P>` with dummy types.
    - **Observable/persisted state and logic without a view:** Meaningful model (`BaseObservableDataModel`) and plain `MonoBehaviour, ISharedSingleton` service exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.

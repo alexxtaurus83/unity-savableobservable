@@ -1,0 +1,17 @@
+{
+  "mode": "enforce",
+  "requireSkill": true,
+  "protectPackageCache": true,
+  "excludeOsTemp": true,
+  "excludedDirectories": [".kilo/temp"],
+  "scriptExtensions": [".ps1", ".psm1", ".psd1", ".sh", ".bash", ".zsh", ".fish", ".cmd", ".bat", ".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx", ".lua", ".rb", ".pl", ".ipynb", ".csx"],
+  "commandDirectories": [".kilo/command", ".kilo/commands"],
+  "rules": {
+    "MMVC001": "error",
+    "MMVC002": "error",
+    "MMVC003": "error",
+    "MMVC004": "error",
+    "MMVC005": "error",
+    "MMVC-REVIEW": "warn"
+  }
+}
