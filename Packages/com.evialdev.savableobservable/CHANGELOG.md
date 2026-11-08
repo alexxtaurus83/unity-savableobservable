@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.21-preview] - 2026-11-08 - Live UI Contracts, Fast Testing Infrastructure & Universal Test Runner Enhancements
+- **Live UI Assertions & Automated Audit (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`):**
+  - Added `MmvcLiveUiAssert` in `SavableObservable.Tests.Contracts` with user-simulation drivers (`Click`, `SetToggle`, `SetSlider`, `Type`), visual readers (`Text`, `SpriteName`, `Alpha`, `IsEnabled`, `Interactable`), and subscription tracking scopes.
+  - Added `ModelToView` and `ViewToModel` round-trip assertions verifying single notification, value convergence, and absence of bounce-back.
+  - Added `MmvcLiveUiAudit` for automated reflection-driven scene and prefab testing over `[AutoBind]` fields with typed sample generation, skip attributes (`[LiveUiAuditSkip]`), and `PrefsSandboxUtility` isolation.
+- **Universal Unity Test Runner Enhancements:**
+  - Added `-IncludeCategories` for targeted category filtering in both live Editor and batch mode.
+  - Added `-ListOnly` mode to discover and display test counts by assembly and fixture without running tests.
+  - Added report metrics: extraction of slowest 10 tests and per-category breakdown in Markdown and JSON summaries.
+  - Added consumer project template wrapper in `Samples~/ConsumerWrapper/Invoke-UnityTests.ps1`.
+  - Added dedicated documentation in `Documentation~/Testing.md` and updated `README.md`.
+
 ## [1.0.20] - 2026-11-04 - MMVC Framework Hardening & Unity Lifecycle Fixes
 - **Dynamic & Additive `ISharedSingleton` / `BaseLogic` Lifecycle:**
   - Added `ServiceLocator.Unregister(ISharedSingleton service, string name = null)` and `Services.Unregister` to remove an instance from tracking and reconcile its key so surviving collided instances recover lookup cleanly.

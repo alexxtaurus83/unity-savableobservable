@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using NUnit.Framework;
 using SavableObservable;
+using SavableObservable.Tests.Contracts;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -64,6 +65,7 @@ namespace SavableObservable.Tests {
     }
 
     [TestFixture]
+    [Category("LiveUi")]
     public class MmvcThreePathPlayModeTests {
         private GameObject _root;
         private GameObject _unit;
@@ -187,8 +189,7 @@ namespace SavableObservable.Tests {
 
         [UnityTest]
         public IEnumerator SliderUserInput_UpdatesModel_AndAllPaths_WithoutBounceBack() {
-            _presenter.scoreSlider.value = 9f;   // raises the slider's onValueChanged like a drag
-            yield return null;
+            yield return MmvcLiveUiAssert.SetSlider(_presenter.scoreSlider, 9f);
 
             Assert.AreEqual(9, _model.score.Value);
             Assert.AreEqual("9", _presenter.scoreText.text);
@@ -203,26 +204,20 @@ namespace SavableObservable.Tests {
             var toggle = _presenter.flagToggle;
             Assert.IsFalse(_model.flag.Value);
 
-            ExecuteEvents.Execute(toggle.gameObject, new PointerEventData(EventSystem.current) { button = PointerEventData.InputButton.Left },
-                ExecuteEvents.pointerClickHandler);
-            yield return null;
+            yield return MmvcLiveUiAssert.SetToggle(toggle, true);
             Assert.IsTrue(toggle.isOn);
             Assert.IsTrue(_model.flag.Value, "UI click reaches the model");
 
-            _model.flag.Value = false;
-            yield return null;
+            yield return MmvcLiveUiAssert.ModelToView(_model.flag, false, () => toggle.isOn, false);
             Assert.IsFalse(toggle.isOn, "model change reaches the toggle");
         }
 
         [UnityTest]
         public IEnumerator InputField_TypedText_UpdatesModel_AndModelUpdatesText() {
-            _presenter.labelInput.text = "typed";
-            yield return null;
+            yield return MmvcLiveUiAssert.Type(_presenter.labelInput, "typed");
             Assert.AreEqual("typed", _model.label.Value);
 
-            _model.label.Value = "from model";
-            yield return null;
-            Assert.AreEqual("from model", _presenter.labelInput.text);
+            yield return MmvcLiveUiAssert.ModelToView(_model.label, "from model", () => _presenter.labelInput.text, "from model");
         }
 
         [UnityTest]
@@ -230,8 +225,7 @@ namespace SavableObservable.Tests {
             Action<ObservableVariable<int>> clamp = v => { if (v.Value > 20) v.Value = 20; };
             _model.score.OnValueChanged.Add(clamp, this);
 
-            _presenter.scoreSlider.value = 30f;
-            yield return null;
+            yield return MmvcLiveUiAssert.SetSlider(_presenter.scoreSlider, 30f);
 
             Assert.AreEqual(20, _model.score.Value);
             Assert.AreEqual("20", _presenter.scoreText.text);
@@ -254,8 +248,7 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(1, _manualCalls, "manual subscription survives rebinding");
             Assert.AreEqual("4", _presenter.scoreText.text);
 
-            _presenter.scoreSlider.value = 6f;
-            yield return null;
+            yield return MmvcLiveUiAssert.SetSlider(_presenter.scoreSlider, 6f);
             Assert.AreEqual(2, _presenter.scoreHandlerCalls);
             Assert.AreEqual(2, _manualCalls);
             Assert.AreEqual(6, _model.score.Value);

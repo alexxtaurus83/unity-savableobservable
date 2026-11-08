@@ -877,5 +877,227 @@ exit `$LASTEXITCODE
     Write-Host "Test 10 (Consumer wrapper test skipped: specify -ConsumerWrapperPath <path> to run)" -ForegroundColor Yellow
 }
 
+# -------------------------------------------------------------------------------------------------
+# 11. Package Runner: -IncludeCategories and Report Metrics (Slowest Tests & Category Breakdown)
+# -------------------------------------------------------------------------------------------------
+$testScriptMetrics = @"
+`$fixtureTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityFixture_' + [System.Guid]::NewGuid().ToString('N'))
+`$outReportDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityReport_' + [System.Guid]::NewGuid().ToString('N'))
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'Assets')) | Out-Null
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'ProjectSettings')) | Out-Null
+[System.IO.Directory]::CreateDirectory(`$outReportDir) | Out-Null
+Set-Content -LiteralPath (Join-Path `$fixtureTempDir 'ProjectSettings\ProjectVersion.txt') -Value 'm_EditorVersion: 6000.0.0f1' -Encoding utf8
+
+try {
+    `$mockMetrics = @{
+        Invoke = {
+            param(`$CliArgs, `$TimeoutSec)
+            if (`$CliArgs[0] -eq 'status') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"command\":\"status\",\"data\":{\"instances\":[{\"project\":\"' + (`$fixtureTempDir -replace '\\\\', '\\\\') + '\",\"projectPath\":\"' + (`$fixtureTempDir -replace '\\\\', '\\\\') + '\",\"pid\":5555,\"state\":\"ready\"}]}}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{
+                        success = `$true; command = 'status'
+                        data = @{ instances = @(@{ project = `$fixtureTempDir; projectPath = `$fixtureTempDir; pid = 5555; state = 'ready' }) }
+                    }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'mmvc_prepare_unattended') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"data\":{\"result\":\"{\\\"success\\\":true,\\\"savedScenes\\\":[],\\\"scratchScenesCreated\\\":[],\\\"message\\\":\\\"OK\\\"}\"}}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{ success = `$true; data = @{ result = '{"success":true,"savedScenes":[],"scratchScenesCreated":[],"message":"OK"}' } }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'mmvc_run_tests_unattended') {
+                `$incIdx = [array]::IndexOf(`$CliArgs, '--include_categories')
+                if (`$incIdx -lt 0 -or `$CliArgs[`$incIdx + 1] -ne 'Quick;LiveUi') {
+                    throw \"Expected --include_categories 'Quick;LiveUi' but got '`$(`$CliArgs[`$incIdx + 1])'\"
+                }
+                `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                @'
+<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="2" result="Passed" total="2" passed="2" failed="0" inconclusive="0" skipped="0" duration="1.25">
+    <test-suite type="TestFixture" name="FixtureA" fullname="Test.FixtureA">
+        <properties>
+            <property name="Category" value="Quick" />
+        </properties>
+        <test-case id="1" name="FastTest" fullname="Test.FixtureA.FastTest" result="Passed" duration="0.25" />
+        <test-case id="2" name="SlowTest" fullname="Test.FixtureA.SlowTest" result="Passed" duration="1.00">
+            <properties>
+                <property name="Category" value="LiveUi" />
+            </properties>
+        </test-case>
+    </test-suite>
+</test-run>
+'@ | Set-Content -LiteralPath `$outXml -Encoding utf8
+
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"data\":{\"result\":\"{\\\"success\\\":true,\\\"status\\\":\\\"completed\\\",\\\"message\\\":\\\"Done\\\"}\"}}'; StdErr = ''; DurationMs = 15
+                    Envelope = @{ success = `$true; data = @{ result = '{"success":true,"status":"completed","message":"Done"}' } }
+                }
+            }
+            throw \"Unexpected call `$(`$CliArgs -join ' ')\"
+        }
+    }
+
+    & '$packageRunner' -ProjectPath @(`$fixtureTempDir) -Suite EditMode -IncludeCategories @('Quick', 'LiveUi') -OutputDirectory `$outReportDir -MockExecutor `$mockMetrics
+    `$mdContent = Get-Content -LiteralPath (Join-Path `$outReportDir 'test-summary.md') -Raw
+    if (`$mdContent -notmatch 'Slowest 10 Tests') { throw \"Markdown report missing 'Slowest 10 Tests' section.\" }
+    if (`$mdContent -notmatch 'Per-Category Breakdown') { throw \"Markdown report missing 'Per-Category Breakdown' section.\" }
+    if (`$mdContent -notmatch 'SlowTest') { throw \"Markdown report missing SlowTest entry.\" }
+
+    `$jsonContent = Get-Content -LiteralPath (Join-Path `$outReportDir 'test-summary.json') -Raw
+    if (`$jsonContent -notmatch '\"SlowestTests\"') { throw \"JSON report missing 'SlowestTests' field.\" }
+    if (`$jsonContent -notmatch '\"CategoryTotals\"') { throw \"JSON report missing 'CategoryTotals' field.\" }
+
+    exit `$LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath `$fixtureTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath `$outReportDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+$resMetrics = Run-SubprocessTest -Code $testScriptMetrics
+if ($resMetrics['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resMetrics['StdOut'])"
+    Write-Host "STDERR: $($resMetrics['StdErr'])"
+    throw "Test 11 (-IncludeCategories and Report Metrics) failed with exit code $($resMetrics['ExitCode']) (expected 0)"
+}
+Write-Host "Test 11 (-IncludeCategories and Report Metrics): PASS" -ForegroundColor Green
+
+# -------------------------------------------------------------------------------------------------
+# 12. Package Runner: -ListOnly Discovery
+# -------------------------------------------------------------------------------------------------
+$testScriptListOnly = @"
+`$fixtureTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityFixture_' + [System.Guid]::NewGuid().ToString('N'))
+`$outReportDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityReport_' + [System.Guid]::NewGuid().ToString('N'))
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'Assets')) | Out-Null
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'ProjectSettings')) | Out-Null
+[System.IO.Directory]::CreateDirectory(`$outReportDir) | Out-Null
+Set-Content -LiteralPath (Join-Path `$fixtureTempDir 'ProjectSettings\ProjectVersion.txt') -Value 'm_EditorVersion: 6000.0.0f1' -Encoding utf8
+
+try {
+    `$mockList = @{
+        Invoke = {
+            param(`$CliArgs, `$TimeoutSec)
+            if (`$CliArgs[0] -eq 'status') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"command\":\"status\",\"data\":{\"instances\":[{\"project\":\"' + (`$fixtureTempDir -replace '\\\\', '\\\\') + '\",\"projectPath\":\"' + (`$fixtureTempDir -replace '\\\\', '\\\\') + '\",\"pid\":7777,\"state\":\"ready\"}]}}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{
+                        success = `$true; command = 'status'
+                        data = @{ instances = @(@{ project = `$fixtureTempDir; projectPath = `$fixtureTempDir; pid = 7777; state = 'ready' }) }
+                    }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'mmvc_list_tests') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"data\":{\"result\":\"{\\\"success\\\":true,\\\"totalTests\\\":5,\\\"fixtures\\\":[{\\\"assembly\\\":\\\"TestAsm\\\",\\\"fixture\\\":\\\"SampleFixture\\\",\\\"testCount\\\":5,\\\"categories\\\":[\\\"Quick\\\"]}]}\"}}'; StdErr = ''; DurationMs = 10
+                    Envelope = @{
+                        success = `$true; data = @{
+                            result = '{"success":true,"totalTests":5,"fixtures":[{"assembly":"TestAsm","fixture":"SampleFixture","testCount":5,"categories":["Quick"]}]}'
+                        }
+                    }
+                }
+            }
+            throw \"Unexpected call `$(`$CliArgs -join ' ')\"
+        }
+    }
+
+    & '$packageRunner' -ProjectPath @(`$fixtureTempDir) -Suite EditMode -ListOnly -OutputDirectory `$outReportDir -MockExecutor `$mockList
+    `$invFile = Join-Path `$outReportDir 'test-inventory.json'
+    if (-not (Test-Path -LiteralPath `$invFile)) { throw 'Expected test-inventory.json to be created.' }
+    `$inv = Get-Content -LiteralPath `$invFile -Raw | ConvertFrom-Json
+    if (`$inv.TotalTests -ne 5) { throw ('Expected 5 tests in inventory, got ' + `$inv.TotalTests) }
+
+    exit `$LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath `$fixtureTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath `$outReportDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+$resListOnly = Run-SubprocessTest -Code $testScriptListOnly
+if ($resListOnly['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resListOnly['StdOut'])"
+    Write-Host "STDERR: $($resListOnly['StdErr'])"
+    throw "Test 12 (-ListOnly Discovery) failed with exit code $($resListOnly['ExitCode']) (expected 0)"
+}
+Write-Host "Test 12 (-ListOnly Discovery): PASS" -ForegroundColor Green
+
+# -------------------------------------------------------------------------------------------------
+# 13. Template Consumer Wrapper Resolution in Synthetic Project
+# -------------------------------------------------------------------------------------------------
+$testScriptTemplateWrapper = @"
+`$consumerProjectDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityConsumer_' + [System.Guid]::NewGuid().ToString('N'))
+`$toolsDir = Join-Path `$consumerProjectDir 'Tools'
+`$pkgDir = Join-Path `$consumerProjectDir 'Packages\com.evialdev.savableobservable\Tools'
+[System.IO.Directory]::CreateDirectory((Join-Path `$consumerProjectDir 'Assets')) | Out-Null
+[System.IO.Directory]::CreateDirectory((Join-Path `$consumerProjectDir 'ProjectSettings')) | Out-Null
+[System.IO.Directory]::CreateDirectory(`$toolsDir) | Out-Null
+[System.IO.Directory]::CreateDirectory(`$pkgDir) | Out-Null
+Set-Content -LiteralPath (Join-Path `$consumerProjectDir 'ProjectSettings\ProjectVersion.txt') -Value 'm_EditorVersion: 6000.0.0f1' -Encoding utf8
+
+# Copy real package Tools (runner and Runner/ modules) into the fake project's Packages/com.evialdev.savableobservable/Tools
+`$pkgToolsSource = Split-Path -Parent '$packageRunner'
+Copy-Item -LiteralPath `$pkgToolsSource -Destination (Join-Path `$consumerProjectDir 'Packages\com.evialdev.savableobservable') -Recurse -Force
+
+# Copy template wrapper into Tools/Invoke-UnityTests.ps1
+`$templateSource = [System.IO.Path]::GetFullPath((Join-Path '$frameworkToolsDir' '..\Packages\com.evialdev.savableobservable\Samples~\ConsumerWrapper\Invoke-UnityTests.ps1'))
+Copy-Item -LiteralPath `$templateSource -Destination (Join-Path `$toolsDir 'Invoke-UnityTests.ps1') -Force
+
+`$consumerWrapperPath = Join-Path `$toolsDir 'Invoke-UnityTests.ps1'
+
+try {
+    `$mockConsumer = @{
+        Invoke = {
+            param(`$CliArgs, `$TimeoutSec)
+            if (`$CliArgs[0] -eq 'status') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"command\":\"status\",\"data\":{\"instances\":[{\"project\":\"' + (`$consumerProjectDir -replace '\\\\', '\\\\') + '\",\"projectPath\":\"' + (`$consumerProjectDir -replace '\\\\', '\\\\') + '\",\"pid\":9999,\"state\":\"ready\"}]}}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{
+                        success = `$true; command = 'status'
+                        data = @{ instances = @(@{ project = `$consumerProjectDir; projectPath = `$consumerProjectDir; pid = 9999; state = 'ready' }) }
+                    }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'mmvc_prepare_unattended') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"data\":{\"result\":\"{\\\"success\\\":true,\\\"savedScenes\\\":[],\\\"scratchScenesCreated\\\":[],\\\"message\\\":\\\"OK\\\"}\"}}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{ success = `$true; data = @{ result = '{"success":true,"savedScenes":[],"scratchScenesCreated":[],"message":"OK"}' } }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'mmvc_run_tests_unattended') {
+                `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                @'
+<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="1" result="Passed" total="1" passed="1" failed="0" inconclusive="0" skipped="0" duration="0.1">
+    <test-case id="1" name="ConsumerPass" fullname="Test.ConsumerPass" result="Passed" duration="0.1" />
+</test-run>
+'@ | Set-Content -LiteralPath `$outXml -Encoding utf8
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{\"success\":true,\"data\":{\"result\":\"{\\\"success\\\":true,\\\"status\\\":\\\"completed\\\",\\\"message\\\":\\\"Done\\\"}\"}}'; StdErr = ''; DurationMs = 10
+                    Envelope = @{ success = `$true; data = @{ result = '{"success":true,"status":"completed","message":"Done"}' } }
+                }
+            }
+            throw \"Unexpected call `$(`$CliArgs -join ' ')\"
+        }
+    }
+
+    & `$consumerWrapperPath -Suite EditMode -MockExecutor `$mockConsumer
+    exit `$LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath `$consumerProjectDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+$resTemplate = Run-SubprocessTest -Code $testScriptTemplateWrapper
+if ($resTemplate['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resTemplate['StdOut'])"
+    Write-Host "STDERR: $($resTemplate['StdErr'])"
+    throw "Test 13 (Template Consumer Wrapper Resolution) failed with exit code $($resTemplate['ExitCode']) (expected 0)"
+}
+Write-Host "Test 13 (Template Consumer Wrapper Resolution): PASS" -ForegroundColor Green
+
 Write-Host "All unit tests for Universal Modular Unity Test Runner passed successfully!" -ForegroundColor Green
 exit 0

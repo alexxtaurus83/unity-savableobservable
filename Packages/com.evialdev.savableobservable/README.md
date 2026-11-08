@@ -364,38 +364,12 @@ Because Pass 1 finishes before Pass 2 starts, `Services.Get<T>()` is guaranteed 
   ```
 - **Unnamed duplicates** (e.g. 49 board cell prefabs sharing default `Name = "PlayerChipLogic"`) are automatically evicted from `Services` lookup without throwing during registration, while their local Presenter and Model remain fully bound on their own GameObject. Attempting to resolve an evicted key logs a clear `Debug.LogError` instructing you to assign distinct `singletonName` values.
 
-## Unattended Tests
+## Unattended Tests & Test Runner
 
-The package ships reusable PowerShell test-runner tooling under `Tools/`. Project-specific
-wrappers should resolve the installed package and forward their own project path, optional
-self-test command, and test exclusions. Consumer project names and machine-specific paths
-do not belong in the shared runner.
+SavableObservable includes a universal modular test runner and contract testing tools (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`).
+For full runner documentation, live vs batch workflows, category filtering, and consumer project wrapper setup, see [Testing Guide](Documentation~/Testing.md).
 
-From this repository, `pwsh -File Tools/Invoke-UnityTests.ps1 -Suite All` runs this
-framework project only. In another project, call the installed package runner with an
-explicit `-ProjectPath` pointing to that Unity project. No edits to the shared script
-are required. Use PowerShell 7+ and an installed Unity CLI. Live-Editor execution needs
-the package's unattended guard commands loaded through Unity Pipeline; batch execution
-needs the project's Unity Editor installed and the project closed.
-
-For multiple projects, invoke the shared script from a PowerShell session with an array:
-
-```powershell
-& ./Packages/com.evialdev.savableobservable/Tools/Invoke-UnityTestRunner.ps1 `
-    -ProjectPath @('/path/to/project-one', '/path/to/project-two') -Suite All
-```
-
-The generic runner executes EditMode and PlayMode tests. Configure `-SelfTestCommand`
-and `-SelfTestMethod` only when the target project provides an additional live command
-and batch entry point. `-ExcludeCategories` and `-ExcludeAssemblies` are project-neutral
-filters and remain active alongside `-Filter`.
-
-The framework wrapper no longer accepts consumer-specific `-Target Attax` or `-Target Both`.
-Use each project's wrapper, or the generic runner's `-ProjectPath` array for multi-project runs.
-
-Reports distinguish NUnit execution duration from suite and project wall time. Wall time
-also includes Editor discovery, preparation, domain reloads, command overhead, and self-tests.
-Skipped and inconclusive tests are reported separately from executed passing tests.
+From this repository, `pwsh -File Tools/Invoke-UnityTests.ps1 -Suite All` runs all framework tests. Consumer projects can copy the thin wrapper from `Samples~/ConsumerWrapper/Invoke-UnityTests.ps1` into their `Tools/` directory.
 
 ## Conclusion
 

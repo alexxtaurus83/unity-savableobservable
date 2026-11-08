@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Xml;
 using UnityEngine;
 using UnityEditor;
@@ -179,14 +180,15 @@ namespace SavableObservable.Editor {
             [CliArg("output", "Path to save NUnit3 XML report (default: Temp/mmvc_test_result.xml)")] string output = "Temp/mmvc_test_result.xml",
             [CliArg("async_tests", "Run asynchronously: returns immediately, poll mmvc_test_status")] bool asyncTests = false,
             [CliArg("exclude_assembly", "Semicolon-separated assemblies to exclude (default: empty)")] string excludeAssembly = "",
-            [CliArg("exclude_categories", "Semicolon-separated categories to exclude (default: empty)")] string excludeCategories = "") {
+            [CliArg("exclude_categories", "Semicolon-separated categories to exclude (default: empty)")] string excludeCategories = "",
+            [CliArg("include_categories", "Semicolon-separated categories to include (default: empty)")] string includeCategories = "") {
             
-            var result = RunTestsUnattended(mode, filter, output, asyncTests, excludeAssembly, excludeCategories);
+            var result = RunTestsUnattended(mode, filter, output, asyncTests, excludeAssembly, excludeCategories, includeCategories);
             return EditorJsonUtility.ToJson(result, true);
         }
 #endif
 
-        public static RunTestsResult RunTestsUnattended(string mode, string filter, string output, bool asyncTests, string excludeAssembly = "", string excludeCategories = "") {
+        public static RunTestsResult RunTestsUnattended(string mode, string filter, string output, bool asyncTests, string excludeAssembly = "", string excludeCategories = "", string includeCategories = "") {
             var prep = PrepareUnattended();
             if (!prep.success) {
                 return new RunTestsResult {
@@ -228,10 +230,20 @@ namespace SavableObservable.Editor {
                     excludeAssembly.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries),
                     name => "!" + name.Trim());
             }
+
+            var catList = new List<string>();
+            if (!string.IsNullOrWhiteSpace(includeCategories)) {
+                foreach (var cat in includeCategories.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) {
+                    catList.Add("^" + System.Text.RegularExpressions.Regex.Escape(cat.Trim()) + "$");
+                }
+            }
             if (!string.IsNullOrWhiteSpace(excludeCategories)) {
-                filterObj.categoryNames = Array.ConvertAll(
-                    excludeCategories.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries),
-                    name => "!^" + System.Text.RegularExpressions.Regex.Escape(name.Trim()) + "$");
+                foreach (var cat in excludeCategories.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) {
+                    catList.Add("!^" + System.Text.RegularExpressions.Regex.Escape(cat.Trim()) + "$");
+                }
+            }
+            if (catList.Count > 0) {
+                filterObj.categoryNames = catList.ToArray();
             }
 
             try {
@@ -270,7 +282,134 @@ namespace SavableObservable.Editor {
             var result = GetCurrentStatus();
             return EditorJsonUtility.ToJson(result, true);
         }
+
+        [CliCommand("mmvc_list_tests", "Discovers test fixtures and test counts across loaded test assemblies.")]
+        public static string ListTestsCommand(
+            [CliArg("mode", "Test mode: editor, playmode, all (default: all)")] string mode = "all",
+            [CliArg("filter", "Filter substring")] string filter = "",
+            [CliArg("include_categories", "Semicolon-separated categories to include")] string includeCategories = "",
+            [CliArg("exclude_categories", "Semicolon-separated categories to exclude")] string excludeCategories = "") {
+            
+            var result = DiscoverTests(mode, filter, includeCategories, excludeCategories);
+            return EditorJsonUtility.ToJson(result, true);
+        }
 #endif
+
+        [Serializable]
+        public class TestFixtureInventory {
+            public string assembly;
+            public string fixture;
+            public int testCount;
+            public string[] categories;
+        }
+
+        [Serializable]
+        public class TestListResult {
+            public bool success;
+            public string message;
+            public int totalTests;
+            public List<TestFixtureInventory> fixtures = new List<TestFixtureInventory>();
+        }
+
+        public static TestListResult DiscoverTests(string mode, string filter, string includeCategories, string excludeCategories) {
+            var result = new TestListResult { success = true };
+            var incCats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(includeCategories)) {
+                foreach (var c in includeCategories.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) incCats.Add(c.Trim());
+            }
+            var excCats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(excludeCategories)) {
+                foreach (var c in excludeCategories.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) excCats.Add(c.Trim());
+            }
+
+            bool checkEdit = string.IsNullOrEmpty(mode) || mode.Equals("all", StringComparison.OrdinalIgnoreCase) || mode.IndexOf("editor", StringComparison.OrdinalIgnoreCase) >= 0 || mode.IndexOf("editmode", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool checkPlay = string.IsNullOrEmpty(mode) || mode.Equals("all", StringComparison.OrdinalIgnoreCase) || mode.IndexOf("play", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies()) {
+                string asmName = asm.GetName().Name;
+                bool isTestAsm = asmName.IndexOf("Tests", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                 asmName.Contains("Playtest");
+                if (!isTestAsm) continue;
+
+                bool isEditorAsm = asmName.IndexOf("Editor", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   asmName.IndexOf("EditMode", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (isEditorAsm && !checkEdit) continue;
+                if (!isEditorAsm && !checkPlay && !checkEdit) continue;
+
+                Type[] types;
+                try {
+                    types = asm.GetTypes();
+                } catch (ReflectionTypeLoadException ex) {
+                    types = ex.Types;
+                } catch {
+                    continue;
+                }
+
+                if (types == null) continue;
+
+                foreach (var t in types) {
+                    if (t == null || t.IsAbstract || t.IsInterface) continue;
+
+                    var fixtureCategories = new List<string>();
+                    foreach (var attr in t.GetCustomAttributes(false)) {
+                        if (attr.GetType().Name == "CategoryAttribute") {
+                            string catName = attr.GetType().GetProperty("Name")?.GetValue(attr) as string;
+                            if (!string.IsNullOrEmpty(catName)) fixtureCategories.Add(catName);
+                        }
+                    }
+
+                    int countInFixture = 0;
+                    var allFixtureCategories = new HashSet<string>(fixtureCategories, StringComparer.OrdinalIgnoreCase);
+
+                    var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                    foreach (var m in methods) {
+                        bool isTest = false;
+                        var methodCats = new List<string>(fixtureCategories);
+                        foreach (var attr in m.GetCustomAttributes(false)) {
+                            string attrName = attr.GetType().Name;
+                            if (attrName == "TestAttribute" || attrName == "UnityTestAttribute") isTest = true;
+                            if (attrName == "CategoryAttribute") {
+                                string catName = attr.GetType().GetProperty("Name")?.GetValue(attr) as string;
+                                if (!string.IsNullOrEmpty(catName)) {
+                                    methodCats.Add(catName);
+                                    allFixtureCategories.Add(catName);
+                                }
+                            }
+                        }
+
+                        if (!isTest) continue;
+
+                        if (!string.IsNullOrEmpty(filter) && !m.Name.Contains(filter) && !t.FullName.Contains(filter)) {
+                            continue;
+                        }
+
+                        if (excCats.Count > 0 && methodCats.Exists(c => excCats.Contains(c))) {
+                            continue;
+                        }
+
+                        if (incCats.Count > 0 && !methodCats.Exists(c => incCats.Contains(c))) {
+                            continue;
+                        }
+
+                        countInFixture++;
+                    }
+
+                    if (countInFixture > 0) {
+                        var catArray = new string[allFixtureCategories.Count];
+                        allFixtureCategories.CopyTo(catArray);
+                        result.fixtures.Add(new TestFixtureInventory {
+                            assembly = asmName,
+                            fixture = t.FullName,
+                            testCount = countInFixture,
+                            categories = catArray
+                        });
+                        result.totalTests += countInFixture;
+                    }
+                }
+            }
+
+            return result;
+        }
 
         public static RunTestsResult GetCurrentStatus() {
             string status = SessionState.GetString(SessionKeyStatus, "idle");

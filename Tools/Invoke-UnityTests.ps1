@@ -14,9 +14,13 @@ param(
 
     [string]$Filter = '',
 
+    [string[]]$IncludeCategories = @(),
+
     [string[]]$ExcludeAssemblies = @(),
 
     [string[]]$ExcludeCategories = @(),
+
+    [switch]$ListOnly,
 
     [string]$SelfTestCommand = 'mmvc_selftest --mode all',
 
@@ -58,7 +62,9 @@ $runnerParams = @{
     Suite = $Suite
     Filter = $Filter
     ExcludeAssemblies = $ExcludeAssemblies
+    IncludeCategories = $IncludeCategories
     ExcludeCategories = $ExcludeCategories
+    ListOnly = [bool]$ListOnly
     SelfTestCommand = $SelfTestCommand
     SelfTestMethod = $SelfTestMethod
     OutputDirectory = $OutputDirectory

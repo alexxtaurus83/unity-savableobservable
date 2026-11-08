@@ -5,6 +5,7 @@
         "UnityEngine.TestRunner",
         "com.evialdev.savableobservable",
         "com.evialdev.savableobservable.Samples",
+        "com.evialdev.savableobservable.TestContracts",
         "Unity.TextMeshPro",
         "UnityEngine.UI"
     ],
