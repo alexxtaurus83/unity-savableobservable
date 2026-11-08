@@ -1,22 +1,38 @@
-*.anim
-*.controller
-*.shader
+# Unity generated
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+/[Tt]est[Rr]esults/
+/[Cc]ode[Cc]overage/
+/[Ll]ibrary.meta
+/[Tt]emp.meta
+/[Ll]ogs.meta
+/[Uu]ser[Ss]ettings.meta
+
+# Visual Studio / IDE cache
+.vs/
+.idea/
+.vsconfig
 *.csproj
 *.sln
 *.userprefs
 *.user
 *.pidb
-*.userosx
-*.usermacos
-*.userwin
 *.suo
-*.userprefs
-*.pidb
 *.userosx
 *.usermacos
 *.userwin
-!/Assets/
+
+# OS generated
 *.DS_Store
 __MACOSX
 *.log
-.vs/
+
+# Plugin development artifacts
+mmvc-kilo-plugin/node_modules/
