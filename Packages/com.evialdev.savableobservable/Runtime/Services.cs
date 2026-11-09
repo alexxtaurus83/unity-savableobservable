@@ -1,64 +1,39 @@
 using System;
-using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
 
     /// <summary>
-    /// Static facade over the scene's <see cref="ServiceLocator"/>. Lookup is by exact concrete type:
-    /// <c>Add&lt;T&gt;</c> registers <c>service.GetType()</c>, not <c>typeof(T)</c>, and interfaces/base types are not resolved.
+    /// Static facade over the scene's <see cref="ServiceLocator"/>. Lookup is by exact concrete type
+    /// (<c>Get&lt;T&gt;</c> resolves <c>typeof(T)</c>, interfaces and base types are not resolved).
     /// Also supports direct model lookup via <see cref="GetModel{M}"/>.
+    /// The facade reads <see cref="ServiceLocator.instance"/> directly, so a destroyed locator is never reused.
     /// </summary>
     public static partial class Services {
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [AutoStaticsCleanup]
-#endif
-        private static ServiceLocator _instance;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void ResetStaticsOnSubsystemRegistration() {
-            _instance = null;
-        }
-
+        /// <summary>Snapshot of the active locator, for tests that swap it temporarily.</summary>
         public struct TestState {
             public readonly ServiceLocator Locator;
-            public readonly ServiceLocator CachedLocator;
 
-            public TestState(ServiceLocator locator, ServiceLocator cachedLocator) {
+            public TestState(ServiceLocator locator) {
                 Locator = locator;
-                CachedLocator = cachedLocator;
             }
         }
 
-        public static TestState CaptureTestState() => new TestState(ServiceLocator.instance, _instance);
+        public static TestState CaptureTestState() => new TestState(ServiceLocator.instance);
 
         public static void SetTestLocator(ServiceLocator locator) {
             ServiceLocator.instance = locator;
-            _instance = locator;
         }
 
         public static void RestoreTestState(TestState state) {
             ServiceLocator.instance = state.Locator;
-            _instance = state.CachedLocator;
         }
 
+        /// <summary>The active locator, or <c>null</c> when there is none or it was destroyed (Unity-aware check).</summary>
         public static ServiceLocator instance {
             get {
-                // Unity-aware check: a destroyed locator must not stay cached.
-                if (_instance == null) {
-                    var locator = ServiceLocator.instance;
-                    _instance = locator != null ? locator : null;
-                }
-                return _instance;
-            }
-        }
-
-        /// <summary>Called by a destroyed locator; clears the cache only when it points at that locator.</summary>
-        internal static void ReleaseLocator(ServiceLocator locator) {
-            if (ReferenceEquals(_instance, locator)) {
-                _instance = null;
+                var locator = ServiceLocator.instance;
+                return locator != null ? locator : null;
             }
         }
 
@@ -69,13 +44,9 @@ namespace SavableObservable {
         public static object Get(Type type, string name = null) => instance != null ? instance.Get(type, name) : null;
         public static M GetModel<M>(string name = null) where M : BaseObservableDataModel => instance != null ? instance.GetModel<M>(name) : null;
 
-        /// <summary>Registers the service; returns it when registered (new or same instance), null when rejected.</summary>
-        public static object Add<T>(T service, string name = null) => instance != null ? instance.Add(service, name) : null;
         public static RegistrationResult TryRegister(object service, string name = null) =>
             instance != null ? instance.TryRegister(service, name) : RegistrationResult.Rejected;
 
-        public static void Remove<T>(string name = null) => instance?.Remove<T>(name);
-        public static void Remove(Type type, string name = null) => instance?.Remove(type, name);
         public static void Unregister(ISharedSingleton service, string name = null) => instance?.Unregister(service, name);
 
         /// <summary>Registers and binds all scene shared singletons and presenters.</summary>

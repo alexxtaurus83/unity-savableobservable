@@ -1,9 +1,54 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-11-09 - MMVC simplification & opt-in same-value notification
+
+Major release: several behaviors and public APIs changed. See **Migration** below.
+
+### Changed (behavior)
+- `ObservableVariable<T>.Value` no longer notifies when assigned a value equal to the current one (`EqualityComparer<T>.Default`); `Value` and `PreviousValue` are left untouched. `ObservableList<T>` is unchanged.
+- `LoaderWithModel<M>.LoadDataFromModel` no longer calls `Observable.SetListeners` on the presenter. The presenter keeps its existing binding and observes loaded values as ordinary change notifications (equal values are silent).
+- **`ServiceLocator` rewritten around one store `(type, key) -> instance`.** The eviction model is gone: a second live instance with the same key logs a `Debug.LogError` at registration time (type, key and both GameObjects named), is **not** registered, and the first instance keeps the key. `Get` / `GetModel` for that key return the first instance (they no longer return `null`). A destroyed holder's key is empty afterwards; a rejected duplicate never silently takes it over.
+  - `RegistrationResult.EvictedDuplicate` renamed to `Duplicate`.
+  - `Unregister(instance)` removes only the entry whose stored value is that instance (no-op for a never-registered instance).
+  - `Get(type)` without a name: default key, else the sole registered instance of the type; several instances under different keys log an ambiguity error.
+  - `GetModel<M>(name)` is derived from the registered `BaseLogic` entries; there is no separate model store.
+  - `Services` reads `ServiceLocator.instance` directly (no cached copy, no `ReleaseLocator`); `Services.TestState` holds the single locator (`CaptureTestState` / `RestoreTestState` / `SetTestLocator` signatures unchanged).
+- **Execution order simplified to two stages.** `[DefaultExecutionOrder]` was removed from `BaseObservableDataModel`, `LoaderWithModel<M>` and `BaseLogic`; `ServiceLocator` (`-200`) and `BaseObservablePresenter<M>` (`-150`) keep theirs. `MMVCExecutionOrderSynchronizer` now sets models, loaders and logic to `0`, which **resets** the earlier non-default orders it wrote into existing projects (`Assets/` scripts) the next time the Editor loads. Nothing depends on those orders any more because every reader initializes the model fields lazily through `GetModel()`. Projects that deliberately relied on a model's `Awake()` running before other scripts must set that order themselves.
+- The unbound-field warning is opt-in: `ObservableSettings.StrictBinding` (default `false`). The "`[AutoBind]` names a missing field" warning is unchanged.
+- `BaseLogic<M, P>.GetModel()` no longer keeps its own presenter-initialized flag; it calls the idempotent `EnsureInitialized()` on the paired presenter.
+
+### Removed (breaking)
+- `BasePresenter<M>`: merged into `BaseObservablePresenter<M>`. Presenters derive from `BaseObservablePresenter<M>` (or `ObservablePresenterWithLogic<M, LO>`); a former `BasePresenter<M>` subclass now also binds `[AutoBind]` / `[ObservableHandler]` members, which is a no-op when none are declared.
+- `IObservablePresenter.EnsurePresenterInitialized()`: `EnsureInitialized()` is the single entry point. The "`InitializePresenter` runs before handlers attach" guarantee is unchanged, including for explicit `Observable.SetListeners` calls.
+- `Observable.SetAutoBindListeners` (both overloads) and `Observable.SetListeners(object)` (model resolved implicitly). `Observable.SetListeners(subscriber, model)` is the only bind API; it binds `[ObservableHandler]` and `[AutoBind]` together and is idempotent.
+- `LoaderWithModel<M>.GetModelToSave()`: use `GetModel()`.
+- `ObservableList<T>.OnValueChanged` alias: use `OnChanged`. (`ObservableVariable<T>.OnValueChanged` is unchanged.)
+- `ServiceLocator.Add`, `ServiceLocator.Remove<T>` / `Remove(Type)`, `Services.Add`, `Services.Remove`: use `TryRegister` / `Unregister`.
+- The no-op `BaseLogic<M, P>.Awake` override (`BaseLogic.Awake` still registers the logic).
+- `IObservableVariable` gained `CreateHandler`, `CreateAutoBindHandler`, `AddHandler` and `RemoveHandler`. **Breaking for custom implementers:** a custom observable type must implement them (the built-in `ObservableVariable<T>` / `ObservableList<T>` do). The reflection fallback and the per-type binding bridge classes are gone.
+
+### Added
+- `[NotifyOnSameValue]` field attribute and public `ObservableVariable<T>.NotifyOnSameValue` property: every assignment notifies; an equal assignment yields `PreviousValue == Value`. The flag is not serialized, not saved and not copied by `LoadDataFromModel`. Applying the attribute to an `ObservableList<T>` or a non-observable field logs a one-time warning.
+- `ObservableSettings.StrictBinding` (see above).
+- Contract test `Contract_EqualAssignment_IsSilent_UnlessNotifyOnSameValue` in `MmvcTriadContractTestsBase`, and the `ObservableAccess` test helper.
+- Sample: `SamplePlayerModel.lastRoll` (`[NotifyOnSameValue]`) with a handler that uses `previous`; the sample presenter uses `nameof(...)` in its attributes.
+- README section "Change notification semantics".
+
+### Internal
+- Subscriptions are tracked in one per-model registry (subscriber -> records of source, handler, managed flag) instead of three separate dictionaries; `ObservableTrackedAction<T>` and the registry take no locks (all access is main-thread, asserted as before), static metadata caches keep theirs.
+- One cached `ModelDescriptor` replaces `ModelMetadata` and `ModelLoadDescriptor`; shared `TypeUtil`, `ComponentCache` and `ComponentAutoRequire.EnsureComponents`; the single-model / single-presenter check lives only in `Observable.SetListeners`.
+- `TMPInputFieldAdapter` and `InputFieldAdapter` derive from `StringInputAdapterBase<TField>` (priorities and per-adapter re-entrancy guard unchanged). Custom adapters are unaffected.
+
 ### Fixed
 - Nested `EnsureInitialized()` during `InitializePresenter()` (e.g. via `GetLogic().GetModel()`) no longer binds listeners before initialization completes.
 - `Observable.RemoveListeners` now resets presenter binding state so `EnsureInitialized()` rebinds.
+
+### Migration
+- **Poke-style re-assignments** (`x.Value = x.Value` to refresh a view) are now silent: call `ForceNotify()`, or mark the field `[NotifyOnSameValue]` (or set `field.NotifyOnSameValue = true`).
+- **Save/load code** that relied on the loader rebinding the presenter: the existing binding now receives the loaded values; equal values are silent.
+- **Several unnamed Logic of one type** (e.g. pooled board cells) now produce a duplicate error per extra instance: override `RegisterAsSharedSingleton => false`, or give each instance a distinct `singletonName`.
+- Rename `BasePresenter<M>` subclasses to derive from `BaseObservablePresenter<M>`; replace `GetModelToSave()` with `GetModel()`, `ObservableList.OnValueChanged` with `OnChanged`, `Services.Add` / `Remove` with `TryRegister` / `Unregister`.
+- Custom `IObservableVariable` implementations must add the four handler members.
 
 ## [1.0.21-preview] - 2026-11-08 - Live UI Contracts, Fast Testing Infrastructure & Universal Test Runner Enhancements
 - **Live UI Assertions & Automated Audit (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`):**

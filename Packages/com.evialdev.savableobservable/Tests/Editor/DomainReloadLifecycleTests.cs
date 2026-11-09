@@ -92,12 +92,9 @@ namespace SavableObservable.Tests {
 
                 Assert.IsNull(ServiceLocator.instance, "ServiceLocator.instance must be null after SubsystemRegistration reset");
 
-                // Invoke SubsystemRegistration reset hook on Services
-                var resetServicesMethod = typeof(Services).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
-                Assert.IsNotNull(resetServicesMethod, "ResetStaticsOnSubsystemRegistration should exist on Services");
-                resetServicesMethod.Invoke(null, null);
-
-                Assert.IsNull(Services.instance, "Services.instance must be null after SubsystemRegistration reset");
+                // Services holds no state of its own: it reads ServiceLocator.instance directly
+                Assert.IsNull(Services.instance, "Services.instance must be null after the locator was reset");
+                Assert.IsNull(typeof(Services).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static), "Services must not cache a locator that needs its own reset.");
 
                 UnityEngine.Object.DestroyImmediate(locatorGo);
             } finally {
@@ -118,8 +115,9 @@ namespace SavableObservable.Tests {
                 // Destroy the locator GameObject
                 UnityEngine.Object.DestroyImmediate(locatorGo);
 
-                // Accessing Services.instance must detect the destroyed Unity object and not return stale reference
-                Assert.IsNull(Services.instance, "Destroyed ServiceLocator must not stay cached in Services.instance");
+                // Services.instance reads the locator directly and must treat a destroyed Unity object as null
+                Assert.IsNull(Services.instance, "A destroyed ServiceLocator must not be returned by Services.instance");
+                Assert.IsTrue(ServiceLocator.instance == null, "The static instance is a destroyed Unity object (Unity null) after the locator is destroyed");
             } finally {
                 Services.RestoreTestState(testState);
             }
@@ -130,7 +128,6 @@ namespace SavableObservable.Tests {
             var resetObservable = typeof(Observable).GetMethod("ResetInstanceData", BindingFlags.NonPublic | BindingFlags.Static);
             var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
             var resetLocator = typeof(ServiceLocator).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
-            var resetServices = typeof(Services).GetMethod("ResetStaticsOnSubsystemRegistration", BindingFlags.NonPublic | BindingFlags.Static);
 
             var testState = Services.CaptureTestState();
             try {
@@ -152,7 +149,6 @@ namespace SavableObservable.Tests {
                 resetObservable?.Invoke(null, null);
                 resetRegistry?.Invoke(null, null);
                 resetLocator?.Invoke(null, null);
-                resetServices?.Invoke(null, null);
 
                 Assert.IsNull(ServiceLocator.instance);
                 Assert.IsNull(Services.instance);

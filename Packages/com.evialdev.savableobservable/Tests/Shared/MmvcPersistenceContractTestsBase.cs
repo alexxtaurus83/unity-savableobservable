@@ -96,13 +96,9 @@ namespace SavableObservable.Tests.Contracts {
                 object val = f.GetValue(Model);
                 if (val != null) {
                     recordedVarInstances[f.Name] = val;
-                    var onValueChangedProp = val.GetType().GetProperty("OnValueChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                        ?? val.GetType().GetProperty("OnChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (onValueChangedProp != null) {
-                        object actionObj = onValueChangedProp.GetValue(val);
-                        if (actionObj != null) {
-                            recordedActionInstances[f.Name] = actionObj;
-                        }
+                    object actionObj = ObservableAccess.GetChangeEvent(val);
+                    if (actionObj != null) {
+                        recordedActionInstances[f.Name] = actionObj;
                     }
                 }
             }
@@ -125,20 +121,16 @@ namespace SavableObservable.Tests.Contracts {
             foreach (var f in fields) {
                 object val = f.GetValue(Model);
                 if (val != null) {
-                    var onValueChangedProp = val.GetType().GetProperty("OnValueChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                        ?? val.GetType().GetProperty("OnChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (onValueChangedProp != null) {
-                        object actionObj = onValueChangedProp.GetValue(val);
-                        if (actionObj != null) {
-                            // The tracked action generic type parameter T in ObservableTrackedAction<T>
-                            Type actionType = actionObj.GetType();
-                            if (actionType.IsGenericType) {
-                                Type eventArgType = actionType.GetGenericArguments()[0];
-                                Action triggerAction = () => notificationCount++;
-                                var genericAttach = attachHelper.MakeGenericMethod(eventArgType);
-                                var unbind = (Action)genericAttach.Invoke(null, new object[] { actionObj, triggerAction, this });
-                                cleanupActions.Add(unbind);
-                            }
+                    object actionObj = ObservableAccess.GetChangeEvent(val);
+                    if (actionObj != null) {
+                        // The tracked action generic type parameter T in ObservableTrackedAction<T>
+                        Type actionType = actionObj.GetType();
+                        if (actionType.IsGenericType) {
+                            Type eventArgType = actionType.GetGenericArguments()[0];
+                            Action triggerAction = () => notificationCount++;
+                            var genericAttach = attachHelper.MakeGenericMethod(eventArgType);
+                            var unbind = (Action)genericAttach.Invoke(null, new object[] { actionObj, triggerAction, this });
+                            cleanupActions.Add(unbind);
                         }
                     }
                 }
@@ -162,9 +154,7 @@ namespace SavableObservable.Tests.Contracts {
                     }
 
                     if (currentVal != null && recordedActionInstances.TryGetValue(f.Name, out var originalAction)) {
-                        var onValueChangedProp = currentVal.GetType().GetProperty("OnValueChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                            ?? currentVal.GetType().GetProperty("OnChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        object currentAction = onValueChangedProp?.GetValue(currentVal);
+                        object currentAction = ObservableAccess.GetChangeEvent(currentVal);
                         Assert.AreSame(originalAction, currentAction, $"ObservableTrackedAction instance identity on '{f.Name}' must be preserved across persistence load.");
                     }
                 }

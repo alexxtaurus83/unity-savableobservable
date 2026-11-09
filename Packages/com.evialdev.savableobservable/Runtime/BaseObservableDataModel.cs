@@ -1,18 +1,16 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
 
     /// <summary>Abstract DataModel class to keep observable keep data with ObservableVariable types</summary>    
     [Serializable]
     [DisallowMultipleComponent]
-    [DefaultExecutionOrder(-300)]
     public abstract partial class BaseObservableDataModel : MonoBehaviour {
+        // No execution-order dependency: every reader (presenter, logic, loader, ServiceLocator) calls
+        // EnsureFieldsInitialized() lazily through GetModel(), so Awake order between the unit's components does not matter.
         protected virtual void Awake() {
             EnsureFieldsInitialized();
         }
@@ -40,8 +38,14 @@ namespace SavableObservable {
                     observableVar.SetParentDataModel(this);
                 }
             }
-        }
 
+            // Flag is only ever switched on here, so a runtime opt-in survives repeated initialization.
+            foreach (var field in ModelDescriptor.Get(GetType()).NotifyOnSameValueFields) {
+                if (field.GetValue(this) is ISameValuePolicy policy) {
+                    policy.EnableNotifyOnSameValue();
+                }
+            }
+        }
 
         /// <summary>
         /// Called when the GameObject is destroyed to clean up all subscriptions.
@@ -49,75 +53,6 @@ namespace SavableObservable {
         protected virtual void OnDestroy() {
             // Clean up all tracked subscriptions using the static cleanup method
             Observable.CleanupSubscriptions(this);
-        }
-
-        private class ModelLoadDescriptor {
-            public readonly PropertyInfo[] Properties;
-            public readonly (FieldInfo field, PropertyInfo valueProp, Type destType)[] ObservableFields;
-            public readonly FieldInfo[] PlainFields;
-
-            public ModelLoadDescriptor(Type type) {
-                var validProps = new List<PropertyInfo>();
-                var seenPropNames = new HashSet<string>(StringComparer.Ordinal);
-
-                var obsFields = new List<(FieldInfo, PropertyInfo, Type)>();
-                var plainFields = new List<FieldInfo>();
-                var seenFieldNames = new HashSet<string>(StringComparer.Ordinal);
-
-                for (var t = type; t != null && t != typeof(BaseObservableDataModel) && t != typeof(MonoBehaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
-                    var props = t.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                    foreach (var prop in props) {
-                        if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
-                        if (IsUnityComponentProperty(prop)) continue;
-                        if (seenPropNames.Add(prop.Name)) {
-                            validProps.Add(prop);
-                        }
-                    }
-
-                    var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                    foreach (var field in fields) {
-                        if (field.IsDefined(typeof(NonSavedAttribute), true)) {
-                            continue;
-                        }
-
-                        if (!seenFieldNames.Add(field.Name)) {
-                            continue;
-                        }
-
-                        if (Observable.IsSupportedFieldType(field)) {
-                            var valueProp = field.FieldType.GetProperty("Value");
-                            if (valueProp != null && valueProp.CanRead && valueProp.CanWrite) {
-                                obsFields.Add((field, valueProp, valueProp.PropertyType));
-                            }
-                        } else {
-                            plainFields.Add(field);
-                        }
-                    }
-                }
-
-                Properties = validProps.ToArray();
-                ObservableFields = obsFields.ToArray();
-                PlainFields = plainFields.ToArray();
-            }
-        }
-
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly Dictionary<Type, ModelLoadDescriptor> _loadDescriptors = new Dictionary<Type, ModelLoadDescriptor>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly object _loadDescriptorsLock = new object();
-
-        private static ModelLoadDescriptor GetLoadDescriptor(Type type) {
-            lock (_loadDescriptorsLock) {
-                if (!_loadDescriptors.TryGetValue(type, out var descriptor)) {
-                    descriptor = new ModelLoadDescriptor(type);
-                    _loadDescriptors[type] = descriptor;
-                }
-                return descriptor;
-            }
         }
 
         private static object CloneIfListOrArray(object value, Type targetType) {
@@ -163,9 +98,9 @@ namespace SavableObservable {
                 return;
             }
 
-            var descriptor = GetLoadDescriptor(GetType());
+            var descriptor = ModelDescriptor.Get(GetType());
 
-            foreach (var prop in descriptor.Properties) {
+            foreach (var prop in descriptor.LoadProperties) {
                 try {
                     var modelValue = prop.GetValue(model);
                     modelValue = CloneIfListOrArray(modelValue, prop.PropertyType);
@@ -176,7 +111,7 @@ namespace SavableObservable {
                 }
             }
 
-            foreach (var (field, valueProp, destType) in descriptor.ObservableFields) {
+            foreach (var (field, valueProp, destType) in descriptor.LoadObservableFields) {
                 try {
                     var sourceFieldObj = field.GetValue(model);
                     if (sourceFieldObj == null) {
@@ -207,7 +142,7 @@ namespace SavableObservable {
                 }
             }
 
-            foreach (var field in descriptor.PlainFields) {
+            foreach (var field in descriptor.LoadPlainFields) {
                 try {
                     var modelValue = field.GetValue(model);
                     modelValue = CloneIfListOrArray(modelValue, field.FieldType);
@@ -217,15 +152,6 @@ namespace SavableObservable {
                     Debug.LogError($"[BaseObservableDataModel] LoadDataFromModel: Failed to set field '{field.Name}' on {GetType().Name}. Exception: {ex.Message}");
                 }
             }
-        }
-
-        private static bool IsUnityComponentProperty(PropertyInfo prop) {
-            var declaringType = prop.DeclaringType;
-            if (declaringType == null || string.IsNullOrEmpty(declaringType.Namespace)) {
-                return false;
-            }
-
-            return declaringType.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal);
         }
     }
 }

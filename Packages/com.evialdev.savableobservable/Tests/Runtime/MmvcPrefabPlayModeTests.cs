@@ -20,7 +20,7 @@ namespace SavableObservable.Tests {
         }
     }
 
-    [DefaultExecutionOrder(-300)]
+    // No [DefaultExecutionOrder]: the model runs at the default order, after the presenter's -150 Awake
     public class PlayModeOrderedModel : BaseObservableDataModel {
         public ObservableVariable<int> level = new ObservableVariable<int>();
 

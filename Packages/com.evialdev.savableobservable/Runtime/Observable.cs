@@ -23,14 +23,35 @@ namespace SavableObservable {
             _instanceData = new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
         }
 
-        // Helper class to hold per-instance data
-        private class InstanceData {
-            public Dictionary<object, List<Delegate>> Subscriptions { get; } = new Dictionary<object, List<Delegate>>();
-            public Dictionary<object, List<Action>> HandlerUnbindActions { get; } = new Dictionary<object, List<Action>>();
-            public Dictionary<object, List<Action>> AutoBindUnbindActions { get; } = new Dictionary<object, List<Action>>();
-            public FieldInfo[] CachedObservableFields { get; set; }
-            public readonly object Lock = new object(); // For thread safety
-            public bool IsInCleanup { get; set; }
+        /// <summary>
+        /// One subscription of a subscriber on a model: either a handler on an observable
+        /// (<see cref="Source"/> + <see cref="Handler"/>) or a two-way UI listener (<see cref="Unbind"/>).
+        /// </summary>
+        private sealed class SubscriptionRecord {
+            public IObservableVariable Source;
+            public Delegate Handler;
+            /// <summary>True for framework-created bindings (replaced by <c>SetListeners</c>); false for manual subscriptions.</summary>
+            public bool Managed;
+            /// <summary>Set for UI-listener records, which have no observable source.</summary>
+            public Action Unbind;
+
+            public void Remove() {
+                try {
+                    if (Unbind != null) {
+                        Unbind();
+                    } else {
+                        Source?.RemoveHandler(Handler);
+                    }
+                } catch (Exception ex) {
+                    Debug.LogWarning($"[SavableObservable] Failed to remove a subscription during cleanup: {ex.Message}");
+                }
+            }
+        }
+
+        // Per-model registry: subscriber -> its subscription records. Main-thread only
+        // (the tracked actions assert the main thread), so it needs no locking.
+        private sealed class InstanceData {
+            public readonly Dictionary<object, List<SubscriptionRecord>> Subscriptions = new Dictionary<object, List<SubscriptionRecord>>();
         }
 
         #region Metadata Caching
@@ -43,7 +64,7 @@ namespace SavableObservable {
             public SubscriberMetadata(Type subscriberType) {
                 var seenVirtualBaseDefs = new HashSet<MethodInfo>();
 
-                for (var t = subscriberType; t != null && t != typeof(MonoBehaviour) && t != typeof(BaseObservableDataModel) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
+                foreach (var t in TypeUtil.GetUserHierarchy(subscriberType)) {
                     var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly);
                     foreach (var method in methods) {
                         MethodInfo baseDef = null;
@@ -106,315 +127,19 @@ namespace SavableObservable {
             }
         }
 
-        private class ModelMetadata {
-            public readonly FieldInfo[] ObservableFields;
-            public readonly Dictionary<string, FieldInfo> ObservableFieldsByName;
-
-            public ModelMetadata(Type modelType) {
-                var supported = new List<FieldInfo>();
-                var byName = new Dictionary<string, FieldInfo>();
-                for (var t = modelType; t != null && t != typeof(BaseObservableDataModel) && t != typeof(MonoBehaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
-                    var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                    foreach (var field in fields) {
-                        if (IsSupportedFieldType(field)) {
-                            if (!byName.ContainsKey(field.Name)) {
-                                supported.Add(field);
-                                byName[field.Name] = field;
-                            }
-                        }
-                    }
-                }
-                ObservableFields = supported.ToArray();
-                ObservableFieldsByName = byName;
-            }
-        }
-
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly Dictionary<Type, ModelMetadata> _modelMetadataCache = new Dictionary<Type, ModelMetadata>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly object _modelMetadataLock = new object();
-
-        private static ModelMetadata GetModelMetadata(Type type) {
-            lock (_modelMetadataLock) {
-                if (!_modelMetadataCache.TryGetValue(type, out var metadata)) {
-                    metadata = new ModelMetadata(type);
-                    _modelMetadataCache[type] = metadata;
-                }
-                return metadata;
-            }
-        }
+        private static ModelDescriptor GetModelMetadata(Type type) => ModelDescriptor.Get(type);
 
         #endregion
 
-        #region Binding Bridges (AOT/IL2CPP compatible)
+        #region Binding
 
-        private interface IObservableBinding {
-            Delegate CreateHandler(object target, MethodInfo method, int paramCount);
-            Delegate CreateAutoBindHandler(Action<object> modelToUiHandler);
-            void AddHandler(object observableVar, Delegate handler, object subscriber);
-            void RemoveHandler(object observableVar, Delegate handler);
-        }
-
-        private partial class ObservableVariableBinding<T> : IObservableBinding {
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-            [NoAutoStaticsCleanup]
-#endif
-            public static readonly ObservableVariableBinding<T> Instance = new ObservableVariableBinding<T>();
-
-            public Delegate CreateHandler(object target, MethodInfo method, int paramCount) {
-                switch (paramCount) {
-                    case 0: {
-                        var act = (Action)Delegate.CreateDelegate(typeof(Action), target, method);
-                        Action<ObservableVariable<T>> handler = _ => act();
-                        return handler;
-                    }
-                    case 1: {
-                        try {
-                            var act = (Action<T>)Delegate.CreateDelegate(typeof(Action<T>), target, method);
-                            Action<ObservableVariable<T>> handler = v => act(v.Value);
-                            return handler;
-                        } catch {
-                            Action<ObservableVariable<T>> handler = v => method.Invoke(target, new object[] { v.Value });
-                            return handler;
-                        }
-                    }
-                    case 2: {
-                        try {
-                            var act = (Action<T, T>)Delegate.CreateDelegate(typeof(Action<T, T>), target, method);
-                            Action<ObservableVariable<T>> handler = v => act(v.Value, v.PreviousValue);
-                            return handler;
-                        } catch {
-                            Action<ObservableVariable<T>> handler = v => method.Invoke(target, new object[] { v.Value, v.PreviousValue });
-                            return handler;
-                        }
-                    }
-                    default:
-                        return null;
-                }
-            }
-
-            public Delegate CreateAutoBindHandler(Action<object> modelToUiHandler) {
-                Action<ObservableVariable<T>> handler = v => modelToUiHandler(v.Value);
-                return handler;
-            }
-
-            public void AddHandler(object observableVar, Delegate handler, object subscriber) {
-                ((ObservableVariable<T>)observableVar).OnValueChanged.Add((Action<ObservableVariable<T>>)handler, subscriber);
-            }
-
-            public void RemoveHandler(object observableVar, Delegate handler) {
-                ((ObservableVariable<T>)observableVar).OnValueChanged.Remove((Action<ObservableVariable<T>>)handler);
-            }
-        }
-
-        private partial class ObservableListBinding<T> : IObservableBinding {
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-            [NoAutoStaticsCleanup]
-#endif
-            public static readonly ObservableListBinding<T> Instance = new ObservableListBinding<T>();
-
-            public Delegate CreateHandler(object target, MethodInfo method, int paramCount) {
-                switch (paramCount) {
-                    case 0: {
-                        var act = (Action)Delegate.CreateDelegate(typeof(Action), target, method);
-                        Action<ObservableList<T>> handler = _ => act();
-                        return handler;
-                    }
-                    case 1: {
-                        var paramType = method.GetParameters()[0].ParameterType;
-                        if (paramType.IsAssignableFrom(typeof(ObservableList<T>))) {
-                            try {
-                                var act = (Action<ObservableList<T>>)Delegate.CreateDelegate(typeof(Action<ObservableList<T>>), target, method);
-                                Action<ObservableList<T>> handler = v => act(v);
-                                return handler;
-                            } catch {
-                                Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v });
-                                return handler;
-                            }
-                        }
-
-                        try {
-                            var act = (Action<List<T>>)Delegate.CreateDelegate(typeof(Action<List<T>>), target, method);
-                            Action<ObservableList<T>> handler = v => act(v.Value);
-                            return handler;
-                        } catch {
-                            Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v.Value });
-                            return handler;
-                        }
-                    }
-                    case 2: {
-                        try {
-                            var act = (Action<List<T>, IReadOnlyList<T>>)Delegate.CreateDelegate(typeof(Action<List<T>, IReadOnlyList<T>>), target, method);
-                            Action<ObservableList<T>> handler = v => act(v.Value, v.PreviousValue);
-                            return handler;
-                        } catch {
-                            Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v.Value, v.PreviousValue });
-                            return handler;
-                        }
-                    }
-                    default:
-                        return null;
-                }
-            }
-
-            public Delegate CreateAutoBindHandler(Action<object> modelToUiHandler) {
-                Action<ObservableList<T>> handler = v => modelToUiHandler(v.Value);
-                return handler;
-            }
-
-            public void AddHandler(object observableVar, Delegate handler, object subscriber) {
-                ((ObservableList<T>)observableVar).OnValueChanged.Add((Action<ObservableList<T>>)handler, subscriber);
-            }
-
-            public void RemoveHandler(object observableVar, Delegate handler) {
-                ((ObservableList<T>)observableVar).OnValueChanged.Remove((Action<ObservableList<T>>)handler);
-            }
-        }
-
-        private class ReflectionBinding : IObservableBinding {
-            private readonly PropertyInfo _onValueChangedProp;
-            private readonly PropertyInfo _valueProp;
-            private readonly PropertyInfo _prevValueProp;
-            private readonly MethodInfo _addMethod;
-            private readonly MethodInfo _removeMethod;
-
-            public ReflectionBinding(Type observableType) {
-                _onValueChangedProp = observableType.GetProperty("OnValueChanged");
-                _valueProp = observableType.GetProperty("Value");
-                _prevValueProp = observableType.GetProperty("PreviousValue");
-                if (_onValueChangedProp != null) {
-                    var actionType = _onValueChangedProp.PropertyType;
-                    _addMethod = actionType.GetMethod("Add");
-                    _removeMethod = actionType.GetMethod("Remove");
-                }
-            }
-
-            public Delegate CreateHandler(object target, MethodInfo method, int paramCount) {
-                if (_addMethod == null) return null;
-                var delegateType = _addMethod.GetParameters()[0].ParameterType;
-
-                switch (paramCount) {
-                    case 0: {
-                        var act = (Action)Delegate.CreateDelegate(typeof(Action), target, method);
-                        return CreateCustomAction(delegateType, _ => act());
-                    }
-                    case 1: {
-                        return CreateCustomAction(delegateType, obs => {
-                            var val = _valueProp?.GetValue(obs);
-                            method.Invoke(target, new object[] { val });
-                        });
-                    }
-                    case 2: {
-                        return CreateCustomAction(delegateType, obs => {
-                            var val = _valueProp?.GetValue(obs);
-                            var prev = _prevValueProp?.GetValue(obs);
-                            method.Invoke(target, new object[] { val, prev });
-                        });
-                    }
-                    default:
-                        return null;
-                }
-            }
-
-            public Delegate CreateAutoBindHandler(Action<object> modelToUiHandler) {
-                if (_addMethod == null) return null;
-                var delegateType = _addMethod.GetParameters()[0].ParameterType;
-                return CreateCustomAction(delegateType, obs => {
-                    var val = _valueProp?.GetValue(obs);
-                    modelToUiHandler(val);
-                });
-            }
-
-            private static Delegate CreateCustomAction(Type actionType, Action<object> callback) {
-                var invokeMethod = typeof(ReflectionBinding).GetMethod(nameof(ForwardAction), BindingFlags.NonPublic | BindingFlags.Static);
-                var genericParam = actionType.GetGenericArguments()[0];
-                var closedMethod = invokeMethod.MakeGenericMethod(genericParam);
-                return Delegate.CreateDelegate(actionType, callback, closedMethod);
-            }
-
-            private static void ForwardAction<TObs>(object callbackObj, TObs obs) {
-                ((Action<object>)callbackObj)(obs);
-            }
-
-            public void AddHandler(object observableVar, Delegate handler, object subscriber) {
-                if (_onValueChangedProp == null || _addMethod == null) return;
-                var trackedAction = _onValueChangedProp.GetValue(observableVar);
-                if (trackedAction != null) {
-                    _addMethod.Invoke(trackedAction, new object[] { handler, subscriber });
-                }
-            }
-
-            public void RemoveHandler(object observableVar, Delegate handler) {
-                if (_onValueChangedProp == null || _removeMethod == null) return;
-                var trackedAction = _onValueChangedProp.GetValue(observableVar);
-                if (trackedAction != null) {
-                    _removeMethod.Invoke(trackedAction, new object[] { handler });
-                }
-            }
-        }
-
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly Dictionary<Type, IObservableBinding> _bindingCache = new Dictionary<Type, IObservableBinding>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
-        [NoAutoStaticsCleanup]
-#endif
-        private static readonly object _bindingCacheLock = new object();
-
-        private static IObservableBinding GetBinding(Type observableType) {
-            lock (_bindingCacheLock) {
-                if (_bindingCache.TryGetValue(observableType, out var binding)) {
-                    return binding;
-                }
-
-                Type targetType = observableType;
-                while (targetType != null && (!targetType.IsGenericType || 
-                       (targetType.GetGenericTypeDefinition() != typeof(ObservableVariable<>) && 
-                        targetType.GetGenericTypeDefinition() != typeof(ObservableList<>)))) {
-                    targetType = targetType.BaseType;
-                }
-
-                if (targetType != null && targetType.IsGenericType) {
-                    var genericDef = targetType.GetGenericTypeDefinition();
-                    var genericArg = targetType.GetGenericArguments()[0];
-
-                    if (genericDef == typeof(ObservableVariable<>)) {
-                        var bindingType = typeof(ObservableVariableBinding<>).MakeGenericType(genericArg);
-                        binding = (IObservableBinding)bindingType.GetField("Instance").GetValue(null);
-                    } else if (genericDef == typeof(ObservableList<>)) {
-                        var bindingType = typeof(ObservableListBinding<>).MakeGenericType(genericArg);
-                        binding = (IObservableBinding)bindingType.GetField("Instance").GetValue(null);
-                    }
-                }
-
-                if (binding == null) {
-                    binding = new ReflectionBinding(observableType);
-                }
-
-                _bindingCache[observableType] = binding;
-                return binding;
-            }
-        }
-
-        #endregion
-
-        public static void SetListeners(object obj) {
-            if (!(obj is MonoBehaviour monoBehaviour)) {
-                Debug.LogWarning($"[SavableObservable] SetListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
-                return;
-            }
-
-            var dataModel = ResolveModel(monoBehaviour, obj);
-            if (dataModel == null) return;
-
-            SetListenersCore(monoBehaviour, obj, dataModel);
-        }
-
+        /// <summary>
+        /// Binds the <c>[ObservableHandler]</c> methods and <c>[AutoBind]</c> fields of <paramref name="subscriber"/>
+        /// to the observable fields of <paramref name="model"/>. This is the only bind API; calling it again replaces the
+        /// framework-created bindings of that subscriber (no duplicates) and keeps its manual subscriptions
+        /// (<c>field.OnValueChanged.Add(handler, subscriber)</c>).
+        /// The subscriber and the model must be on the same GameObject (one GameObject = one MMVC unit).
+        /// </summary>
         public static void SetListeners(object subscriber, BaseObservableDataModel model) {
             if (!(subscriber is MonoBehaviour monoBehaviour)) {
                 Debug.LogWarning($"[SavableObservable] SetListeners called on non-MonoBehaviour object {subscriber?.GetType().Name}. Only MonoBehaviours are supported.");
@@ -436,51 +161,32 @@ namespace SavableObservable {
 
         private static void SetListenersCore(MonoBehaviour monoBehaviour, object subscriber, BaseObservableDataModel model) {
             model.EnsureFieldsInitialized();
-            if (subscriber is IObservablePresenter presenter) {
-                presenter.EnsurePresenterInitialized();
+            if (subscriber is IPresenterBindingState presenterState) {
+                presenterState.EnsureInitializedForBinding();
             }
 
-            // Remove existing managed attribute subscriptions before adding new ones to ensure idempotent setup,
-            // while preserving any manual subscriptions (.OnValueChanged.Add(h, subscriber)) registered on the same subscriber.
-            RemoveManagedBindings(model, subscriber);
+            // Replace framework-created bindings so repeated calls are idempotent,
+            // while manual subscriptions on the same subscriber are preserved.
+            RemoveRecords(model, subscriber, managedOnly: true);
 
             var subMetadata = GetSubscriberMetadata(subscriber.GetType());
-            var modelMetadata = GetModelMetadata(model.GetType());
-            var instanceData = _instanceData.GetOrCreateValue(model);
+            var descriptor = GetModelMetadata(model.GetType());
 
-            foreach (var field in modelMetadata.ObservableFields) {
+            foreach (var field in descriptor.ObservableFields) {
                 if (subMetadata.HandlerMethods.TryGetValue(field.Name, out var handlerMethods)) {
                     foreach (var handlerMethod in handlerMethods) {
-                        SubscribeIndividualHandler(subscriber, handlerMethod, field, model, instanceData);
+                        SubscribeIndividualHandler(subscriber, handlerMethod, field, model);
                     }
-                } else if (!subMetadata.AutoBindTargetNames.Contains(field.Name)) {
-                    // Warn only when not handled by either [ObservableHandler] or [AutoBind].
+                } else if (ObservableSettings.StrictBinding && !subMetadata.AutoBindTargetNames.Contains(field.Name)) {
                     Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {model.GetType().Name} has no corresponding [ObservableHandler] method or [AutoBind] field in {subscriber.GetType().Name}.", monoBehaviour);
                 }
             }
 
-            SetAutoBindListenersInternal(monoBehaviour, subscriber, model, subMetadata, modelMetadata, instanceData);
+            BindAutoBinds(monoBehaviour, subscriber, model, subMetadata, descriptor);
 
             if (subscriber is IPresenterBindingState bindingState) {
                 bindingState.MarkBound();
             }
-        }
-
-        private static BaseObservableDataModel ResolveModel(MonoBehaviour mb, object subscriber) {
-            BaseObservableDataModel dataModel = null;
-            if (subscriber is IObservablePresenter presenter) {
-                dataModel = presenter.GetObservableModel();
-            }
-
-            if (dataModel == null) {
-                var models = mb.GetComponents<BaseObservableDataModel>();
-                if (models.Length > 0) {
-                    dataModel = models[0];
-                }
-            }
-
-            ValidateSingleMmvc(mb, dataModel);
-            return dataModel;
         }
 
         private static void ValidateSingleMmvc(MonoBehaviour mb, BaseObservableDataModel chosenModel = null) {
@@ -518,17 +224,12 @@ namespace SavableObservable {
         }
 
         private static void SubscribeIndividualHandler(
-            object subscriber, 
-            MethodInfo handlerMethod, 
-            FieldInfo field, 
-            BaseObservableDataModel dataModel,
-            InstanceData instanceData) 
+            object subscriber,
+            MethodInfo handlerMethod,
+            FieldInfo field,
+            BaseObservableDataModel dataModel)
         {
-            var observableVar = field.GetValue(dataModel);
-            if (observableVar == null) return;
-
-            var binding = GetBinding(field.FieldType);
-            if (binding == null) return;
+            if (!(field.GetValue(dataModel) is IObservableVariable observableVar)) return;
 
             var handlerParams = handlerMethod.GetParameters();
             if (handlerParams.Length > 2) {
@@ -538,7 +239,7 @@ namespace SavableObservable {
 
             Delegate handler;
             try {
-                handler = binding.CreateHandler(subscriber, handlerMethod, handlerParams.Length);
+                handler = observableVar.CreateHandler(subscriber, handlerMethod, handlerParams.Length);
             } catch (Exception ex) {
                 Debug.LogError($"[SavableObservable] Failed to create delegate for [ObservableHandler] method '{handlerMethod.Name}': {ex.Message}", (MonoBehaviour)subscriber);
                 return;
@@ -549,72 +250,22 @@ namespace SavableObservable {
                 return;
             }
 
-            binding.AddHandler(observableVar, handler, subscriber);
-
-            lock (instanceData.Lock) {
-                if (!instanceData.HandlerUnbindActions.ContainsKey(subscriber)) {
-                    instanceData.HandlerUnbindActions[subscriber] = new List<Action>();
-                }
-                instanceData.HandlerUnbindActions[subscriber].Add(() => binding.RemoveHandler(observableVar, handler));
-            }
+            // The observable records the subscription (managed) in the model's registry.
+            observableVar.AddHandler(handler, subscriber);
         }
 
-        /// <summary>
-        /// Sets up automatic UI bindings for fields marked with [AutoBind].
-        /// </summary>
-        public static void SetAutoBindListeners(object obj) {
-            if (!(obj is MonoBehaviour monoBehaviour)) {
-                Debug.LogWarning($"[SavableObservable] SetAutoBindListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
-                return;
-            }
-
-            var dataModel = ResolveModel(monoBehaviour, obj);
-            if (dataModel == null) return;
-
-            SetAutoBindListenersCore(monoBehaviour, obj, dataModel);
-        }
-
-        public static void SetAutoBindListeners(object obj, BaseObservableDataModel dataModel) {
-            if (!(obj is MonoBehaviour monoBehaviour)) {
-                Debug.LogWarning($"[SavableObservable] SetAutoBindListeners called on non-MonoBehaviour object {obj?.GetType().Name}. Only MonoBehaviours are supported.");
-                return;
-            }
-
-            if (dataModel == null) {
-                Debug.LogError($"[SavableObservable] SetAutoBindListeners called with null model on {obj.GetType().Name}.", monoBehaviour);
-                return;
-            }
-
-            if (!ValidateSameGameObject(monoBehaviour, dataModel, nameof(SetAutoBindListeners))) {
-                return;
-            }
-
-            ValidateSingleMmvc(monoBehaviour, dataModel);
-            SetAutoBindListenersCore(monoBehaviour, obj, dataModel);
-        }
-
-        private static void SetAutoBindListenersCore(MonoBehaviour monoBehaviour, object obj, BaseObservableDataModel dataModel) {
-            dataModel.EnsureFieldsInitialized();
-            RemoveAutoBindBindings(dataModel, obj);
-            var subMetadata = GetSubscriberMetadata(obj.GetType());
-            var modelMetadata = GetModelMetadata(dataModel.GetType());
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            SetAutoBindListenersInternal(monoBehaviour, obj, dataModel, subMetadata, modelMetadata, instanceData);
-        }
-
-        private static void SetAutoBindListenersInternal(
-            MonoBehaviour monoBehaviour, 
-            object obj, 
+        private static void BindAutoBinds(
+            MonoBehaviour monoBehaviour,
+            object obj,
             BaseObservableDataModel dataModel,
             SubscriberMetadata subMetadata,
-            ModelMetadata modelMetadata,
-            InstanceData instanceData) 
+            ModelDescriptor descriptor)
         {
             if (subMetadata.AutoBindFields.Count == 0) return;
 
             foreach (var (uiField, targetName) in subMetadata.AutoBindFields) {
                 try {
-                    if (!modelMetadata.ObservableFieldsByName.TryGetValue(targetName, out var observableField)) {
+                    if (!descriptor.ObservableFieldsByName.TryGetValue(targetName, out var observableField)) {
                         Debug.LogWarning($"[SavableObservable] [AutoBind] on '{uiField.Name}' could not find ObservableVariable '{targetName}' in {dataModel.GetType().Name}.", monoBehaviour);
                         continue;
                     }
@@ -625,7 +276,7 @@ namespace SavableObservable {
                         continue;
                     }
 
-                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter, instanceData);
+                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter);
                 } catch (Exception ex) {
                     Debug.LogError($"[SavableObservable] Failed to wire [AutoBind] for field '{uiField.Name}' on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
                 }
@@ -637,14 +288,9 @@ namespace SavableObservable {
             FieldInfo uiField,
             FieldInfo observableField,
             BaseObservableDataModel dataModel,
-            IUIAdapter adapter,
-            InstanceData instanceData) 
+            IUIAdapter adapter)
         {
-            var observableVar = observableField.GetValue(dataModel);
-            if (observableVar == null) return;
-
-            var binding = GetBinding(observableField.FieldType);
-            if (binding == null) return;
+            if (!(observableField.GetValue(dataModel) is IObservableVariable observableVar)) return;
 
             // 1) Subscribe Model -> UI (One-way binding)
             // ----------------------------------------------------------------
@@ -662,16 +308,9 @@ namespace SavableObservable {
                 }
             };
 
-            var wrappedHandler = binding.CreateAutoBindHandler(modelToUiHandler);
+            var wrappedHandler = observableVar.CreateAutoBindHandler(modelToUiHandler);
             if (wrappedHandler != null) {
-                binding.AddHandler(observableVar, wrappedHandler, obj);
-
-                lock (instanceData.Lock) {
-                    if (!instanceData.AutoBindUnbindActions.ContainsKey(obj)) {
-                        instanceData.AutoBindUnbindActions[obj] = new List<Action>();
-                    }
-                    instanceData.AutoBindUnbindActions[obj].Add(() => binding.RemoveHandler(observableVar, wrappedHandler));
-                }
+                observableVar.AddHandler(wrappedHandler, obj);
             }
 
             // 2) Subscribe UI -> Model (Two-way binding, if supported)
@@ -694,20 +333,11 @@ namespace SavableObservable {
                         object token = listenerAdapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
 
                         if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
-                            lock (instanceData.Lock) {
-                                if (!instanceData.AutoBindUnbindActions.ContainsKey(obj)) {
-                                    instanceData.AutoBindUnbindActions[obj] = new List<Action>();
+                            RegisterUiListener(dataModel, obj, () => {
+                                if (unityUiComponent != null) {
+                                    listenerAdapter.RemoveListener(unityUiComponent, token);
                                 }
-                                instanceData.AutoBindUnbindActions[obj].Add(() => {
-                                    if (unityUiComponent != null) {
-                                        try {
-                                            listenerAdapter.RemoveListener(unityUiComponent, token);
-                                        } catch (Exception ex) {
-                                            Debug.LogWarning($"[SavableObservable] Failed to remove UI listener token during cleanup: {ex.Message}");
-                                        }
-                                    }
-                                });
-                            }
+                            });
                         }
                     }
                 }
@@ -716,58 +346,14 @@ namespace SavableObservable {
             }
         }
 
-        /// <summary>
-        /// Removes all framework-managed [AutoBind] bindings for a specific subscriber without removing method handlers or manual subscriptions.
-        /// </summary>
-        private static void RemoveAutoBindBindings(BaseObservableDataModel dataModel, object subscriber) {
-            if (dataModel == null || subscriber == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                if (instanceData.AutoBindUnbindActions.TryGetValue(subscriber, out var unbinds)) {
-                    foreach (var unbind in unbinds) {
-                        try {
-                            unbind();
-                        } catch (Exception ex) {
-                            Debug.LogWarning($"[SavableObservable] Failed to unbind AutoBind subscriber during cleanup: {ex.Message}");
-                        }
-                    }
-                    unbinds.Clear();
-                    instanceData.AutoBindUnbindActions.Remove(subscriber);
-                }
-            }
-        }
+        #endregion
+
+        #region Subscription registry
 
         /// <summary>
-        /// Removes all framework-managed [ObservableHandler] bindings for a specific subscriber without removing AutoBind or manual subscriptions.
-        /// </summary>
-        private static void RemoveHandlerBindings(BaseObservableDataModel dataModel, object subscriber) {
-            if (dataModel == null || subscriber == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                if (instanceData.HandlerUnbindActions.TryGetValue(subscriber, out var unbinds)) {
-                    foreach (var unbind in unbinds) {
-                        try {
-                            unbind();
-                        } catch (Exception ex) {
-                            Debug.LogWarning($"[SavableObservable] Failed to unbind handler subscriber during cleanup: {ex.Message}");
-                        }
-                    }
-                    unbinds.Clear();
-                    instanceData.HandlerUnbindActions.Remove(subscriber);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Removes all framework-managed bindings ([ObservableHandler] and [AutoBind]) for a specific subscriber without removing manual subscriptions.
-        /// </summary>
-        private static void RemoveManagedBindings(BaseObservableDataModel dataModel, object subscriber) {
-            RemoveHandlerBindings(dataModel, subscriber);
-            RemoveAutoBindBindings(dataModel, subscriber);
-        }
-
-        /// <summary>
-        /// Removes all subscriptions for a specific subscriber from the data model.
+        /// Removes all subscriptions of a specific subscriber from the data model: framework-created bindings
+        /// ([ObservableHandler] / [AutoBind]) and manual subscriptions. Other subscribers are not affected.
+        /// A presenter is marked unbound, so the next <c>EnsureInitialized()</c> rebinds it.
         /// </summary>
         /// <param name="dataModel">The data model containing the observables</param>
         /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
@@ -778,11 +364,118 @@ namespace SavableObservable {
         }
 
         /// <summary>
-        /// Determines whether field type is <see cref="ObservableVariable" /> field
+        /// Removes all subscriptions for a specific subscriber.
         /// </summary>
-        /// <param name="field">The <see cref="ObservableVariable" /> field of the <see cref="BaseObservableDataModel" /> model.</param>
+        /// <param name="dataModel">The data model instance</param>
+        /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
+        public static void RemoveAllSubscriptions(BaseObservableDataModel dataModel, object subscriber) {
+            if (dataModel == null || subscriber == null) return;
+            RemoveRecords(dataModel, subscriber, managedOnly: false);
+
+            if (subscriber is IPresenterBindingState bindingState) {
+                bindingState.MarkUnbound();
+            }
+        }
+
+        /// <summary>
+        /// Cleans up all tracked subscriptions for a data model when it's destroyed.
+        /// </summary>
+        /// <param name="dataModel">The data model being destroyed</param>
+        public static void CleanupSubscriptions(BaseObservableDataModel dataModel) {
+            if (dataModel == null) return;
+            if (!_instanceData.TryGetValue(dataModel, out var data)) return;
+
+            var all = new List<SubscriptionRecord>();
+            foreach (var list in data.Subscriptions.Values) {
+                all.AddRange(list);
+            }
+            data.Subscriptions.Clear();
+
+            for (int i = 0; i < all.Count; i++) {
+                all[i].Remove();
+            }
+        }
+
+        /// <summary>
+        /// Records a subscription made through a tracked action of <paramref name="source"/>.
+        /// Called by <see cref="ObservableTrackedAction{T}"/>; <paramref name="managed"/> is true for framework-created bindings.
+        /// </summary>
+        internal static void RegisterSubscription(BaseObservableDataModel dataModel, object subscriber, IObservableVariable source, Delegate handler, bool managed) {
+            if (dataModel == null || subscriber == null || source == null || handler == null) return;
+
+            var data = _instanceData.GetOrCreateValue(dataModel);
+            if (!data.Subscriptions.TryGetValue(subscriber, out var list)) {
+                list = new List<SubscriptionRecord>();
+                data.Subscriptions[subscriber] = list;
+            }
+
+            for (int i = 0; i < list.Count; i++) {
+                if (handler.Equals(list[i].Handler)) return;
+            }
+
+            list.Add(new SubscriptionRecord { Source = source, Handler = handler, Managed = managed });
+        }
+
+        /// <summary>Drops the record of a handler that was removed from a tracked action.</summary>
+        internal static void UnregisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate handler) {
+            if (dataModel == null || subscriber == null || handler == null) return;
+            if (!_instanceData.TryGetValue(dataModel, out var data)) return;
+            if (!data.Subscriptions.TryGetValue(subscriber, out var list)) return;
+
+            for (int i = list.Count - 1; i >= 0; i--) {
+                if (handler.Equals(list[i].Handler)) {
+                    list.RemoveAt(i);
+                }
+            }
+
+            if (list.Count == 0) {
+                data.Subscriptions.Remove(subscriber);
+            }
+        }
+
+        private static void RegisterUiListener(BaseObservableDataModel dataModel, object subscriber, Action unbind) {
+            var data = _instanceData.GetOrCreateValue(dataModel);
+            if (!data.Subscriptions.TryGetValue(subscriber, out var list)) {
+                list = new List<SubscriptionRecord>();
+                data.Subscriptions[subscriber] = list;
+            }
+
+            list.Add(new SubscriptionRecord { Managed = true, Unbind = unbind });
+        }
+
+        // Removes the subscriber's records (only the framework-created ones when managedOnly) and unsubscribes them.
+        // Records are detached from the registry first, so the tracked actions' own bookkeeping callbacks find nothing to mutate.
+        private static void RemoveRecords(BaseObservableDataModel dataModel, object subscriber, bool managedOnly) {
+            if (dataModel == null || subscriber == null) return;
+            if (!_instanceData.TryGetValue(dataModel, out var data)) return;
+            if (!data.Subscriptions.TryGetValue(subscriber, out var list)) return;
+
+            var removed = new List<SubscriptionRecord>();
+            for (int i = 0; i < list.Count; i++) {
+                if (!managedOnly || list[i].Managed) {
+                    removed.Add(list[i]);
+                }
+            }
+            if (removed.Count == 0) return;
+
+            list.RemoveAll(r => !managedOnly || r.Managed);
+            if (list.Count == 0) {
+                data.Subscriptions.Remove(subscriber);
+            }
+
+            for (int i = 0; i < removed.Count; i++) {
+                removed[i].Remove();
+            }
+        }
+
+        #endregion
+
+        /// <summary>
+        /// Determines whether field type is <see cref="ObservableVariable{T}" /> or <see cref="ObservableList{T}" /> (or a subclass of either).
+        /// </summary>
+        /// <param name="field">The observable field of the <see cref="BaseObservableDataModel" /> model.</param>
         /// <returns>
-        ///   <c>true</c> if field of type <see cref="ObservableVariable" /> otherwise, <c>false</c>.</returns>
+        ///   <c>true</c> if the field is a supported observable; otherwise, <c>false</c>.</returns>
         internal static bool IsSupportedFieldType(FieldInfo field) {
             if (!field.FieldType.IsGenericType) return false;
 
@@ -813,165 +506,6 @@ namespace SavableObservable {
         public static FieldInfo[] GetCachedObservableFields(BaseObservableDataModel dataModel) {
             if (dataModel == null) return Array.Empty<FieldInfo>();
             return GetModelMetadata(dataModel.GetType()).ObservableFields;
-        }
-
-        /// <summary>
-        /// Registers a subscription for automatic cleanup when the GameObject is destroyed.
-        /// </summary>
-        /// <param name="dataModel">The data model instance</param>
-        /// <param name="subscriber">The subscriber object (e.g., Presenter or Logic)</param>
-        /// <param name="subscription">The delegate subscription to be cleaned up</param>
-        public static void RegisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
-            if (dataModel == null || subscriber == null || subscription == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                if (!instanceData.Subscriptions.ContainsKey(subscriber)) {
-                    instanceData.Subscriptions[subscriber] = new List<Delegate>();
-                }
-                if (!instanceData.Subscriptions[subscriber].Contains(subscription)) {
-                    instanceData.Subscriptions[subscriber].Add(subscription);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Removes a subscription from the tracking list.
-        /// </summary>
-        /// <param name="dataModel">The data model instance</param>
-        /// <param name="subscriber">The subscriber object</param>
-        /// <param name="subscription">The delegate subscription to remove</param>
-        public static void UnregisterSubscription(BaseObservableDataModel dataModel, object subscriber, Delegate subscription) {
-            if (dataModel == null || subscription == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                if (subscriber != null) {
-                    if (instanceData.Subscriptions.ContainsKey(subscriber)) {
-                        instanceData.Subscriptions[subscriber].Remove(subscription);
-                        if (instanceData.Subscriptions[subscriber].Count == 0) {
-                            instanceData.Subscriptions.Remove(subscriber);
-                        }
-                    }
-                    return;
-                }
-
-                // During model destruction cleanup, tracked actions call Remove(), which calls UnregisterSubscription.
-                // Skip mutation of the tracking dictionary in this phase because CleanupSubscriptions() will clear it at the end.
-                if (instanceData.IsInCleanup) {
-                    return;
-                }
-
-                // If subscriber is unknown, remove this subscription from any subscriber list that contains it.
-                var subscribersToRemove = new List<object>();
-                foreach (var kvp in instanceData.Subscriptions) {
-                    kvp.Value.Remove(subscription);
-                    if (kvp.Value.Count == 0) {
-                        subscribersToRemove.Add(kvp.Key);
-                    }
-                }
-
-                foreach (var emptySubscriber in subscribersToRemove) {
-                    instanceData.Subscriptions.Remove(emptySubscriber);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Internal fallback to remove subscriptions for a specific subscriber from all observable variables.
-        /// </summary>
-        private static void RemoveSubscriptionsForSubscriber(BaseObservableDataModel dataModel, object subscriber, InstanceData instanceData) {
-            if (!instanceData.Subscriptions.TryGetValue(subscriber, out var subscriptions) || subscriptions.Count == 0) {
-                return;
-            }
-
-            var subscriptionsList = new List<Delegate>(subscriptions);
-            var observableFields = GetCachedObservableFields(dataModel);
-            foreach (var field in observableFields) {
-                var observableVar = field.GetValue(dataModel);
-                if (observableVar == null) continue;
-
-                var binding = GetBinding(field.FieldType);
-                foreach (var sub in subscriptionsList) {
-                    try {
-                        binding.RemoveHandler(observableVar, sub);
-                    } catch {
-                        // Subscription was not found on this event or type did not match, continue
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Removes all subscriptions for a specific subscriber.
-        /// </summary>
-        /// <param name="dataModel">The data model instance</param>
-        /// <param name="subscriber">The subscriber object to remove all subscriptions for</param>
-        public static void RemoveAllSubscriptions(BaseObservableDataModel dataModel, object subscriber) {
-            if (dataModel == null || subscriber == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                // 1) Direct unbind closures: handlers and autobinds
-                RemoveHandlerBindings(dataModel, subscriber);
-                RemoveAutoBindBindings(dataModel, subscriber);
-
-                // 2) Manual subscriptions fallback
-                if (instanceData.Subscriptions.ContainsKey(subscriber)) {
-                    RemoveSubscriptionsForSubscriber(dataModel, subscriber, instanceData);
-                    instanceData.Subscriptions.Remove(subscriber);
-                }
-            }
-
-            if (subscriber is IPresenterBindingState bindingState) {
-                bindingState.MarkUnbound();
-            }
-        }
-
-        /// <summary>
-        /// Cleans up all tracked subscriptions for a data model when it's destroyed.
-        /// </summary>
-        /// <param name="dataModel">The data model being destroyed</param>
-        public static void CleanupSubscriptions(BaseObservableDataModel dataModel) {
-            if (dataModel == null) return;
-            var instanceData = _instanceData.GetOrCreateValue(dataModel);
-            lock (instanceData.Lock) {
-                instanceData.IsInCleanup = true;
-                try {
-                    // 1) Direct unbind closures across all subscribers (handlers and autobinds)
-                    foreach (var unbindList in instanceData.HandlerUnbindActions.Values) {
-                        foreach (var unbind in unbindList) {
-                            try {
-                                unbind();
-                            } catch (Exception ex) {
-                                Debug.LogWarning($"[SavableObservable] Failed to unbind handler subscriber during cleanup: {ex.Message}");
-                            }
-                        }
-                        unbindList.Clear();
-                    }
-                    instanceData.HandlerUnbindActions.Clear();
-
-                    foreach (var unbindList in instanceData.AutoBindUnbindActions.Values) {
-                        foreach (var unbind in unbindList) {
-                            try {
-                                unbind();
-                            } catch (Exception ex) {
-                                Debug.LogWarning($"[SavableObservable] Failed to unbind AutoBind subscriber during cleanup: {ex.Message}");
-                            }
-                        }
-                        unbindList.Clear();
-                    }
-                    instanceData.AutoBindUnbindActions.Clear();
-
-                    // 2) Manual subscriptions fallback
-                    if (instanceData.Subscriptions.Count > 0) {
-                        var allSubscribers = new List<object>(instanceData.Subscriptions.Keys);
-                        foreach (var sub in allSubscribers) {
-                            RemoveSubscriptionsForSubscriber(dataModel, sub, instanceData);
-                        }
-                        instanceData.Subscriptions.Clear();
-                    }
-                } finally {
-                    instanceData.IsInCleanup = false;
-                }
-            }
         }
     }
 }

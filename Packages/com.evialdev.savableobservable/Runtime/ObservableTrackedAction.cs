@@ -44,15 +44,14 @@ namespace SavableObservable {
     /// A custom action implementation that automatically tracks subscriptions for memory management.
     /// <para>
     /// Thread-safety contract: All operations (Add, Remove, Invoke) must be called from the Unity main thread.
-    /// This class uses a lightweight runtime assertion to enforce this contract. No locking is provided for
-    /// cross-thread access; violations will log an error in player builds and throw in development builds.
+    /// This class uses a lightweight runtime assertion to enforce this contract. It does not lock;
+    /// violations will log an error in player builds and throw in development builds.
     /// </para>
     /// </summary>
     public partial class ObservableTrackedAction<T> where T : class, IObservableVariable {
         private readonly List<Action<T>> _handlers = new List<Action<T>>();
         private readonly Dictionary<Action<T>, object> _handlerSubscribers = new Dictionary<Action<T>, object>();
         private Action<T>[] _handlersArray = Array.Empty<Action<T>>();
-        private readonly object _lock = new object();
         private bool _isInvoking;
         private bool _pending;
 
@@ -75,21 +74,35 @@ namespace SavableObservable {
         internal BaseObservableDataModel ParentDataModel { get; set; }
 
         /// <summary>
-        /// Adds a handler to the tracked action.
+        /// The observable that owns this action (set together with <see cref="ParentDataModel"/>).
+        /// Lets the model's subscription registry remove a handler again without reflection.
+        /// </summary>
+        internal IObservableVariable Owner { get; set; }
+
+        /// <summary>
+        /// Adds a handler to the tracked action. When the action belongs to a model and a
+        /// <paramref name="subscriber"/> is given, the subscription is recorded so it is removed with
+        /// <c>Observable.RemoveListeners</c> and when the model is destroyed.
         /// </summary>
         public void Add(Action<T> handler, object subscriber) {
-            AssertMainThread();
-            lock (_lock) {
-                if (!_handlers.Contains(handler)) {
-                    _handlers.Add(handler);
-                    _handlerSubscribers[handler] = subscriber;
-                    _handlersArray = _handlers.ToArray();
+            Add(handler, subscriber, managed: false);
+        }
 
-                    // Register this subscription for automatic cleanup if possible
-                    if (ParentDataModel != null && subscriber != null) {
-                        Observable.RegisterSubscription(ParentDataModel, subscriber, handler);
-                    }
-                }
+        /// <summary>
+        /// Adds a handler; <paramref name="managed"/> marks framework-created bindings
+        /// (<c>[ObservableHandler]</c> / <c>[AutoBind]</c>) that <c>Observable.SetListeners</c> replaces on rebind,
+        /// while manual subscriptions (<c>managed == false</c>) survive a rebind.
+        /// </summary>
+        internal void Add(Action<T> handler, object subscriber, bool managed) {
+            AssertMainThread();
+            if (_handlers.Contains(handler)) return;
+
+            _handlers.Add(handler);
+            _handlerSubscribers[handler] = subscriber;
+            _handlersArray = _handlers.ToArray();
+
+            if (ParentDataModel != null && Owner != null && subscriber != null) {
+                Observable.RegisterSubscription(ParentDataModel, subscriber, Owner, handler, managed);
             }
         }
 
@@ -98,17 +111,14 @@ namespace SavableObservable {
         /// </summary>
         public void Remove(Action<T> handler) {
             AssertMainThread();
-            lock (_lock) {
-                if (_handlers.Remove(handler)) {
-                    _handlerSubscribers.TryGetValue(handler, out var subscriber);
-                    _handlerSubscribers.Remove(handler);
-                    _handlersArray = _handlers.Count > 0 ? _handlers.ToArray() : Array.Empty<Action<T>>();
+            if (!_handlers.Remove(handler)) return;
 
-                    // Notify Observable to unregister the subscription for cleanup
-                    if (ParentDataModel != null) {
-                        Observable.UnregisterSubscription(ParentDataModel, subscriber, handler);
-                    }
-                }
+            _handlerSubscribers.TryGetValue(handler, out var subscriber);
+            _handlerSubscribers.Remove(handler);
+            _handlersArray = _handlers.Count > 0 ? _handlers.ToArray() : Array.Empty<Action<T>>();
+
+            if (ParentDataModel != null && subscriber != null) {
+                Observable.UnregisterSubscription(ParentDataModel, subscriber, handler);
             }
         }
 
@@ -180,9 +190,7 @@ namespace SavableObservable {
         public int HandlerCount {
             get {
                 AssertMainThread();
-                lock (_lock) {
-                    return _handlers.Count;
-                }
+                return _handlers.Count;
             }
         }
 

@@ -13,19 +13,19 @@ namespace SavableObservable.Samples {
     [DisallowMultipleComponent]
     public class SamplePlayerPresenter : BaseObservablePresenter<SamplePlayerModel> {
         [Header("UI AutoBind Elements")]
-        [AutoBind("playerName")]
+        [AutoBind(nameof(SamplePlayerModel.playerName))]
         [SerializeField] public TextMeshProUGUI playerNameText;
 
-        [AutoBind("health")]
+        [AutoBind(nameof(SamplePlayerModel.health))]
         [SerializeField] public TextMeshProUGUI healthText;
 
-        [AutoBind("energy")]
+        [AutoBind(nameof(SamplePlayerModel.energy))]
         [SerializeField] public Slider energySlider;
 
-        [AutoBind("isShieldActive")]
+        [AutoBind(nameof(SamplePlayerModel.isShieldActive))]
         [SerializeField] public Toggle shieldToggle;
 
-        [AutoBind("playerName")]
+        [AutoBind(nameof(SamplePlayerModel.playerName))]
         [SerializeField] public TMP_InputField nameInputField;
 
         [Header("Inventory Container")]
@@ -36,6 +36,9 @@ namespace SavableObservable.Samples {
         public int LastObservedPrevHealth { get; private set; }
         public int HealthChangeEventsCount { get; private set; }
         public int InventoryChangeEventsCount { get; private set; }
+        public int InitializePresenterCount { get; private set; }
+        public int RollEventsCount { get; private set; }
+        public int RepeatedRollCount { get; private set; }
         public List<string> CurrentInventoryItems { get; } = new List<string>();
 
         private void OnDestroy() {
@@ -45,18 +48,32 @@ namespace SavableObservable.Samples {
             }
         }
 
+        protected override void InitializePresenter() {
+            base.InitializePresenter();
+            InitializePresenterCount++;
+        }
+
         public void InitializeBinding() {
             EnsureInitialized();
         }
 
-        [ObservableHandler("health")]
+        [ObservableHandler(nameof(SamplePlayerModel.health))]
         private void OnHealthChanged(int current, int prev) {
             LastObservedHealth = current;
             LastObservedPrevHealth = prev;
             HealthChangeEventsCount++;
         }
 
-        [ObservableHandler("inventory")]
+        // lastRoll is [NotifyOnSameValue]: a repeated roll still notifies, with previous == value.
+        [ObservableHandler(nameof(SamplePlayerModel.lastRoll))]
+        private void OnRoll(int value, int previous) {
+            RollEventsCount++;
+            if (value == previous) {
+                RepeatedRollCount++;
+            }
+        }
+
+        [ObservableHandler(nameof(SamplePlayerModel.inventory))]
         private void OnInventoryChanged(ObservableList<string> list) {
             InventoryChangeEventsCount++;
             CurrentInventoryItems.Clear();

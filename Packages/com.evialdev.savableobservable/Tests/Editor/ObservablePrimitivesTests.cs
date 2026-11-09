@@ -33,17 +33,216 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void ObservableVariable_IdenticalValueAssignment_FiresNotification_CurrentFrameworkBehavior() {
-            var variable = new ObservableVariable<string> { Value = "Hello" };
+        public void ObservableVariable_EqualAssignment_DoesNotNotify_AndKeepsPreviousValue() {
+            var variable = new ObservableVariable<int> { Value = 1 };
+            variable.Value = 2; // Value = 2, PreviousValue = 1
             int invocationCount = 0;
 
             variable.OnValueChanged.Add(_ => invocationCount++, null);
 
+            variable.Value = 2;
+
+            Assert.AreEqual(0, invocationCount, "Equal assignment must be silent by default.");
+            Assert.AreEqual(2, variable.Value);
+            Assert.AreEqual(1, variable.PreviousValue, "Suppressed assignment must not touch PreviousValue.");
+        }
+
+        [Test]
+        public void ObservableVariable_EqualStringAssignment_DoesNotNotify() {
+            var variable = new ObservableVariable<string> { Value = "Hello" };
+            int invocationCount = 0;
+            variable.OnValueChanged.Add(_ => invocationCount++, null);
+
             variable.Value = "Hello";
 
-            Assert.AreEqual(1, invocationCount, "Framework currently notifies unconditionally on value set.");
-            Assert.AreEqual("Hello", variable.PreviousValue);
+            Assert.AreEqual(0, invocationCount);
             Assert.AreEqual("Hello", variable.Value);
+        }
+
+        [Test]
+        public void ObservableVariable_DifferentAssignment_Notifies() {
+            var variable = new ObservableVariable<int> { Value = 1 };
+            int invocationCount = 0;
+            variable.OnValueChanged.Add(_ => invocationCount++, null);
+
+            variable.Value = 2;
+
+            Assert.AreEqual(1, invocationCount);
+            Assert.AreEqual(1, variable.PreviousValue);
+        }
+
+        [Test]
+        public void ObservableVariable_SameReferenceInstance_IsSuppressed() {
+            var instance = new object();
+            var variable = new ObservableVariable<object> { Value = instance };
+            int invocationCount = 0;
+            variable.OnValueChanged.Add(_ => invocationCount++, null);
+
+            variable.Value = instance;
+            Assert.AreEqual(0, invocationCount, "Same reference must be treated as equal.");
+
+            variable.Value = new object();
+            Assert.AreEqual(1, invocationCount, "A different reference must notify.");
+        }
+
+        [Test]
+        public void ObservableVariable_EqualEquatableStruct_IsSuppressed() {
+            var variable = new ObservableVariable<Vector2Int> { Value = new Vector2Int(3, 4) };
+            int invocationCount = 0;
+            variable.OnValueChanged.Add(_ => invocationCount++, null);
+
+            variable.Value = new Vector2Int(3, 4);
+            Assert.AreEqual(0, invocationCount);
+
+            variable.Value = new Vector2Int(3, 5);
+            Assert.AreEqual(1, invocationCount);
+        }
+
+        [Test]
+        public void ObservableVariable_NaNAssignedOverNaN_IsSuppressed() {
+            var variable = new ObservableVariable<float> { Value = float.NaN };
+            int invocationCount = 0;
+            variable.OnValueChanged.Add(_ => invocationCount++, null);
+
+            variable.Value = float.NaN;
+
+            Assert.AreEqual(0, invocationCount, "EqualityComparer<float>.Default treats NaN as equal to NaN.");
+        }
+
+        [Test]
+        public void ObservableVariable_NotifyOnSameValueFlag_NotifiesOnEqualAssign_WithPreviousEqualToValue() {
+            var variable = new ObservableVariable<int> { Value = 1 };
+            variable.Value = 7; // Previous = 1, Value = 7
+            variable.NotifyOnSameValue = true;
+            int invocationCount = 0;
+            int observedValue = 0;
+            int observedPrevious = 0;
+            variable.OnValueChanged.Add(v => {
+                invocationCount++;
+                observedValue = v.Value;
+                observedPrevious = v.PreviousValue;
+            }, null);
+
+            variable.Value = 7;
+
+            Assert.AreEqual(1, invocationCount);
+            Assert.AreEqual(7, observedValue);
+            Assert.AreEqual(7, observedPrevious, "Equal assignment with the flag on gives PreviousValue == Value.");
+        }
+
+        [Test]
+        public void ObservableVariable_NotifyOnSameValue_DefaultsToFalse() {
+            Assert.IsFalse(new ObservableVariable<int>().NotifyOnSameValue);
+        }
+
+        [Test]
+        public void ObservableVariable_NotifyOnSameValue_IsNotSerialized() {
+            var variable = new ObservableVariable<int> { Value = 5 };
+            variable.NotifyOnSameValue = true;
+
+            var json = JsonUtility.ToJson(variable);
+
+            StringAssert.DoesNotContain("otify", json, "The same-value flag must not be serialized.");
+            var restored = new ObservableVariable<int>();
+            JsonUtility.FromJsonOverwrite(json, restored);
+            Assert.AreEqual(5, restored.Value);
+            Assert.IsFalse(restored.NotifyOnSameValue);
+        }
+
+        private class SameValueAttributeModel : BaseObservableDataModel {
+            [NotifyOnSameValue] public ObservableVariable<int> flagged = new ObservableVariable<int>();
+            public ObservableVariable<int> plain = new ObservableVariable<int>();
+        }
+
+        private class SameValueRuntimeFlagModel : BaseObservableDataModel {
+            public ObservableVariable<int> value = new ObservableVariable<int>();
+        }
+
+        private class SameValueInvalidTargetsModel : BaseObservableDataModel {
+            [NotifyOnSameValue] public ObservableList<int> listField = new ObservableList<int>();
+            [NotifyOnSameValue] public int plainField;
+        }
+
+        [Test]
+        public void NotifyOnSameValueAttribute_Field_NotifiesOnEqualAssign_PlainFieldStaysSilent() {
+            var go = new GameObject("SameValueAttr");
+            try {
+                var model = go.AddComponent<SameValueAttributeModel>();
+                model.EnsureFieldsInitialized();
+                int flaggedCount = 0;
+                int plainCount = 0;
+                int previous = -1;
+                model.flagged.OnValueChanged.Add(v => { flaggedCount++; previous = v.PreviousValue; }, null);
+                model.plain.OnValueChanged.Add(_ => plainCount++, null);
+
+                model.flagged.Value = 3;
+                flaggedCount = 0;
+                model.flagged.Value = 3;
+                model.plain.Value = 0; // default 0 -> equal
+                model.plain.Value = 0;
+
+                Assert.IsTrue(model.flagged.NotifyOnSameValue);
+                Assert.IsFalse(model.plain.NotifyOnSameValue);
+                Assert.AreEqual(1, flaggedCount);
+                Assert.AreEqual(3, previous, "Equal assignment on a flagged field gives PreviousValue == Value.");
+                Assert.AreEqual(0, plainCount);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void NotifyOnSameValue_RuntimeFlagWithoutAttribute_SurvivesEnsureFieldsInitialized() {
+            var go = new GameObject("SameValueRuntime");
+            try {
+                var model = go.AddComponent<SameValueRuntimeFlagModel>();
+                model.EnsureFieldsInitialized();
+                int count = 0;
+                model.value.OnValueChanged.Add(_ => count++, null);
+
+                model.value.NotifyOnSameValue = true;
+                model.EnsureFieldsInitialized();
+                model.EnsureFieldsInitialized();
+
+                Assert.IsTrue(model.value.NotifyOnSameValue, "Re-initialization must never reset a runtime opt-in.");
+                model.value.Value = 0;
+                Assert.AreEqual(1, count);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void ObservableVariable_ForceNotify_FiresRegardlessOfFlag() {
+            var variable = new ObservableVariable<int> { Value = 4 };
+            int count = 0;
+            variable.OnValueChanged.Add(_ => count++, null);
+
+            Assert.IsFalse(variable.NotifyOnSameValue);
+            variable.ForceNotify();
+            Assert.AreEqual(1, count, "ForceNotify must fire with the flag off.");
+
+            variable.NotifyOnSameValue = true;
+            variable.ForceNotify();
+            Assert.AreEqual(2, count, "ForceNotify must fire with the flag on.");
+            Assert.AreEqual(4, variable.PreviousValue);
+        }
+
+        [Test]
+        public void NotifyOnSameValueAttribute_OnListOrPlainField_LogsNoEffectWarning() {
+            // Expectations first: the warning is emitted when the per-type metadata is first built,
+            // which may already happen during AddComponent (Awake).
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex(@"NotifyOnSameValueAttribute\] on 'listField'.*no effect"));
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex(@"NotifyOnSameValueAttribute\] on 'plainField'.*no effect"));
+            var go = new GameObject("SameValueInvalid");
+            try {
+                var model = go.AddComponent<SameValueInvalidTargetsModel>();
+
+                model.EnsureFieldsInitialized();
+                model.EnsureFieldsInitialized(); // cached metadata: warns once per model type only
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
         }
 
         [Test]

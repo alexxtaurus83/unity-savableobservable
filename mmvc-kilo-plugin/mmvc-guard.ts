@@ -71,7 +71,7 @@ function scan(source: string): Diagnostic[] {
   type Declaration = { name: string; identity: string; start: number; open: number; close: number; role?: "model" | "presenter" | "logic"; bases: string[] }
   const declarations: Declaration[] = []
   const values = (a: number, b: number) => tokens.slice(a, b).map(t => t.value).join("")
-  const framework = new Map<string, Declaration["role"]>([["BaseObservableDataModel", "model"], ["BasePresenter", "presenter"], ["BaseObservablePresenter", "presenter"], ["ObservablePresenterWithLogic", "presenter"], ["BaseLogic", "logic"]])
+  const framework = new Map<string, Declaration["role"]>([["BaseObservableDataModel", "model"], ["BaseObservablePresenter", "presenter"], ["ObservablePresenterWithLogic", "presenter"], ["BaseLogic", "logic"]])
   const imported = /\busing\s+SavableObservable\s*;/.test(code)
   const aliases = new Set([...code.matchAll(/\busing\s+(\w+)\s*=/g)].map(m => m[1]))
   const ownNames = new Set([...code.matchAll(/\b(?:class|struct|interface|record|enum)\s+(\w+)/g)].map(m => m[1]))

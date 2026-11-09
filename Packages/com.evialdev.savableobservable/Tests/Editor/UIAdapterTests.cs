@@ -294,6 +294,170 @@ namespace SavableObservable.Tests {
             inputAdapter.RemoveListener(input, inputToken);
         }
 
+        #region String input adapters (TMP_InputField + legacy InputField) characterization
+
+        private sealed class InputFixture {
+            public Component Field;
+            public IUIListenerAdapter Adapter;
+            public Func<string> GetText;
+            public Action<string> SetTextNotifying;
+        }
+
+        private InputFixture CreateTmpInput() {
+            var obj = new GameObject("TmpInput", typeof(RectTransform));
+            obj.transform.SetParent(_host.transform, false);
+            var input = obj.AddComponent<TMP_InputField>();
+            var textObj = new GameObject("Text", typeof(TextMeshProUGUI));
+            textObj.transform.SetParent(obj.transform, false);
+            input.textComponent = textObj.GetComponent<TextMeshProUGUI>();
+            return new InputFixture {
+                Field = input,
+                Adapter = UIAdapterRegistry.GetAdapter(typeof(TMP_InputField)) as IUIListenerAdapter,
+                GetText = () => input.text,
+                SetTextNotifying = t => input.text = t
+            };
+        }
+
+        private InputFixture CreateLegacyInput() {
+            var obj = new GameObject("LegacyInput", typeof(RectTransform));
+            obj.transform.SetParent(_host.transform, false);
+            var input = obj.AddComponent<InputField>();
+            var textObj = new GameObject("Text", typeof(Text));
+            textObj.transform.SetParent(obj.transform, false);
+            input.textComponent = textObj.GetComponent<Text>();
+            return new InputFixture {
+                Field = input,
+                Adapter = UIAdapterRegistry.GetAdapter(typeof(InputField)) as IUIListenerAdapter,
+                GetText = () => input.text,
+                SetTextNotifying = t => input.text = t
+            };
+        }
+
+        private static readonly Func<UIAdapterTests, InputFixture>[] InputFactories = {
+            t => t.CreateTmpInput(),
+            t => t.CreateLegacyInput()
+        };
+
+        [Test]
+        public void StringInputAdapters_Priorities_AndHandledTypes_AreStable() {
+            var tmp = UIAdapterRegistry.GetAdapter(typeof(TMP_InputField));
+            var legacy = UIAdapterRegistry.GetAdapter(typeof(InputField));
+
+            Assert.IsInstanceOf<TMPInputFieldAdapter>(tmp);
+            Assert.IsInstanceOf<InputFieldAdapter>(legacy);
+            Assert.AreEqual(110, tmp.Priority);
+            Assert.AreEqual(110, legacy.Priority);
+            Assert.IsTrue(tmp.CanHandle(typeof(TMP_InputField)));
+            Assert.IsFalse(tmp.CanHandle(typeof(InputField)));
+            Assert.IsTrue(legacy.CanHandle(typeof(InputField)));
+            Assert.IsFalse(legacy.CanHandle(typeof(TMP_InputField)));
+        }
+
+        [Test]
+        public void StringInputAdapters_String_RoundtripsAndDoesNotEchoDuringSetValue([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            Assert.IsNotNull(f.Adapter);
+
+            int received = 0;
+            string last = null;
+            var token = f.Adapter.AddListener(f.Field, v => { received++; last = (string)v; }, typeof(string));
+            Assert.IsNotNull(token);
+
+            f.Adapter.SetValue(f.Field, "FromModel", typeof(string));
+            Assert.AreEqual("FromModel", f.GetText());
+            Assert.AreEqual(0, received, "SetValue must not echo back to the model.");
+
+            f.SetTextNotifying("FromUser");
+            Assert.AreEqual(1, received);
+            Assert.AreEqual("FromUser", last);
+
+            f.Adapter.RemoveListener(f.Field, token);
+            f.SetTextNotifying("AfterRemove");
+            Assert.AreEqual(1, received, "Removed listener must not fire.");
+        }
+
+        [Test]
+        public void StringInputAdapters_Int_ParsesTypedText([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            object observed = null;
+            f.Adapter.AddListener(f.Field, v => observed = v, typeof(int));
+
+            f.SetTextNotifying("42");
+
+            Assert.IsInstanceOf<int>(observed);
+            Assert.AreEqual(42, (int)observed);
+        }
+
+        [Test]
+        public void StringInputAdapters_Float_UsesInvariantCulture([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            object observed = null;
+            f.Adapter.AddListener(f.Field, v => observed = v, typeof(float));
+
+            var previous = System.Threading.Thread.CurrentThread.CurrentCulture;
+            try {
+                System.Threading.Thread.CurrentThread.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+                f.SetTextNotifying("3.5");
+            } finally {
+                System.Threading.Thread.CurrentThread.CurrentCulture = previous;
+            }
+
+            Assert.IsInstanceOf<float>(observed);
+            Assert.AreEqual(3.5f, (float)observed, 0.0001f, "Invariant culture must be used, not the current culture.");
+        }
+
+        [Test]
+        public void StringInputAdapters_EmptyText_ForValueType_MapsToDefault([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            f.SetTextNotifying("7");
+            object observed = null;
+            int calls = 0;
+            f.Adapter.AddListener(f.Field, v => { observed = v; calls++; }, typeof(int));
+
+            f.SetTextNotifying(string.Empty);
+
+            Assert.AreEqual(1, calls);
+            Assert.AreEqual(0, (int)observed);
+        }
+
+        [Test]
+        public void StringInputAdapters_EmptyText_ForNonStringReferenceType_IsIgnored([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            f.SetTextNotifying("seed");
+            int calls = 0;
+            f.Adapter.AddListener(f.Field, _ => calls++, typeof(UnityEngine.Object));
+
+            f.SetTextNotifying(string.Empty);
+
+            Assert.AreEqual(0, calls, "Empty text for a non-string reference type must be ignored.");
+        }
+
+        [Test]
+        public void StringInputAdapters_UnparsableText_IsIgnored([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            int calls = 0;
+            f.Adapter.AddListener(f.Field, _ => calls++, typeof(int));
+
+            f.SetTextNotifying("not-a-number");
+
+            Assert.AreEqual(0, calls);
+        }
+
+        [Test]
+        public void StringInputAdapters_SetValue_NullAndEqualText_AreHandled([Values(0, 1)] int which) {
+            var f = InputFactories[which](this);
+            f.Adapter.SetValue(f.Field, "abc", typeof(string));
+            Assert.AreEqual("abc", f.GetText());
+
+            f.Adapter.SetValue(f.Field, null, typeof(string));
+            Assert.AreEqual(string.Empty, f.GetText());
+
+            f.Adapter.SetValue(f.Field, 15, typeof(int));
+            Assert.AreEqual("15", f.GetText());
+        }
+
+        #endregion
+
         [Test]
         public void CustomAdapters_Survive_ResetRegistry_And_CanBeCleared() {
             UIAdapterRegistry.ClearCustomAdapters();

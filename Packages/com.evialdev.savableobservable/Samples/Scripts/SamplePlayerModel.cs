@@ -16,6 +16,10 @@ namespace SavableObservable.Samples {
         [SerializeField] public ObservableList<string> inventory = new ObservableList<string>();
         [SerializeField] public int score;
 
+        // Every assignment notifies, even when the value equals the current one (a repeated roll is still an event).
+        // The handler can tell the cases apart through its `previous` argument.
+        [NotifyOnSameValue] public ObservableVariable<int> lastRoll = new ObservableVariable<int>();
+
         public void InitializeDefaults() {
             playerName.Value = "Player";
             health.Value = 100;

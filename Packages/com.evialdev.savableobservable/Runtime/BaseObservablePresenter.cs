@@ -1,58 +1,50 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 namespace SavableObservable {
+
+    /// <summary>
+    /// Reactive presenter for a unit's model. Binds <c>[AutoBind]</c> / <c>[ObservableHandler]</c> members
+    /// to the model on the same GameObject and exposes a strongly-typed <see cref="GetModel"/>.
+    /// Generic parameter <typeparamref name="M"/> must derive from <see cref="BaseObservableDataModel"/>;
+    /// non-observable models and interfaces (e.g. IModel) are not supported.
+    /// </summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(-150)]
-    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter, IPresenterBindingState where M : BaseObservableDataModel {
+    public abstract class BaseObservablePresenter<M> : MonoBehaviour, IObservablePresenter, IPresenterBindingState where M : BaseObservableDataModel {
         private enum InitState {
             Uninitialized,
             Initializing,
             Initialized
         }
 
-        private InitState _initState = InitState.Uninitialized;
+        private M _model;
+        private InitState _state = InitState.Uninitialized;
         private bool _isBound;
+
+        /// <summary>
+        /// Returns the model component on this GameObject (observable fields initialized).
+        /// </summary>
+        public M GetModel() => ComponentCache.GetModel(this, ref _model);
 
         protected virtual void Awake() {
             EnsureInitialized();
         }
 
         /// <summary>
-        /// Runs <see cref="InitializePresenter"/> once if not already completed.
-        /// Guards against recursive reentrancy without permanently latching on unhandled exceptions.
-        /// Called automatically by <see cref="EnsureInitialized"/> and <see cref="Observable.SetListeners(object, BaseObservableDataModel)"/>.
-        /// </summary>
-        public void EnsurePresenterInitialized() {
-            if (_initState == InitState.Initialized || _initState == InitState.Initializing) return;
-
-            _initState = InitState.Initializing;
-            try {
-                GetModel();
-                InitializePresenter();
-                _initState = InitState.Initialized;
-            } catch {
-                _initState = InitState.Uninitialized;
-                throw;
-            }
-        }
-
-        /// <summary>
         /// Initializes observable fields on the model, runs <see cref="InitializePresenter"/> once,
         /// and attaches <see cref="Observable.SetListeners(object, BaseObservableDataModel)"/>.
-        /// Idempotent no-op when called repeatedly after successful binding, avoiding repeated destructive rebinds.
-        /// Explicit calls to <see cref="Observable.SetListeners(object, BaseObservableDataModel)"/> (e.g. from loaders)
-        /// retain their explicit rebind behavior.
+        /// Idempotent no-op once bound, so repeated calls never rebind or duplicate handlers.
         /// Safe when called early by <see cref="ServiceLocator"/> on active or inactive GameObjects.
         /// </summary>
         public void EnsureInitialized() {
-            if (_initState == InitState.Initialized && _isBound) return;
+            if (_state == InitState.Initialized && _isBound) return;
 
             // Nested call during InitializePresenter() (e.g. via logic.GetModel()): the outer frame binds
             // after initialization completes, so listeners are never attached before InitializePresenter() finishes.
-            if (_initState == InitState.Initializing) return;
+            if (_state == InitState.Initializing) return;
 
             var model = GetModel();
-            EnsurePresenterInitialized();
+            RunInitializePresenter();
             if (model != null && !_isBound) {
                 Observable.SetListeners(this, model);
                 _isBound = true;
@@ -63,8 +55,28 @@ namespace SavableObservable {
         /// Override to configure static UI controls (slider min/max, dropdown options, button listeners,
         /// initial CanvasGroup state). Guaranteed to run once BEFORE <see cref="Observable.SetListeners"/>
         /// and AFTER <see cref="ServiceLocator"/> has registered all scene <see cref="ISharedSingleton"/> services.
+        /// An exception thrown here does not latch: the next <see cref="EnsureInitialized"/> retries.
         /// </summary>
         protected virtual void InitializePresenter() { }
+
+        // Runs InitializePresenter once. Guards against recursive reentrancy without permanently latching on unhandled exceptions.
+        private void RunInitializePresenter() {
+            if (_state == InitState.Initialized || _state == InitState.Initializing) return;
+
+            _state = InitState.Initializing;
+            try {
+                GetModel();
+                InitializePresenter();
+                _state = InitState.Initialized;
+            } catch {
+                _state = InitState.Uninitialized;
+                throw;
+            }
+        }
+
+        void IPresenterBindingState.EnsureInitializedForBinding() {
+            RunInitializePresenter();
+        }
 
         void IPresenterBindingState.MarkBound() {
             _isBound = true;

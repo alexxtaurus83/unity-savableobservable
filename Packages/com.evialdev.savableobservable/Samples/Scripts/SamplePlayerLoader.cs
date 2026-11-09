@@ -51,11 +51,6 @@ namespace SavableObservable.Samples {
                 model.inventory.AddRange(dto.inventory);
             }
             model.score = dto.score;
-
-            var presenter = GetComponent<BaseObservablePresenter<SamplePlayerModel>>();
-            if (presenter != null) {
-                Observable.SetListeners(presenter, model);
-            }
         }
     }
 }

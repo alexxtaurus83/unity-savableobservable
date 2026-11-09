@@ -82,13 +82,12 @@ Never create an empty model or presenter just to obtain a singleton or complete 
 
 | Component | Responsibility |
 | --- | --- |
-| `BaseObservableDataModel` | MonoBehaviour holding observable and ordinary state fields (`[DisallowMultipleComponent]`, `[DefaultExecutionOrder(-300)]`) |
-| `BaseLogic` | Non-generic root implementing `ISharedSingleton` with `singletonName` and `Name` property (`[DisallowMultipleComponent]`, `[DefaultExecutionOrder(0)]`) |
+| `BaseObservableDataModel` | MonoBehaviour holding observable and ordinary state fields (`[DisallowMultipleComponent]`) |
+| `BaseLogic` | Non-generic root implementing `ISharedSingleton` with `singletonName` and `Name` property (`[DisallowMultipleComponent]`) |
 | `BaseLogic<M, P>` | Primary MMVC component for rules and state changes through `GetModel()` (`where M : BaseObservableDataModel`, `where P : BaseObservablePresenter<M>`, `[DisallowMultipleComponent]`) |
-| `BasePresenter<M>` | Non-reactive presentation with same-object `GetModel()` (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`) |
 | `BaseObservablePresenter<M>` | Reactive presenter base with `InitializePresenter()` and `EnsureInitialized()` (`where M : BaseObservableDataModel`, `[DisallowMultipleComponent]`, `[DefaultExecutionOrder(-150)]`) |
 | `ObservablePresenterWithLogic<M, LO>` | Reactive presenter with `GetLogic()` (`where M : BaseObservableDataModel`, `where LO : BaseLogic`, `[DisallowMultipleComponent]`) |
-| `LoaderWithModel<M>` | Model access, state application, then presenter binding (`where M : BaseObservableDataModel`, `[DefaultExecutionOrder(-250)]`) |
+| `LoaderWithModel<M>` | Model access, state application, then presenter binding (`where M : BaseObservableDataModel`) |
 | `LoaderWithModelAndLogic<M, LO>` | Loader with logic access (`where M : BaseObservableDataModel`, `where LO : BaseLogic`) |
 
 Preserve the editor's same-object dependency provisioning. Adding `BaseLogic<M, P>` to a GameObject in the Unity Editor automatically provisions both `M` (Model) and `P` (Presenter). Presenters do not auto-provision Model or Logic components, avoiding circular Inspector locks.
@@ -98,13 +97,13 @@ Preserve the editor's same-object dependency provisioning. Adding `BaseLogic<M, 
 | `BaseLogic<M, P>` | Model `M` and Presenter `P` |
 | `LoaderWithModel<M>` | Model `M` |
 | `LoaderWithModelAndLogic<M, L>` | Model `M` and logic `L` |
-| `BasePresenter<M>` / `BaseObservablePresenter<M>` | *None* (`BaseLogic<M, P>` is primary) |
+| `BaseObservablePresenter<M>` | *None* (`BaseLogic<M, P>` is primary) |
 
 Avoid redundant `[RequireComponent]` attributes on concrete Presenter classes. Use Inspector references for view objects and the supplied `GetModel()` / `GetLogic()` helpers for same-object dependencies.
 
 ## Model State
 
-Declare reactive state as public `ObservableVariable<T>` fields. Access values through `.Value`; use `.PreviousValue` in notifications to compare changes. Initialize fields through `EnsureFieldsInitialized()` before accessing them, even when relying on automatic creation of null wrappers. `BaseObservableDataModel.Awake()` (`-300`) and `GetModel()` automatically call `EnsureFieldsInitialized()`.
+Declare reactive state as public `ObservableVariable<T>` fields. Access values through `.Value`; use `.PreviousValue` in notifications to compare changes. Initialize fields through `EnsureFieldsInitialized()` before accessing them, even when relying on automatic creation of null wrappers. `BaseObservableDataModel.Awake()` and `GetModel()` automatically call `EnsureFieldsInitialized()`.
 
 ```csharp
 using System.Collections.Generic;
@@ -129,20 +128,19 @@ Use `ForceNotify()` deliberately when a current value must be redisplayed withou
 
 ## Initialization and Binding
 
-The framework uses a deterministic 5-stage initialization pipeline synchronized by `MMVCExecutionOrderSynchronizer`:
-1. `BaseObservableDataModel` (`-300`): `Awake()` calls `EnsureFieldsInitialized()`.
-2. `LoaderWithModel<M>` (`-250`): `Awake()` sets up persistence before singletons or logic run.
-3. `ServiceLocator` (`-200`): Registers all scene `ISharedSingleton` instances in Pass 1, then calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive) in Pass 2.
-4. `BaseObservablePresenter<M>` (`-150`): `Awake()` calls `EnsureInitialized()`, which is an idempotent no-op once bound and binds dynamically instantiated prefabs automatically.
-5. `BaseLogic<M, P>` & services (`0`): Business logic startup (`Start()`).
+The framework uses a two-stage execution order synchronized by `MMVCExecutionOrderSynchronizer`:
+1. `ServiceLocator` (`-200`): Registers all scene `ISharedSingleton` instances in Pass 1, then calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive) in Pass 2.
+2. `BaseObservablePresenter<M>` (`-150`): `Awake()` calls `EnsureInitialized()`, which is an idempotent no-op once bound and binds dynamically instantiated prefabs automatically.
+
+Models, loaders and `BaseLogic<M, P>` / services run at the default order (`0`). They have no ordering requirement: `GetModel()` initializes the model's fields lazily, so the model's own `Awake()` is not relied upon.
 
 Because `ServiceLocator` registers all services in Pass 1 before initializing presenters in Pass 2, `Services.Get<T>()` is guaranteed non-null inside `InitializePresenter()`.
 
-Calling `EnsureInitialized()` on `BaseObservablePresenter<M>` is strictly idempotent after binding: subsequent calls will not destructively re-bind or duplicate listeners. In contrast, explicit calls to `Observable.SetListeners(subscriber, model)` (e.g. from `LoaderWithModel.LoadDataFromModel`) retain their explicit rebind behavior, replacing existing subscriptions cleanly.
+Calling `EnsureInitialized()` on `BaseObservablePresenter<M>` is strictly idempotent after binding: subsequent calls will not destructively re-bind or duplicate listeners. Loaders do not rebind: `LoaderWithModel.LoadDataFromModel` fills the model and the presenter observes the loaded values through its existing binding (equal values are silent unless the field uses `[NotifyOnSameValue]`). An explicit `Observable.SetListeners(subscriber, model)` replaces existing framework bindings cleanly.
 
 Override `protected virtual void InitializePresenter()` in `BaseObservablePresenter<M>` to configure static UI controls (slider min/max, dropdown options, button listeners, initial CanvasGroup state). It runs once before `Observable.SetListeners` attaches handlers.
 
-Call `Observable.SetListeners(subscriber)` on a MonoBehaviour with the model on the same GameObject. If using `Observable.SetListeners(subscriber, model)` or `SetAutoBindListeners(subscriber, model)`, the model must be on the subscriber's own GameObject; cross-GameObject binding is strictly rejected with `Debug.LogError` to prevent lifecycle leaks.
+`Observable.SetListeners(subscriber, model)` is the only bind API. The model must be on the subscriber's own GameObject; cross-GameObject binding is strictly rejected with `Debug.LogError` to prevent lifecycle leaks. Presenters normally never call it: `EnsureInitialized()` binds once and is idempotent.
 
 ## AutoBind Usage
 
@@ -214,7 +212,7 @@ Use `SavableObservable.ServiceLocator`, `SavableObservable.Services`, and `Savab
 - Custom non-MMVC services implement `MonoBehaviour, ISharedSingleton`.
 - Presenters and Models must **never** implement `ISharedSingleton` or register in `ServiceLocator`.
 - Access units via `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
-- Multiple instances of the same Logic class require distinct `singletonName` values on `BaseLogic`. Unnamed duplicates are evicted from singleton lookup while local presentation remains bound.
+- Multiple instances of the same Logic class require distinct `singletonName` values on `BaseLogic`. A duplicate key logs an error and is not registered (the first instance keeps the key) while local presentation remains bound; multi-instance units that are not global services override `RegisterAsSharedSingleton => false`.
 - **Domain Reload Disabled (Fast Play Mode):**
   - When Enter Play Mode options disable Domain Reload, C# statics persist across Play Mode sessions.
   - Framework registries provide `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` hooks to clear statics (`ServiceLocator.instance`, `Services.instance`, `Observable`, `UIAdapterRegistry`).

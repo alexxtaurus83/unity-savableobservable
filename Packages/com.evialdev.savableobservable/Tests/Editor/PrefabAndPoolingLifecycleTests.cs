@@ -462,8 +462,8 @@ namespace SavableObservable.Tests {
             toggleObj.transform.SetParent(host.transform, false);
             presenter.shieldToggle = toggleObj.GetComponent<Toggle>();
 
-            // Wire bindings via SetAutoBindListeners
-            Observable.SetAutoBindListeners(presenter, model);
+            // Wire bindings via SetListeners
+            Observable.SetListeners(presenter, model);
 
             model.playerName.Value = "TopLevelHero";
             Assert.AreEqual("TopLevelHero", presenter.playerNameText.text);
@@ -472,8 +472,8 @@ namespace SavableObservable.Tests {
             presenter.shieldToggle.isOn = true;
             Assert.IsTrue(model.isShieldActive.Value);
 
-            // Re-bind AutoBind: must be idempotent and preserve handlers
-            Observable.SetAutoBindListeners(presenter, model);
+            // Re-bind: must be idempotent and preserve handlers
+            Observable.SetListeners(presenter, model);
 
             model.playerName.Value = "ReboundHero";
             Assert.AreEqual("ReboundHero", presenter.playerNameText.text);
@@ -493,6 +493,74 @@ namespace SavableObservable.Tests {
                 locator.InitializeSharedSingletons();
                 Assert.IsFalse(locator.IsRegistered(logic),
                     "The scene scan must honor the same opt-out as BaseLogic.Awake.");
+            } finally {
+                UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        [Test]
+        public void PooledUnits_WithRegisterAsSharedSingletonFalse_ProduceNoDuplicateErrors() {
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.NewPreviewScene();
+            var created = new List<GameObject>();
+            try {
+                var locatorHost = new GameObject("LocatorHost");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(locatorHost, scene);
+                var locator = locatorHost.AddComponent<ServiceLocator>();
+
+                // 49 board-cell style copies of the same Logic type, all with the default key
+                for (int i = 0; i < 49; i++) {
+                    var cell = new GameObject("Cell" + i);
+                    UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(cell, scene);
+                    cell.SetActive(false);
+                    cell.AddComponent<PrefabTestModel>();
+                    cell.AddComponent<PrefabTestPresenter>();
+                    cell.AddComponent<NonSingletonPrefabLogic>();
+                    created.Add(cell);
+                }
+
+                // Any error log fails the test: the opt-out units must be skipped silently
+                locator.InitializeSharedSingletons();
+
+                Assert.IsFalse(locator.IsRegistered<NonSingletonPrefabLogic>());
+            } finally {
+                UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(scene);
+            }
+        }
+
+        public class DuplicateKeyLogic : BaseLogic<PrefabTestModel, PrefabTestPresenter> { }
+
+        [Test]
+        public void SceneRegistration_UnnamedDuplicates_LogOneErrorAtInitialize_FirstWins() {
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.NewPreviewScene();
+            try {
+                var locatorHost = new GameObject("LocatorHost");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(locatorHost, scene);
+                var locator = locatorHost.AddComponent<ServiceLocator>();
+
+                var first = new GameObject("First");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(first, scene);
+                first.SetActive(false);
+                first.AddComponent<PrefabTestModel>();
+                first.AddComponent<PrefabTestPresenter>();
+                var firstLogic = first.AddComponent<DuplicateKeyLogic>();
+
+                var second = new GameObject("Second");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(second, scene);
+                second.SetActive(false);
+                second.AddComponent<PrefabTestModel>();
+                second.AddComponent<PrefabTestPresenter>();
+                second.AddComponent<DuplicateKeyLogic>();
+
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(@"Duplicate registration of .*DuplicateKeyLogic.*already holds this key"));
+                locator.InitializeSharedSingletons();
+
+                var previous = ServiceLocator.instance;
+                ServiceLocator.instance = locator;
+                try {
+                    Assert.AreSame(firstLogic, Services.Get<DuplicateKeyLogic>(), "Services.Get returns the first registered instance.");
+                } finally {
+                    ServiceLocator.instance = previous;
+                }
             } finally {
                 UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(scene);
             }

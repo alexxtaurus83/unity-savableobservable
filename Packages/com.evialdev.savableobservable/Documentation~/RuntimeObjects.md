@@ -126,7 +126,7 @@ sequenceDiagram
 3. **Optional Unbind/Rebind:**  
    Bindings can stay alive across pool cycles. If you unbind on release with `Observable.RemoveListeners(model, presenter)`, the presenter is marked unbound and `presenter.EnsureInitialized()` rebinds on checkout.
 4. **Model Mutation:**  
-   Update model values when checking out or checking in. When an observable's value changes, subscribers are notified immediately. If an observable is assigned an identical value, no notification is sent.
+   Update model values when checking out or checking in. When an observable's value changes, subscribers are notified immediately. Assigning an equal value is silent (see [Change notification semantics](../README.md#change-notification-semantics)); if a pooled unit must refresh its view on checkout with the same value, call `ForceNotify()` or mark the field `[NotifyOnSameValue]`.
 
 ---
 
@@ -202,8 +202,8 @@ public static class RuntimeUnitFactory {
 
 When creating multiple dynamic instances (e.g. 50 bullet chips or 20 monster units):
 - By default, `BaseLogic` registers itself into `ServiceLocator`.
-- Multiple instances with identical names will collide and be evicted from service resolution.
-- For dynamic units that are not intended to be global singletons, override `RegisterAsSharedSingleton => false`:
+- A second live instance with the same key (`singletonName`, or the class name) is a **duplicate**: `ServiceLocator` logs an error naming both GameObjects, does not register it, and the first instance keeps the key.
+- For dynamic units that are not intended to be global singletons, override `RegisterAsSharedSingleton => false` (or give each instance a distinct `singletonName`):
 
 ```csharp
 public class MonsterLogic : BaseLogic<MonsterModel, MonsterPresenter> {
@@ -211,7 +211,7 @@ public class MonsterLogic : BaseLogic<MonsterModel, MonsterPresenter> {
 }
 ```
 
-This prevents registration overhead, avoids eviction collisions, and keeps the unit fully reactive on its own GameObject.
+This prevents registration overhead, avoids duplicate-registration errors, and keeps the unit fully reactive on its own GameObject.
 
 ---
 

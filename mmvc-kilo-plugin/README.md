@@ -104,7 +104,7 @@ The plugin also checks environment variables (or plugin options passed at initia
 The plugin implements a lexical C# scanner that masks comments and literal strings (regular, verbatim, interpolated, raw strings) and parses class boundaries and generic base arguments. It enforces 4 conservative, syntactically provable rules:
 
 1. **`MMVC001` (Singleton Model or Presenter):**
-   - *Rule:* Blocks application classes deriving directly from known framework models (`BaseObservableDataModel`) or presenters (`BasePresenter`, `BaseObservablePresenter`, `ObservablePresenterWithLogic`) while implementing `ISharedSingleton`.
+   - *Rule:* Blocks application classes deriving directly from known framework models (`BaseObservableDataModel`) or presenters (`BaseObservablePresenter`, `ObservablePresenterWithLogic`) while implementing `ISharedSingleton`.
    - *Fix:* Remove `ISharedSingleton`. Expose access via `BaseLogic<M, P>` or a dedicated coordinator service.
 
 2. **`MMVC002` (Invalid `Services.Get<T>`):**

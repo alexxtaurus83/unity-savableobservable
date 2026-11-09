@@ -330,7 +330,7 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void SetAutoBindListeners_Standalone_IsIdempotent_AndPreservesHandlerBindings() {
+        public void SetListeners_Repeated_IsIdempotent_AndPreservesHandlerBindings() {
             var host = new GameObject("AutoBindIdempotentHost");
             host.transform.SetParent(_fixtureRoot.transform, false);
 
@@ -349,12 +349,10 @@ namespace SavableObservable.Tests {
             presenter.masterToggle = toggle;
             presenter.depthSlider = slider;
 
-            // First wire full listeners (methods + autobind)
+            // First wire full listeners (methods + autobind), then rebind repeatedly
             Observable.SetListeners(presenter, model);
-
-            // Directly call SetAutoBindListeners to refresh AutoBind UI bindings
-            Observable.SetAutoBindListeners(presenter, model);
-            Observable.SetAutoBindListeners(presenter, model);
+            Observable.SetListeners(presenter, model);
+            Observable.SetListeners(presenter, model);
 
             // Verify AutoBind is idempotent: toggle UI change updates model exactly once
             int modelChangeCount = 0;
@@ -363,10 +361,10 @@ namespace SavableObservable.Tests {
             toggle.isOn = true;
             Assert.AreEqual(1, modelChangeCount, "UI listener should not be registered twice");
 
-            // Verify method handler was NOT erased by SetAutoBindListeners call
+            // Verify the method handler is intact and not duplicated after repeated SetListeners calls
             int handlerCountBefore = presenter.DepthHandlerCount;
             model.depth.Value = 9;
-            Assert.AreEqual(handlerCountBefore + 1, presenter.DepthHandlerCount, "Method handler must remain intact after SetAutoBindListeners");
+            Assert.AreEqual(handlerCountBefore + 1, presenter.DepthHandlerCount, "Method handler must remain intact (exactly once) after repeated SetListeners");
         }
 
         #endregion

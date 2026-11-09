@@ -87,7 +87,7 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void LoaderWithModel_LoadDataFromModel_RebindsPresenterWithoutCorruptingListeners() {
+        public void LoaderWithModel_LoadDataFromModel_KeepsExistingBindingAndNotifies() {
             var model = _unitA.AddComponent<SamplePlayerModel>();
             var presenter = _unitA.AddComponent<SamplePlayerPresenter>();
             var loader = _unitA.AddComponent<SamplePlayerLoader>();
@@ -97,20 +97,74 @@ namespace SavableObservable.Tests {
             sourceModel.health.Value = 70;
 
             model.InitializeDefaults();
-            Observable.SetListeners(presenter, model);
+            presenter.InitializeBinding();
+            var initializeCountBeforeLoad = presenter.InitializePresenterCount;
+            Assert.AreEqual(1, initializeCountBeforeLoad);
 
             // Mutate target model
             model.health.Value = 10;
 
-            // Load saved model through loader (LoaderWithModel passes model state object)
+            // Load saved model through loader: no rebind, presenter observes the loaded value during load
             loader.LoadDataFromModel(sourceModel);
 
-            // Verify state is restored and listeners remain intact and active
             Assert.AreEqual(70, model.health.Value);
+            Assert.AreEqual(70, presenter.LastObservedHealth, "Presenter must observe the loaded value through its existing binding.");
+            Assert.AreEqual(10, presenter.LastObservedPrevHealth);
+            Assert.AreEqual(1, presenter.InitializePresenterCount, "Load must not re-run InitializePresenter (no rebind).");
 
-            // Further changes continue to notify presenter
+            // Further changes continue to notify presenter exactly once per change
+            var eventsBefore = presenter.HealthChangeEventsCount;
             model.health.Value = 65;
             Assert.AreEqual(65, presenter.LastObservedHealth);
+            Assert.AreEqual(eventsBefore + 1, presenter.HealthChangeEventsCount, "Listeners must not be duplicated by loading.");
+        }
+
+        [Test]
+        public void LoaderWithModel_LoadDataFromModel_EqualValues_AreSilent() {
+            var model = _unitA.AddComponent<SamplePlayerModel>();
+            var presenter = _unitA.AddComponent<SamplePlayerPresenter>();
+            var loader = _unitA.AddComponent<SamplePlayerLoader>();
+
+            var sourceModel = _unitB.AddComponent<SamplePlayerModel>();
+            sourceModel.InitializeDefaults();
+            model.InitializeDefaults();
+            presenter.InitializeBinding();
+            var eventsBefore = presenter.HealthChangeEventsCount;
+
+            loader.LoadDataFromModel(sourceModel); // every observable value already equals the current one
+
+            Assert.AreEqual(eventsBefore, presenter.HealthChangeEventsCount, "Loading equal values must not notify.");
+        }
+
+        [Test]
+        public void LoaderWithModel_LoadDataFromModel_FlaggedField_NotifiesOnEqualValue() {
+            var model = _unitA.AddComponent<SamplePlayerModel>();
+            var presenter = _unitA.AddComponent<SamplePlayerPresenter>();
+            var loader = _unitA.AddComponent<SamplePlayerLoader>();
+
+            var sourceModel = _unitB.AddComponent<SamplePlayerModel>();
+            sourceModel.InitializeDefaults();
+            model.InitializeDefaults();
+            presenter.InitializeBinding();
+            model.health.NotifyOnSameValue = true;
+            var eventsBefore = presenter.HealthChangeEventsCount;
+
+            loader.LoadDataFromModel(sourceModel);
+
+            Assert.AreEqual(eventsBefore + 1, presenter.HealthChangeEventsCount, "A flagged field notifies even when the loaded value is equal.");
+        }
+
+        [Test]
+        public void LoadDataFromModel_DoesNotCopyNotifyOnSameValueFlag() {
+            var target = _unitA.AddComponent<SamplePlayerModel>();
+            var source = _unitB.AddComponent<SamplePlayerModel>();
+            target.EnsureFieldsInitialized();
+            source.EnsureFieldsInitialized();
+            source.health.NotifyOnSameValue = true;
+
+            target.LoadDataFromModel(source);
+
+            Assert.IsFalse(target.health.NotifyOnSameValue, "The runtime flag is neither saved nor copied on load.");
         }
 
         [Test]
@@ -154,6 +208,69 @@ namespace SavableObservable.Tests {
         private class DerivedListModel : BaseTestModelWithPrivateField {
             public ObservableList<string> items = new ObservableList<string>();
             public System.Collections.Generic.List<int> numbers = new System.Collections.Generic.List<int>();
+        }
+
+        private class DescriptorCoverageModel : BaseObservableDataModel {
+            public ObservableVariable<int> saved = new ObservableVariable<int>();
+            [NonSaved] public ObservableVariable<int> transientVar = new ObservableVariable<int>();
+            [NonSaved] public ObservableList<string> transientList = new ObservableList<string>();
+            public ObservableList<string> savedList = new ObservableList<string>();
+            public int plainSaved;
+            [NonSaved] public int plainTransient;
+            public int[] plainArray = Array.Empty<int>();
+            public System.Collections.Generic.List<string> plainList = new System.Collections.Generic.List<string>();
+
+            public string PropertyBacked { get; set; }
+            public int ReadOnlyProperty => 5;
+        }
+
+        [Test]
+        public void LoadDataFromModel_Descriptor_CoversPropertiesObservablePlainNonSavedAndCloning() {
+            var target = _unitA.AddComponent<DescriptorCoverageModel>();
+            var source = _unitB.AddComponent<DescriptorCoverageModel>();
+            target.EnsureFieldsInitialized();
+            source.EnsureFieldsInitialized();
+
+            source.saved.Value = 11;
+            source.transientVar.Value = 22;
+            source.transientList.Add("secret");
+            source.savedList.Add("kept");
+            source.plainSaved = 33;
+            source.plainTransient = 44;
+            source.plainArray = new[] { 1, 2, 3 };
+            source.plainList.Add("p");
+            source.PropertyBacked = "prop";
+
+            target.transientVar.Value = -1;
+            target.plainTransient = -2;
+
+            var targetSavedWrapper = target.saved;
+            target.LoadDataFromModel(source);
+
+            Assert.AreEqual("prop", target.PropertyBacked, "Writable properties are copied.");
+            Assert.AreEqual(11, target.saved.Value, "Observable fields are copied.");
+            Assert.AreSame(targetSavedWrapper, target.saved, "Observable wrappers are preserved.");
+            CollectionAssert.AreEqual(new[] { "kept" }, target.savedList, "Observable lists are copied.");
+            Assert.AreEqual(33, target.plainSaved, "Plain fields are copied.");
+
+            Assert.AreEqual(-1, target.transientVar.Value, "[NonSaved] observable variables are skipped.");
+            Assert.AreEqual(0, target.transientList.Count, "[NonSaved] observable lists are skipped.");
+            Assert.AreEqual(-2, target.plainTransient, "[NonSaved] plain fields are skipped.");
+
+            CollectionAssert.AreEqual(new[] { 1, 2, 3 }, target.plainArray);
+            Assert.AreNotSame(source.plainArray, target.plainArray, "Arrays are cloned, not aliased.");
+            CollectionAssert.AreEqual(new[] { "p" }, target.plainList);
+            Assert.AreNotSame(source.plainList, target.plainList, "Lists are cloned, not aliased.");
+        }
+
+        [Test]
+        public void ModelDescriptor_IsCached_AndSharedBetweenBindingAndPersistence() {
+            var first = ModelDescriptor.Get(typeof(DescriptorCoverageModel));
+            var second = ModelDescriptor.Get(typeof(DescriptorCoverageModel));
+
+            Assert.AreSame(first, second);
+            CollectionAssert.Contains(first.ObservableFieldsByName.Keys, "transientVar", "Binding sees [NonSaved] observables.");
+            CollectionAssert.DoesNotContain(System.Linq.Enumerable.Select(first.LoadObservableFields, t => t.field.Name), "transientVar", "Persistence skips [NonSaved] observables.");
         }
 
         [Test]

@@ -80,7 +80,7 @@ namespace SavableObservable.Tests.Contracts {
             Assert.IsTrue(typeof(BaseLogic).IsAssignableFrom(typeof(TLogic)) || Attribute.IsDefined(typeof(TLogic), typeof(DisallowMultipleComponent), true),
                 $"{typeof(TLogic).Name} should derive from BaseLogic or declare [DisallowMultipleComponent]");
             Assert.IsTrue(typeof(IObservablePresenter).IsAssignableFrom(typeof(TPresenter)) || Attribute.IsDefined(typeof(TPresenter), typeof(DisallowMultipleComponent), true),
-                $"{typeof(TPresenter).Name} should derive from BasePresenter or declare [DisallowMultipleComponent]");
+                $"{typeof(TPresenter).Name} should derive from BaseObservablePresenter or declare [DisallowMultipleComponent]");
 
             // Verify types do not implement ISharedSingleton
             Assert.IsFalse(typeof(ISharedSingleton).IsAssignableFrom(typeof(TModel)), $"{typeof(TModel).Name} must not implement ISharedSingleton.");
@@ -99,9 +99,8 @@ namespace SavableObservable.Tests.Contracts {
                 Assert.IsNotNull(val, $"Observable field '{field.Name}' on {typeof(TModel).Name} should be initialized non-null.");
 
                 // In SavableObservable, ParentDataModel is set on the internal ObservableTrackedAction (OnValueChanged / OnChanged)
-                var onValueChangedProp = val.GetType().GetProperty("OnValueChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?? val.GetType().GetProperty("OnChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                Assert.IsNotNull(onValueChangedProp, $"Observable field '{field.Name}' on {typeof(TModel).Name} should have OnValueChanged or OnChanged property.");
+                var onValueChangedProp = ObservableAccess.GetChangeEventProperty(val);
+                Assert.IsNotNull(onValueChangedProp, $"Observable field '{field.Name}' on {typeof(TModel).Name} should have OnValueChanged (variable) or OnChanged (list) property.");
 
                 object trackedAction = onValueChangedProp.GetValue(val);
                 Assert.IsNotNull(trackedAction, $"Tracked action on field '{field.Name}' must be initialized non-null.");
@@ -111,6 +110,48 @@ namespace SavableObservable.Tests.Contracts {
 
                 var parent = parentProp.GetValue(trackedAction);
                 Assert.AreSame(Model, parent, $"Field '{field.Name}' ParentDataModel on tracked action should be linked to its containing model.");
+            }
+        }
+
+        private static int CountNotificationsOnEqualAssign<T>(ObservableVariable<T> variable, object subscriber) {
+            int count = 0;
+            Action<ObservableVariable<T>> handler = _ => count++;
+            variable.OnValueChanged.Add(handler, subscriber);
+            try {
+                variable.Value = variable.Value;
+            } finally {
+                variable.OnValueChanged.Remove(handler);
+            }
+            return count;
+        }
+
+        private static Type FindObservableVariableBase(Type type) {
+            for (var t = type; t != null; t = t.BaseType) {
+                if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(ObservableVariable<>)) return t;
+            }
+            return null;
+        }
+
+        [Test]
+        public void Contract_EqualAssignment_IsSilent_UnlessNotifyOnSameValue() {
+            Model.EnsureFieldsInitialized();
+            var helper = typeof(MmvcTriadContractTestsBase<TModel, TLogic, TPresenter>)
+                .GetMethod(nameof(CountNotificationsOnEqualAssign), BindingFlags.NonPublic | BindingFlags.Static);
+
+            foreach (var field in Model.GetCachedObservableFields()) {
+                var variableType = FindObservableVariableBase(field.FieldType);
+                if (variableType == null) continue; // ObservableList notifies on every mutation by design.
+
+                var variable = field.GetValue(Model);
+                Assert.IsNotNull(variable, $"Observable field '{field.Name}' should be initialized.");
+
+                bool flagged = (bool)variableType.GetProperty(nameof(ObservableVariable<int>.NotifyOnSameValue)).GetValue(variable);
+                var count = (int)helper.MakeGenericMethod(variableType.GetGenericArguments()[0]).Invoke(null, new[] { variable, this });
+
+                Assert.AreEqual(flagged ? 1 : 0, count,
+                    flagged
+                        ? $"Field '{field.Name}' opted into NotifyOnSameValue: an equal assignment must notify."
+                        : $"Field '{field.Name}': an equal assignment must be silent unless the field opts into NotifyOnSameValue.");
             }
         }
 

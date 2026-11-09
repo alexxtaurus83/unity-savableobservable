@@ -118,11 +118,21 @@ namespace SavableObservable.Editor {
             ctx.Assert(notifiedVal == 25, "Phase 1.1: ObservableVariable assigns new value and fires notification", $"Got {notifiedVal}");
             ctx.Assert(intVar.PreviousValue == 10, "Phase 1.1: ObservableVariable tracks PreviousValue", $"Got {intVar.PreviousValue}");
 
-            // 1.2 Identical value assignment fires notification (current framework behavior)
+            // 1.2 Identical value assignment is silent by default
             bool identicalNotified = false;
-            intVar.OnValueChanged.Add(_ => identicalNotified = true, null);
+            Action<ObservableVariable<int>> identicalHandler = _ => identicalNotified = true;
+            intVar.OnValueChanged.Add(identicalHandler, null);
             intVar.Value = 25;
-            ctx.Assert(identicalNotified, "Phase 1.2: ObservableVariable fires notification on identical value assignment");
+            ctx.Assert(!identicalNotified, "Phase 1.2: ObservableVariable does NOT fire notification on identical value assignment");
+            ctx.Assert(intVar.PreviousValue == 10, "Phase 1.2: suppressed assignment leaves PreviousValue untouched", $"Got {intVar.PreviousValue}");
+
+            // 1.2b NotifyOnSameValue opt-in fires on identical assignment with PreviousValue == Value
+            intVar.NotifyOnSameValue = true;
+            intVar.Value = 25;
+            ctx.Assert(identicalNotified, "Phase 1.2b: NotifyOnSameValue fires notification on identical value assignment");
+            ctx.Assert(intVar.PreviousValue == 25, "Phase 1.2b: identical assignment with flag gives PreviousValue == Value", $"Got {intVar.PreviousValue}");
+            intVar.NotifyOnSameValue = false;
+            intVar.OnValueChanged.Remove(identicalHandler);
 
             // 1.3 ForceNotify fires notification
             bool forceNotified = false;

@@ -192,7 +192,7 @@ public interface IExampleSaveable {
 
 public class ScoreLoader : LoaderWithModel<ScoreDataModel>, IExampleSaveable {
     public object SaveState() {
-        return GetModelToSave();
+        return GetModel();
     }
 
     public void LoadState(object state) {

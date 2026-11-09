@@ -67,6 +67,19 @@ Usage:
 
 ---
 
+## 3a. Contract Tests for Change Semantics
+
+`MmvcTriadContractTestsBase<TModel, TLogic, TPresenter>` (namespace `SavableObservable.Tests.Contracts`) includes the contract `Contract_EqualAssignment_IsSilent_UnlessNotifyOnSameValue`. For every `ObservableVariable<T>` field of the model it assigns the field its own current value and asserts:
+
+- the assignment is **silent** by default (no notification, `Value` / `PreviousValue` unchanged), and
+- it notifies exactly once when the field opts in with `[NotifyOnSameValue]` (or its `NotifyOnSameValue` flag is on).
+
+`ObservableList<T>` fields are skipped: a list notifies on every mutation by design. Consumer projects that already derive a contract class from `MmvcTriadContractTestsBase` pick this contract up automatically, so a model that relied on "assign the same value to refresh the view" fails here until it uses `ForceNotify()` or `[NotifyOnSameValue]` (see "Change notification semantics" in the README).
+
+`ObservableAccess` (same namespace) resolves a field's tracked change event by its type (`OnValueChanged` for variables, `OnChanged` for lists) for custom contract code.
+
+---
+
 ## 4. Live UI Assertions & Audit (`MmvcLiveUiAssert`)
 
 Located in namespace `SavableObservable.Tests.Contracts`:

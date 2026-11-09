@@ -26,14 +26,6 @@ namespace SavableObservable {
             }
         }
 
-        /// <summary>
-        /// Compatibility alias used by existing reflection-based subscription code.
-        /// </summary>
-        public ObservableTrackedAction<ObservableList<T>> OnValueChanged {
-            get => OnChanged;
-            set => OnChanged = value;
-        }
-
         private enum PrevDelta {
             Empty,
             Inserted,
@@ -199,6 +191,64 @@ namespace SavableObservable {
 
         public void SetParentDataModel(BaseObservableDataModel dataModel) {
             OnChanged.ParentDataModel = dataModel;
+            OnChanged.Owner = this;
+        }
+
+        Delegate IObservableVariable.CreateHandler(object target, MethodInfo method, int paramCount) {
+            switch (paramCount) {
+                case 0: {
+                    var act = (Action)Delegate.CreateDelegate(typeof(Action), target, method);
+                    Action<ObservableList<T>> handler = _ => act();
+                    return handler;
+                }
+                case 1: {
+                    var paramType = method.GetParameters()[0].ParameterType;
+                    if (paramType.IsAssignableFrom(typeof(ObservableList<T>))) {
+                        try {
+                            var act = (Action<ObservableList<T>>)Delegate.CreateDelegate(typeof(Action<ObservableList<T>>), target, method);
+                            Action<ObservableList<T>> handler = v => act(v);
+                            return handler;
+                        } catch {
+                            Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v });
+                            return handler;
+                        }
+                    }
+
+                    try {
+                        var act = (Action<List<T>>)Delegate.CreateDelegate(typeof(Action<List<T>>), target, method);
+                        Action<ObservableList<T>> handler = v => act(v.Value);
+                        return handler;
+                    } catch {
+                        Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v.Value });
+                        return handler;
+                    }
+                }
+                case 2: {
+                    try {
+                        var act = (Action<List<T>, IReadOnlyList<T>>)Delegate.CreateDelegate(typeof(Action<List<T>, IReadOnlyList<T>>), target, method);
+                        Action<ObservableList<T>> handler = v => act(v.Value, v.PreviousValue);
+                        return handler;
+                    } catch {
+                        Action<ObservableList<T>> handler = v => method.Invoke(target, new object[] { v.Value, v.PreviousValue });
+                        return handler;
+                    }
+                }
+                default:
+                    return null;
+            }
+        }
+
+        Delegate IObservableVariable.CreateAutoBindHandler(Action<object> modelToUiHandler) {
+            Action<ObservableList<T>> handler = v => modelToUiHandler(v.Value);
+            return handler;
+        }
+
+        void IObservableVariable.AddHandler(Delegate handler, object subscriber) {
+            OnChanged.Add((Action<ObservableList<T>>)handler, subscriber, managed: true);
+        }
+
+        void IObservableVariable.RemoveHandler(Delegate handler) {
+            OnChanged.Remove((Action<ObservableList<T>>)handler);
         }
 
         private void RecordInserted(int index, int count) {

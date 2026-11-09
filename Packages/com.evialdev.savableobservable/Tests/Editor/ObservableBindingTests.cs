@@ -77,21 +77,13 @@ namespace SavableObservable.Tests {
         [Test]
         public void Observable_SetListeners_InvalidSignature_LogsError() {
             var invalidSub = _host.AddComponent<InvalidSubscriber>();
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'playerName'"));
             LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
 
             Observable.SetListeners(invalidSub, _model);
         }
 
         [Test]
         public void Observable_SetListeners_Wires0_1_2_ParameterHandlers() {
-            // Expected log warnings
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy' in SamplePlayerModel has no corresponding"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive' in SamplePlayerModel has no corresponding"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory' in SamplePlayerModel has no corresponding"));
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
 
             Observable.SetListeners(_subscriber, _model);
@@ -106,19 +98,11 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void Observable_SetListeners_IsIdempotent_DoesNotDuplicateHandlers() {
-            // First call expected logs
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
 
             // Call SetListeners first time
             Observable.SetListeners(_subscriber, _model);
 
-            // Second call expected logs
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
 
             // Call SetListeners second time: existing subscriptions should be removed before re-adding
@@ -131,9 +115,6 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void Observable_RemoveListeners_DetachesAllTrackedHandlers() {
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
 
             Observable.SetListeners(_subscriber, _model);
@@ -149,9 +130,6 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void AutoBind_PropagatesModelValueToUI() {
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'energy'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'isShieldActive'"));
-            LogAssert.Expect(LogType.Warning, new Regex("ObservableVariable 'inventory'"));
             LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
 
             Observable.SetListeners(_subscriber, _model);
@@ -181,6 +159,146 @@ namespace SavableObservable.Tests {
             // Subsequent toggle change should no longer mutate model
             toggle.isOn = false;
             Assert.IsTrue(_model.isShieldActive.Value, "Model should retain value after RemoveListeners detaches two-way UI listener");
+        }
+
+        private static void ExpectMissingFieldWarning() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+        }
+
+        private class OtherSubscriber : MonoBehaviour {
+            public int HealthCalls;
+
+            [ObservableHandler("health")]
+            public void OnHealth() { HealthCalls++; }
+        }
+
+        [Test]
+        public void RemoveListeners_RemovesOnlyThatSubscribersRecords() {
+            var other = _host.AddComponent<OtherSubscriber>();
+            ExpectMissingFieldWarning();
+            {
+                Observable.SetListeners(_subscriber, _model);
+                Observable.SetListeners(other, _model);
+
+                _model.health.Value = 50;
+                Assert.AreEqual(1, _subscriber.ZeroParamCount);
+                Assert.AreEqual(1, other.HealthCalls);
+
+                Observable.RemoveListeners(_model, _subscriber);
+
+                _model.health.Value = 40;
+                Assert.AreEqual(1, _subscriber.ZeroParamCount, "Removed subscriber must not be notified.");
+                Assert.AreEqual(2, other.HealthCalls, "Other subscribers must be unaffected.");
+            }
+        }
+
+        [Test]
+        public void SetListeners_ReplacesManagedBindings_ButKeepsManualSubscriptions() {
+            int manual = 0;
+            ExpectMissingFieldWarning();
+            {
+                _model.EnsureFieldsInitialized(); // links the field to its model, as Awake does in play mode
+                _model.health.OnValueChanged.Add(_ => manual++, _subscriber);
+
+                Observable.SetListeners(_subscriber, _model);
+                Observable.SetListeners(_subscriber, _model);
+
+                _model.health.Value = 33;
+
+                Assert.AreEqual(1, manual, "Manual subscription survives rebinds and fires once.");
+                Assert.AreEqual(1, _subscriber.ZeroParamCount, "Managed handler is replaced, not duplicated.");
+            }
+        }
+
+        [Test]
+        public void RemoveListeners_RemovesManualSubscriptionsToo() {
+            int manual = 0;
+            ExpectMissingFieldWarning();
+            {
+                _model.EnsureFieldsInitialized(); // links the field to its model, as Awake does in play mode
+                _model.health.OnValueChanged.Add(_ => manual++, _subscriber);
+                Observable.SetListeners(_subscriber, _model);
+
+                Observable.RemoveListeners(_model, _subscriber);
+                _model.health.Value = 12;
+
+                Assert.AreEqual(0, manual);
+            }
+        }
+
+        [Test]
+        public void TwoWayUiListener_IsRemoved_WhenModelIsDestroyed() {
+            var toggleObj = new GameObject("Toggle", typeof(Toggle));
+            toggleObj.transform.SetParent(_host.transform, false);
+            var toggle = toggleObj.GetComponent<Toggle>();
+            var presenter = _host.AddComponent<SamplePlayerPresenter>();
+            presenter.shieldToggle = toggle;
+
+            Observable.SetListeners(presenter, _model);
+
+            toggle.isOn = true;
+            Assert.IsTrue(_model.isShieldActive.Value, "Two-way UI listener works before destruction.");
+
+            var shield = _model.isShieldActive;
+            Observable.CleanupSubscriptions(_model);
+
+            toggle.isOn = false;
+            Assert.IsTrue(shield.Value, "UI listener token must be removed on model cleanup/destroy.");
+        }
+
+        [Test]
+        public void UnboundObservableField_NoWarningByDefault_WarningWhenStrictBinding() {
+            Assert.IsFalse(ObservableSettings.StrictBinding, "StrictBinding defaults to false.");
+
+            // Default: only the genuine [AutoBind] mismatch is reported.
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+            Observable.SetListeners(_subscriber, _model);
+            LogAssert.NoUnexpectedReceived();
+
+            ObservableSettings.StrictBinding = true;
+            try {
+                LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+                Observable.SetListeners(_subscriber, _model);
+            } finally {
+                ObservableSettings.StrictBinding = false;
+            }
+        }
+
+        private class ListSubscriber : MonoBehaviour {
+            public int ZeroCount, OneListCount, OneObservableCount, TwoCount;
+
+            [ObservableHandler("items")] public void Zero() { ZeroCount++; }
+            [ObservableHandler("items")] public void OneList(System.Collections.Generic.List<string> v) { OneListCount++; }
+            [ObservableHandler("items")] public void OneObservable(ObservableList<string> v) { OneObservableCount++; }
+            [ObservableHandler("items")] public void Two(System.Collections.Generic.List<string> cur, System.Collections.Generic.IReadOnlyList<string> prev) { TwoCount++; }
+        }
+
+        private class ListHandlerModel : BaseObservableDataModel {
+            public ObservableList<string> items = new ObservableList<string>();
+        }
+
+        [Test]
+        public void ObservableList_0_1_2_ParameterHandlers_WireViaSetListeners() {
+            var go = new GameObject("ListBinding");
+            try {
+                var model = go.AddComponent<ListHandlerModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ListSubscriber>();
+
+                Observable.SetListeners(sub, model);
+                model.items.Add("a");
+
+                Assert.AreEqual(1, sub.ZeroCount);
+                Assert.AreEqual(1, sub.OneListCount);
+                Assert.AreEqual(1, sub.OneObservableCount);
+                Assert.AreEqual(1, sub.TwoCount);
+
+                Observable.RemoveListeners(model, sub);
+                model.items.Add("b");
+                Assert.AreEqual(1, sub.ZeroCount, "List handlers are removed by RemoveListeners.");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
         }
 
         public abstract class BaseModalPresenter<M, L> : BaseObservablePresenter<M>

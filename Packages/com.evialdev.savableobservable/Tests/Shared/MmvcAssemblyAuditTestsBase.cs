@@ -63,7 +63,7 @@ namespace SavableObservable.Tests.Contracts {
                 Type modelType = null;
                 var curr = pType;
                 while (curr != null && curr != typeof(object)) {
-                    if (curr.IsGenericType && (curr.GetGenericTypeDefinition() == typeof(BaseObservablePresenter<>) || curr.GetGenericTypeDefinition() == typeof(BasePresenter<>))) {
+                    if (curr.IsGenericType && curr.GetGenericTypeDefinition() == typeof(BaseObservablePresenter<>)) {
                         modelType = curr.GetGenericArguments()[0];
                         break;
                     }

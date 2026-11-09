@@ -8,6 +8,30 @@ namespace SavableObservable.Tests {
     [TestFixture]
     [Category("MmvcContract")]
     public class SamplePlayerContractTests : MmvcTriadContractTestsBase<SamplePlayerModel, SamplePlayerLogic, SamplePlayerPresenter> {
+        [Test]
+        public void Sample_LastRoll_NotifiesOnSameValue_WithPreviousEqualToValue() {
+            Host.SetActive(true);
+            Presenter.EnsureInitialized();
+
+            Logic.Roll(4);
+            Assert.AreEqual(1, Presenter.RollEventsCount);
+            Assert.AreEqual(0, Presenter.RepeatedRollCount, "A new roll is not a repeat.");
+
+            Logic.Roll(4);
+            Assert.AreEqual(2, Presenter.RollEventsCount, "[NotifyOnSameValue]: the repeated roll still notifies.");
+            Assert.AreEqual(1, Presenter.RepeatedRollCount, "The handler sees previous == value for a repeated roll.");
+        }
+
+        [Test]
+        public void Sample_DefaultFields_StaySilentOnEqualAssignment() {
+            Host.SetActive(true);
+            Presenter.EnsureInitialized();
+            var before = Presenter.HealthChangeEventsCount;
+
+            Model.health.Value = Model.health.Value;
+
+            Assert.AreEqual(before, Presenter.HealthChangeEventsCount, "health has no [NotifyOnSameValue]: an equal assignment is silent.");
+        }
     }
 
     [TestFixture]

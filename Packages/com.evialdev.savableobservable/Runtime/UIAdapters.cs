@@ -257,30 +257,39 @@ namespace SavableObservable
     }
 
     /// <summary>
-    /// Adapter for TMP_InputField components.
+    /// Shared implementation for string-based input fields (TMP and legacy UGUI).
+    /// Model -> UI uses the field's "without notify" setter guarded by a per-adapter re-entrancy flag;
+    /// UI -> Model converts the typed text to the bound value type (invariant culture first).
+    /// Empty text maps to the default of a value type and is ignored for non-string reference types.
     /// </summary>
-    public class TMPInputFieldAdapter : IUIListenerAdapter
+    public abstract class StringInputAdapterBase<TField> : IUIListenerAdapter
+        where TField : Component
     {
         [ThreadStatic] private static bool _isSettingValue;
 
-        public int Priority => 110; // Higher priority than TextMeshProAdapter
+        public abstract int Priority { get; }
 
         public bool CanHandle(Type uiComponentType)
         {
-            return typeof(TMP_InputField).IsAssignableFrom(uiComponentType);
+            return typeof(TField).IsAssignableFrom(uiComponentType);
         }
+
+        protected abstract string GetText(TField field);
+        protected abstract void SetTextWithoutNotify(TField field, string text);
+        protected abstract void AddTextListener(TField field, UnityAction<string> listener);
+        protected abstract void RemoveTextListener(TField field, UnityAction<string> listener);
 
         public void SetValue(object uiComponent, object value, Type valueType)
         {
-            if (uiComponent is TMP_InputField inputField)
+            if (uiComponent is TField inputField)
             {
                 string stringValue = value?.ToString() ?? string.Empty;
-                if (inputField.text != stringValue)
+                if (GetText(inputField) != stringValue)
                 {
                     _isSettingValue = true;
                     try
                     {
-                        inputField.SetTextWithoutNotify(stringValue);
+                        SetTextWithoutNotify(inputField, stringValue);
                     }
                     finally
                     {
@@ -292,7 +301,7 @@ namespace SavableObservable
 
         public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
         {
-            if (uiComponent is TMP_InputField inputField)
+            if (uiComponent is TField inputField)
             {
                 UnityAction<string> listener = val =>
                 {
@@ -332,7 +341,7 @@ namespace SavableObservable
                         // Conversion failed, ignore update
                     }
                 };
-                inputField.onValueChanged.AddListener(listener);
+                AddTextListener(inputField, listener);
                 return listener;
             }
             return null;
@@ -340,102 +349,37 @@ namespace SavableObservable
 
         public void RemoveListener(object uiComponent, object token)
         {
-            if (uiComponent is TMP_InputField inputField && token is UnityAction<string> listener)
+            if (uiComponent is TField inputField && token is UnityAction<string> listener)
             {
-                inputField.onValueChanged.RemoveListener(listener);
+                RemoveTextListener(inputField, listener);
             }
         }
     }
 
     /// <summary>
+    /// Adapter for TMP_InputField components.
+    /// </summary>
+    public class TMPInputFieldAdapter : StringInputAdapterBase<TMP_InputField>
+    {
+        public override int Priority => 110; // Higher priority than TextMeshProAdapter
+
+        protected override string GetText(TMP_InputField field) => field.text;
+        protected override void SetTextWithoutNotify(TMP_InputField field, string text) => field.SetTextWithoutNotify(text);
+        protected override void AddTextListener(TMP_InputField field, UnityAction<string> listener) => field.onValueChanged.AddListener(listener);
+        protected override void RemoveTextListener(TMP_InputField field, UnityAction<string> listener) => field.onValueChanged.RemoveListener(listener);
+    }
+
+    /// <summary>
     /// Adapter for legacy UGUI InputField components.
     /// </summary>
-    public class InputFieldAdapter : IUIListenerAdapter
+    public class InputFieldAdapter : StringInputAdapterBase<InputField>
     {
-        [ThreadStatic] private static bool _isSettingValue;
+        public override int Priority => 110; // Higher priority than UnityTextAdapter
 
-        public int Priority => 110; // Higher priority than UnityTextAdapter
-
-        public bool CanHandle(Type uiComponentType)
-        {
-            return typeof(InputField).IsAssignableFrom(uiComponentType);
-        }
-
-        public void SetValue(object uiComponent, object value, Type valueType)
-        {
-            if (uiComponent is InputField inputField)
-            {
-                string stringValue = value?.ToString() ?? string.Empty;
-                if (inputField.text != stringValue)
-                {
-                    _isSettingValue = true;
-                    try
-                    {
-                        inputField.SetTextWithoutNotify(stringValue);
-                    }
-                    finally
-                    {
-                        _isSettingValue = false;
-                    }
-                }
-            }
-        }
-
-        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
-        {
-            if (uiComponent is InputField inputField)
-            {
-                UnityAction<string> listener = val =>
-                {
-                    if (_isSettingValue) return;
-                    try
-                    {
-                        object convertedValue = val;
-                        if (valueType != typeof(string))
-                        {
-                            if (string.IsNullOrEmpty(val))
-                            {
-                                if (valueType.IsValueType)
-                                {
-                                    convertedValue = Activator.CreateInstance(valueType);
-                                }
-                                else
-                                {
-                                    return;
-                                }
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
-                                }
-                                catch
-                                {
-                                    convertedValue = Convert.ChangeType(val, valueType);
-                                }
-                            }
-                        }
-                        onValueChanged(convertedValue);
-                    }
-                    catch
-                    {
-                        // Conversion failed, ignore update
-                    }
-                };
-                inputField.onValueChanged.AddListener(listener);
-                return listener;
-            }
-            return null;
-        }
-
-        public void RemoveListener(object uiComponent, object token)
-        {
-            if (uiComponent is InputField inputField && token is UnityAction<string> listener)
-            {
-                inputField.onValueChanged.RemoveListener(listener);
-            }
-        }
+        protected override string GetText(InputField field) => field.text;
+        protected override void SetTextWithoutNotify(InputField field, string text) => field.SetTextWithoutNotify(text);
+        protected override void AddTextListener(InputField field, UnityAction<string> listener) => field.onValueChanged.AddListener(listener);
+        protected override void RemoveTextListener(InputField field, UnityAction<string> listener) => field.onValueChanged.RemoveListener(listener);
     }
 
     /// <summary>

@@ -12,22 +12,15 @@ namespace SavableObservable {
         where LO : BaseLogic
     {
         protected override void Reset() {
-            base.Reset();
-            ComponentAutoRequire.EnsureComponent<LO>(this, delayed: false);
+            ComponentAutoRequire.EnsureComponents(this, false, typeof(M), typeof(LO));
         }
 
         protected override void OnValidate() {
-            base.OnValidate();
-            ComponentAutoRequire.EnsureComponent<LO>(this, delayed: true);
+            ComponentAutoRequire.EnsureComponents(this, true, typeof(M), typeof(LO));
         }
 
         private LO _logic;
 
-        public LO GetLogic() {
-            if (_logic == null) {
-                _logic = GetComponent<LO>();
-            }
-            return _logic;
-        }
+        public LO GetLogic() => ComponentCache.Get(this, ref _logic);
     }
 }

@@ -16,20 +16,21 @@ namespace SavableObservable {
         Added,
         /// <summary>The very same live object was already stored under that key; nothing changed.</summary>
         SameInstance,
-        /// <summary>Two or more live instances share the same key; the key was evicted from singleton lookup.</summary>
-        EvictedDuplicate,
+        /// <summary>Another live instance already holds the key. The first registration keeps it; this one was not registered and an error was logged.</summary>
+        Duplicate,
         /// <summary>The service is null, destroyed, or of a forbidden type (e.g. Presenter or Model).</summary>
         Rejected
     }
 
     /// <summary>
     /// Instance-owned service registry.
-    /// Lookup is by exact concrete type: registers <c>service.GetType()</c>, not base types or interfaces.
+    /// Lookup is by exact concrete type and key: registers <c>service.GetType()</c>, not base types or interfaces.
     /// Manages shared singletons (<see cref="BaseLogic"/> and custom non-MMVC <see cref="MonoBehaviour"/> services).
-    /// Models (<see cref="BaseObservableDataModel"/>) of registered <see cref="BaseLogic"/> instances are also indexed
-    /// by model type and logic name, resolvable via <see cref="Services.GetModel{M}"/>.
-    /// Implements live-instance collision-eviction: if multiple live instances share a key without distinct names,
-    /// the key is evicted from lookup and logs an error upon resolution attempt.
+    /// The model of a registered <see cref="BaseLogic"/> is resolvable via <see cref="GetModel{M}"/> (derived from the
+    /// registered Logic, never stored separately).
+    /// A key is held by one live instance: a second live instance with the same key is an error, it is not registered
+    /// and the first instance keeps the key. Multi-instance units (pooled prefabs, board cells) either override
+    /// <c>RegisterAsSharedSingleton =&gt; false</c> or get distinct <c>singletonName</c> values.
     /// </summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(-200)]
@@ -47,20 +48,11 @@ namespace SavableObservable {
             instance = null;
         }
 
-        // Service bindings: Type -> Key -> Service Instance
-        private readonly Dictionary<Type, Dictionary<string, object>> _serviceBindings = new Dictionary<Type, Dictionary<string, object>>();
-        // Model bindings: ModelType -> Key (Logic Name) -> Model Instance
-        private readonly Dictionary<Type, Dictionary<string, object>> _modelBindings = new Dictionary<Type, Dictionary<string, object>>();
-        // Live service instances tracked per (Type, Key): Type -> Key -> List of live service instances
-        private readonly Dictionary<Type, Dictionary<string, List<object>>> _liveInstances = new Dictionary<Type, Dictionary<string, List<object>>>();
-        // Live model instances tracked per (ModelType, Key): ModelType -> Key -> List of live model instances
-        private readonly Dictionary<Type, Dictionary<string, List<object>>> _liveModelInstances = new Dictionary<Type, Dictionary<string, List<object>>>();
-        // Map from Logic instance -> (ModelType, Key, ModelInstance) to enable accurate targeted removal/pruning
-        private readonly Dictionary<object, (Type ModelType, string Key, object ModelInstance)> _logicToModelMap = new Dictionary<object, (Type, string, object)>();
+        // The only store: (concrete type, key) -> service instance.
+        private readonly Dictionary<(Type Type, string Key), object> _services = new Dictionary<(Type, string), object>();
 
-        // Main-thread scratch buffers for pruning.
-        private readonly List<string> _pruneScratch = new List<string>();
-        private readonly List<object> _livePruneScratch = new List<object>();
+        // Instances already reported as duplicates, so scene Pass 1 and the later Awake of the same unit log once.
+        private readonly HashSet<object> _reportedDuplicates = new HashSet<object>();
 
         private void Awake() {
             if (instance == null) {
@@ -70,15 +62,11 @@ namespace SavableObservable {
         }
 
         private void OnDestroy() {
-            _serviceBindings.Clear();
-            _modelBindings.Clear();
-            _liveInstances.Clear();
-            _liveModelInstances.Clear();
-            _logicToModelMap.Clear();
+            _services.Clear();
+            _reportedDuplicates.Clear();
             if (ReferenceEquals(instance, this)) {
                 instance = null;
             }
-            Services.ReleaseLocator(this);
         }
 
         /// <summary>Unity-aware liveness: destroyed UnityEngine.Object instances are not live even when typed as object/interface.</summary>
@@ -94,207 +82,17 @@ namespace SavableObservable {
             return string.IsNullOrEmpty(name) ? type.Name : name;
         }
 
-        /// <summary>
-        /// Prunes destroyed instances from tracking dictionaries for the given service type.
-        /// Re-evaluates collision-eviction status: if dead duplicates leave exactly 1 live instance,
-        /// that single remaining instance is restored to lookup.
-        /// </summary>
-        private void PruneType(Type type) {
-            if (!_liveInstances.TryGetValue(type, out var keyDict)) {
-                _serviceBindings.Remove(type);
-                return;
-            }
-
-            _pruneScratch.Clear();
-            foreach (var kvp in keyDict) {
-                var key = kvp.Key;
-                var list = kvp.Value;
-
-                _livePruneScratch.Clear();
-                for (int i = 0; i < list.Count; i++) {
-                    var item = list[i];
-                    if (IsLive(item)) {
-                        _livePruneScratch.Add(item);
-                    } else {
-                        // Logic was destroyed: unregister its tracked model mapping
-                        if (_logicToModelMap.TryGetValue(item, out var mapped)) {
-                            RemoveTrackedModel(mapped.ModelType, mapped.Key, mapped.ModelInstance);
-                            _logicToModelMap.Remove(item);
-                        }
-                    }
-                }
-                list.Clear();
-                list.AddRange(_livePruneScratch);
-                _livePruneScratch.Clear();
-
-                if (list.Count == 0) {
-                    _pruneScratch.Add(key);
-                    if (_serviceBindings.TryGetValue(type, out var sInner)) {
-                        sInner.Remove(key);
-                    }
-                } else if (list.Count == 1) {
-                    if (!_serviceBindings.TryGetValue(type, out var sInner)) {
-                        sInner = new Dictionary<string, object>();
-                        _serviceBindings[type] = sInner;
-                    }
-                    sInner[key] = list[0];
-
-                    // Recover model index if this single live instance is BaseLogic
-                    if (list[0] is BaseLogic logic) {
-                        var model = logic.GetUntypedModel();
-                        if (IsLive(model)) {
-                            SyncLiveModel(model.GetType(), key, model);
-                            _logicToModelMap[logic] = (model.GetType(), key, model);
-                        }
-                    }
-                } else {
-                    // Still collided (> 1 live instance): evicted from lookup
-                    if (_serviceBindings.TryGetValue(type, out var sInner)) {
-                        sInner.Remove(key);
-                    }
-                }
-            }
-
-            for (int i = 0; i < _pruneScratch.Count; i++) {
-                keyDict.Remove(_pruneScratch[i]);
-            }
-            _pruneScratch.Clear();
-
-            if (keyDict.Count == 0) {
-                _liveInstances.Remove(type);
-                _serviceBindings.Remove(type);
-            }
+        private static string Describe(object service) {
+            if (service is Component c && c != null) return $"GameObject '{c.gameObject.name}'";
+            return service?.GetType().Name ?? "null";
         }
 
-        private void PruneModelType(Type modelType) {
-            // First, prune all registered Logic instances so destroyed Logic units clean up their models!
-            PruneAllLogicOwners();
-
-            if (!_liveModelInstances.TryGetValue(modelType, out var keyDict)) {
-                _modelBindings.Remove(modelType);
-                return;
-            }
-
-            _pruneScratch.Clear();
-            foreach (var kvp in keyDict) {
-                var key = kvp.Key;
-                var list = kvp.Value;
-
-                _livePruneScratch.Clear();
-                for (int i = 0; i < list.Count; i++) {
-                    if (IsLive(list[i])) {
-                        _livePruneScratch.Add(list[i]);
-                    }
-                }
-                list.Clear();
-                list.AddRange(_livePruneScratch);
-                _livePruneScratch.Clear();
-
-                if (list.Count == 0) {
-                    _pruneScratch.Add(key);
-                    if (_modelBindings.TryGetValue(modelType, out var mInner)) {
-                        mInner.Remove(key);
-                    }
-                } else if (list.Count == 1) {
-                    if (!_modelBindings.TryGetValue(modelType, out var mInner)) {
-                        mInner = new Dictionary<string, object>();
-                        _modelBindings[modelType] = mInner;
-                    }
-                    mInner[key] = list[0];
-                } else {
-                    // Collided: evicted from model lookup
-                    if (_modelBindings.TryGetValue(modelType, out var mInner)) {
-                        mInner.Remove(key);
-                    }
-                }
-            }
-
-            for (int i = 0; i < _pruneScratch.Count; i++) {
-                keyDict.Remove(_pruneScratch[i]);
-            }
-            _pruneScratch.Clear();
-
-            if (keyDict.Count == 0) {
-                _liveModelInstances.Remove(modelType);
-                _modelBindings.Remove(modelType);
-            }
-        }
-
-        private void PruneAllLogicOwners() {
-            var deadLogics = new List<object>();
-            foreach (var kvp in _logicToModelMap) {
-                if (!IsLive(kvp.Key)) {
-                    deadLogics.Add(kvp.Key);
-                }
-            }
-            for (int i = 0; i < deadLogics.Count; i++) {
-                var dead = deadLogics[i];
-                var mapped = _logicToModelMap[dead];
-                RemoveTrackedModel(mapped.ModelType, mapped.Key, mapped.ModelInstance);
-                _logicToModelMap.Remove(dead);
-            }
-        }
-
-        private void SyncLiveModel(Type modelType, string key, object model) {
-            if (!_liveModelInstances.TryGetValue(modelType, out var mKeyDict)) {
-                mKeyDict = new Dictionary<string, List<object>>();
-                _liveModelInstances[modelType] = mKeyDict;
-            }
-            if (!mKeyDict.TryGetValue(key, out var mList)) {
-                mList = new List<object>();
-                mKeyDict[key] = mList;
-            }
-            bool exists = false;
-            for (int i = 0; i < mList.Count; i++) {
-                if (ReferenceEquals(mList[i], model)) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                mList.Add(model);
-            }
-
-            if (!_modelBindings.TryGetValue(modelType, out var mInner)) {
-                mInner = new Dictionary<string, object>();
-                _modelBindings[modelType] = mInner;
-            }
-
-            if (mList.Count == 1) {
-                mInner[key] = model;
-            } else {
-                mInner.Remove(key);
-            }
-        }
-
-        private void RemoveTrackedModel(Type modelType, string key, object model) {
-            if (_liveModelInstances.TryGetValue(modelType, out var mKeyDict)) {
-                if (mKeyDict.TryGetValue(key, out var mList)) {
-                    for (int i = mList.Count - 1; i >= 0; i--) {
-                        if (ReferenceEquals(mList[i], model) || !IsLive(mList[i])) {
-                            mList.RemoveAt(i);
-                        }
-                    }
-
-                    if (!_modelBindings.TryGetValue(modelType, out var mInner)) {
-                        mInner = new Dictionary<string, object>();
-                        _modelBindings[modelType] = mInner;
-                    }
-
-                    if (mList.Count == 0) {
-                        mKeyDict.Remove(key);
-                        mInner.Remove(key);
-                    } else if (mList.Count == 1) {
-                        mInner[key] = mList[0];
-                    } else {
-                        mInner.Remove(key);
-                    }
-                }
-                if (mKeyDict.Count == 0) {
-                    _liveModelInstances.Remove(modelType);
-                    _modelBindings.Remove(modelType);
-                }
-            }
+        /// <summary>Returns the live service stored under (type, key); a destroyed entry is dropped.</summary>
+        private object Lookup(Type type, string key) {
+            if (!_services.TryGetValue((type, key), out var value)) return null;
+            if (IsLive(value)) return value;
+            _services.Remove((type, key));
+            return null;
         }
 
         public bool IsRegistered<T>(string name = null) => IsRegistered(typeof(T), name);
@@ -306,66 +104,44 @@ namespace SavableObservable {
         }
 
         public bool IsRegistered(Type type, string name = null) {
-            PruneType(type);
-            if (!_serviceBindings.TryGetValue(type, out var inner)) return false;
             string key = string.IsNullOrEmpty(name) ? type.Name : name;
-            return inner.TryGetValue(key, out var value) && IsLive(value);
+            return Lookup(type, key) != null;
         }
 
+        /// <summary>
+        /// Resolves a service by exact concrete type. With a <paramref name="name"/>, only that key is considered.
+        /// Without a name, the type's default key is used; if it is not registered, the sole registered instance of the
+        /// type is returned. Several instances under different keys and no name is ambiguous: an error is logged and
+        /// <c>null</c> is returned.
+        /// </summary>
         public object Get(Type bindingType, string name = null) {
-            PruneType(bindingType);
-
-            string effectiveKey = !string.IsNullOrEmpty(name) ? name : bindingType.Name;
-
-            // Collision check on specific key: if the target key has multiple live instances, it was evicted!
-            if (_liveInstances.TryGetValue(bindingType, out var keyDict) &&
-                keyDict.TryGetValue(effectiveKey, out var liveList) &&
-                liveList.Count > 1) {
-                if (enableLogging) {
-                    Debug.LogError($"[ServiceLocator] Ambiguous Get request for type '{bindingType.FullName}' with key '{effectiveKey}'. Multiple live instances ({liveList.Count}) shared this Name and were evicted from singleton lookup. Assign distinct singletonName values on each BaseLogic instance in the Inspector.");
-                }
-                return null;
-            }
-
             if (!string.IsNullOrEmpty(name)) {
-                if (_serviceBindings.TryGetValue(bindingType, out var innerNamed) &&
-                    innerNamed.TryGetValue(name, out object named) && IsLive(named)) {
-                    return named;
+                return Lookup(bindingType, name);
+            }
+
+            var byDefaultKey = Lookup(bindingType, bindingType.Name);
+            if (byDefaultKey != null) return byDefaultKey;
+
+            object only = null;
+            var keys = new List<string>();
+            List<(Type, string)> dead = null;
+            foreach (var kvp in _services) {
+                if (kvp.Key.Type != bindingType) continue;
+                if (!IsLive(kvp.Value)) {
+                    (dead ?? (dead = new List<(Type, string)>())).Add(kvp.Key);
+                    continue;
                 }
-                return null;
+                only = kvp.Value;
+                keys.Add(kvp.Key.Key);
+            }
+            if (dead != null) {
+                for (int i = 0; i < dead.Count; i++) _services.Remove(dead[i]);
             }
 
-            // Unnamed Get request:
-            if (!_serviceBindings.TryGetValue(bindingType, out var inner) || inner.Count == 0) {
-                return null;
-            }
+            if (keys.Count == 1) return only;
 
-            string defaultKey = bindingType.Name;
-            if (inner.TryGetValue(defaultKey, out object obj) && IsLive(obj)) {
-                return obj;
-            }
-
-            // Fallback: if no default key was registered, but exactly 1 instance is registered across all keys, return it.
-            // Check if any key for this type has collided (> 1 live instance); if so, unnamed fallback is ambiguous and must be blocked.
-            if (_liveInstances.TryGetValue(bindingType, out var allKeyDict)) {
-                foreach (var kvp in allKeyDict) {
-                    if (kvp.Value.Count > 1) {
-                        if (enableLogging) {
-                            Debug.LogError($"[ServiceLocator] Ambiguous Get request for type '{bindingType.FullName}'. Key '{kvp.Key}' has multiple live instances ({kvp.Value.Count}) and was evicted from singleton lookup. Assign distinct singletonName values on each BaseLogic instance in the Inspector.");
-                        }
-                        return null;
-                    }
-                }
-            }
-
-            if (inner.Count == 1) {
-                foreach (var single in inner.Values) {
-                    if (IsLive(single)) return single;
-                }
-            }
-
-            if (enableLogging) {
-                Debug.LogError($"[ServiceLocator] Ambiguous Get request for type '{bindingType.FullName}' with no name. Multiple instances are registered ({inner.Count}).");
+            if (keys.Count > 1 && enableLogging) {
+                Debug.LogError($"[ServiceLocator] Ambiguous Get request for type '{bindingType.FullName}' with no name. {keys.Count} instances are registered under different keys ({string.Join(", ", keys)}). Pass the name of the instance you want.");
             }
             return null;
         }
@@ -375,172 +151,96 @@ namespace SavableObservable {
             return obj == null ? default : (T)obj;
         }
 
+        /// <summary>
+        /// Resolves the model of a registered <see cref="BaseLogic"/> by exact model type.
+        /// With a <paramref name="name"/> (the Logic's registration key) only that Logic is considered; without a name
+        /// the model must be unique among registered Logic units, otherwise an error is logged and <c>null</c> is returned.
+        /// Returns <c>null</c> when the owning Logic is destroyed or not registered.
+        /// </summary>
         public M GetModel<M>(string name = null) where M : BaseObservableDataModel {
             Type modelType = typeof(M);
-            PruneModelType(modelType);
+            M found = null;
+            var keys = new List<string>();
+            List<(Type, string)> dead = null;
 
-            if (!string.IsNullOrEmpty(name)) {
-                // Collision check on named model key
-                if (_liveModelInstances.TryGetValue(modelType, out var keyDict) &&
-                    keyDict.TryGetValue(name, out var liveList) &&
-                    liveList.Count > 1) {
-                    if (enableLogging) {
-                        Debug.LogError($"[ServiceLocator] Ambiguous GetModel request for model type '{modelType.FullName}' with key '{name}'. Multiple live models ({liveList.Count}) shared this logic Name and were evicted. Assign distinct singletonName values on each BaseLogic instance in the Inspector.");
+            foreach (var kvp in _services) {
+                if (!(kvp.Value is BaseLogic logic)) continue;
+                if (!IsLive(logic)) {
+                    (dead ?? (dead = new List<(Type, string)>())).Add(kvp.Key);
+                    continue;
+                }
+                if (logic.ModelType != modelType) continue;
+
+                var model = logic.GetUntypedModel();
+                if (!IsLive(model)) continue;
+
+                if (!string.IsNullOrEmpty(name)) {
+                    if (kvp.Key.Key == name) {
+                        found = (M)model;
+                        break;
                     }
-                    return null;
+                    continue;
                 }
 
-                if (_modelBindings.TryGetValue(modelType, out var inner) &&
-                    inner.TryGetValue(name, out var named) && IsLive(named)) {
-                    return (M)named;
-                }
-                return null;
+                found = (M)model;
+                keys.Add(kvp.Key.Key);
             }
 
-            // Unnamed GetModel request:
-            // Check if ANY key for this model type has collided (> 1 live instance)
-            if (_liveModelInstances.TryGetValue(modelType, out var allKeyDict)) {
-                foreach (var kvp in allKeyDict) {
-                    if (kvp.Value.Count > 1) {
-                        if (enableLogging) {
-                            Debug.LogError($"[ServiceLocator] Ambiguous GetModel request for model type '{modelType.FullName}'. Key '{kvp.Key}' has multiple live instances ({kvp.Value.Count}) and was evicted from singleton lookup. Assign distinct singletonName values on each BaseLogic instance in the Inspector.");
-                        }
-                        return null;
-                    }
-                }
+            if (dead != null) {
+                for (int i = 0; i < dead.Count; i++) _services.Remove(dead[i]);
             }
 
-            if (_modelBindings.TryGetValue(modelType, out var modelInner) && modelInner.Count > 0) {
-                if (modelInner.Count == 1) {
-                    foreach (var single in modelInner.Values) {
-                        if (IsLive(single)) return (M)single;
-                    }
-                }
+            if (!string.IsNullOrEmpty(name)) return found;
+            if (keys.Count <= 1) return found;
 
-                if (enableLogging) {
-                    Debug.LogError($"[ServiceLocator] Ambiguous GetModel request for model type '{modelType.FullName}' with no name. Multiple models of this type are registered across distinct logic units ({modelInner.Count}). Provide the logic Name.");
-                }
-                return null;
+            if (enableLogging) {
+                Debug.LogError($"[ServiceLocator] Ambiguous GetModel request for model type '{modelType.FullName}' with no name. {keys.Count} registered Logic units own a model of this type ({string.Join(", ", keys)}). Pass the Logic name.");
             }
-
             return null;
         }
 
-        public void Remove<T>(string name = null) {
-            Remove(typeof(T), name);
-        }
-
-        public void Remove(Type bindingType, string name = null) {
-            string key = string.IsNullOrEmpty(name) ? bindingType.Name : name;
-
-            if (_liveInstances.TryGetValue(bindingType, out var keyDict)) {
-                if (keyDict.TryGetValue(key, out var list)) {
-                    for (int i = 0; i < list.Count; i++) {
-                        var item = list[i];
-                        if (_logicToModelMap.TryGetValue(item, out var mapped)) {
-                            RemoveTrackedModel(mapped.ModelType, mapped.Key, mapped.ModelInstance);
-                            _logicToModelMap.Remove(item);
-                        }
-                    }
-                    keyDict.Remove(key);
-                }
-                if (keyDict.Count == 0) _liveInstances.Remove(bindingType);
-            }
-
-            if (_serviceBindings.TryGetValue(bindingType, out var inner)) {
-                inner.Remove(key);
-                if (inner.Count == 0) _serviceBindings.Remove(bindingType);
-            }
-        }
-
         /// <summary>
-        /// Unregisters a specific <see cref="ISharedSingleton"/> instance and reconciles its binding key.
-        /// If multiple colliding instances existed and one is unregistered, any single surviving instance
-        /// recovers lookup cleanly. If the last instance is unregistered, the binding is completely removed.
+        /// Unregisters a specific <see cref="ISharedSingleton"/> instance. The entry is removed only if the stored
+        /// value for its key is that very instance; an instance that was never registered (for example a rejected
+        /// duplicate) is a no-op and never evicts the instance that holds the key.
         /// </summary>
         public void Unregister(ISharedSingleton instance, string name = null) {
             if (instance == null) return;
+            _reportedDuplicates.Remove(instance);
+
             Type type = instance.GetType();
             string key = ResolveKey(type, instance, name);
 
-            if (_liveInstances.TryGetValue(type, out var keyDict)) {
-                // If not found under resolved key, search other keys in case it was registered with an explicit name
-                if (!keyDict.ContainsKey(key)) {
-                    foreach (var kvp in keyDict) {
-                        for (int i = 0; i < kvp.Value.Count; i++) {
-                            if (ReferenceEquals(kvp.Value[i], instance)) {
-                                key = kvp.Key;
-                                break;
-                            }
-                        }
-                    }
+            if (_services.TryGetValue((type, key), out var stored)) {
+                if (ReferenceEquals(stored, instance)) {
+                    _services.Remove((type, key));
                 }
+                return;
+            }
 
-                if (keyDict.TryGetValue(key, out var list)) {
-                    for (int i = list.Count - 1; i >= 0; i--) {
-                        var item = list[i];
-                        if (ReferenceEquals(item, instance) || !IsLive(item)) {
-                            if (item is BaseLogic l && _logicToModelMap.TryGetValue(l, out var mapped)) {
-                                RemoveTrackedModel(mapped.ModelType, mapped.Key, mapped.ModelInstance);
-                                _logicToModelMap.Remove(l);
-                            }
-                            list.RemoveAt(i);
-                        }
-                    }
-
-                    if (!_serviceBindings.TryGetValue(type, out var sInner)) {
-                        sInner = new Dictionary<string, object>();
-                        _serviceBindings[type] = sInner;
-                    }
-
-                    if (list.Count == 0) {
-                        keyDict.Remove(key);
-                        sInner.Remove(key);
-                    } else if (list.Count == 1) {
-                        sInner[key] = list[0];
-
-                        // Recover model index if this single live instance is BaseLogic
-                        if (list[0] is BaseLogic survivingLogic) {
-                            var model = survivingLogic.GetUntypedModel();
-                            if (IsLive(model)) {
-                                SyncLiveModel(model.GetType(), key, model);
-                                _logicToModelMap[survivingLogic] = (model.GetType(), key, model);
-                            }
-                        }
-                    } else {
-                        // Still collided (> 1 live instance)
-                        sInner.Remove(key);
-                    }
-
-                    if (sInner.Count == 0) {
-                        _serviceBindings.Remove(type);
-                    }
-                }
-
-                if (keyDict.Count == 0) {
-                    _liveInstances.Remove(type);
-                    _serviceBindings.Remove(type);
-                }
-            } else {
-                if (instance is BaseLogic l && _logicToModelMap.TryGetValue(l, out var mapped)) {
-                    RemoveTrackedModel(mapped.ModelType, mapped.Key, mapped.ModelInstance);
-                    _logicToModelMap.Remove(l);
+            // Registered with an explicit name that differs from the resolved key: find it by reference.
+            if (!string.IsNullOrEmpty(name)) return;
+            (Type, string)? match = null;
+            foreach (var kvp in _services) {
+                if (kvp.Key.Type == type && ReferenceEquals(kvp.Value, instance)) {
+                    match = kvp.Key;
+                    break;
                 }
             }
+            if (match.HasValue) _services.Remove(match.Value);
         }
 
         /// <summary>
         /// Registers <paramref name="service"/> under its runtime type and <paramref name="name"/>.
         /// Only concrete MonoBehaviour classes implementing <see cref="ISharedSingleton"/> may be registered.
         /// Rejects Presenters, Models, interfaces, plain C# classes, and null/destroyed objects.
-        /// Handles collision eviction when multiple live instances share the same key.
-        /// Also indexes the model of any <see cref="BaseLogic"/> instance into model bindings.
+        /// If another live instance already holds the key, an error is logged, the service is NOT registered and the
+        /// first instance keeps the key (<see cref="RegistrationResult.Duplicate"/>). A destroyed holder is replaced.
         /// </summary>
         public RegistrationResult TryRegister(object service, string name = null) {
             if (!IsLive(service)) return RegistrationResult.Rejected;
 
-            if (service is IObservablePresenter || service is BaseObservableDataModel ||
-                IsSubclassOfRawGeneric(typeof(BasePresenter<>), service.GetType())) {
+            if (service is IObservablePresenter || service is BaseObservableDataModel) {
                 if (enableLogging) {
                     Debug.LogError($"[ServiceLocator] Type '{service.GetType().FullName}' is rejected from ServiceLocator registration. Presenters and Models must never register as shared singletons; register BaseLogic or custom MonoBehaviour services instead.");
                 }
@@ -571,75 +271,20 @@ namespace SavableObservable {
 
             string key = ResolveKey(type, service, name);
 
-            PruneType(type);
-
-            if (!_liveInstances.TryGetValue(type, out var keyDict)) {
-                keyDict = new Dictionary<string, List<object>>();
-                _liveInstances[type] = keyDict;
-            }
-
-            if (!keyDict.TryGetValue(key, out var liveList)) {
-                liveList = new List<object>();
-                keyDict[key] = liveList;
-            }
-
-            // Check if this exact live instance is already in liveList
-            for (int i = 0; i < liveList.Count; i++) {
-                if (ReferenceEquals(liveList[i], service)) {
+            if (_services.TryGetValue((type, key), out var existing) && IsLive(existing)) {
+                if (ReferenceEquals(existing, service)) {
                     return RegistrationResult.SameInstance;
                 }
-            }
 
-            liveList.Add(service);
-
-            if (!_serviceBindings.TryGetValue(type, out var sInner)) {
-                sInner = new Dictionary<string, object>();
-                _serviceBindings[type] = sInner;
-            }
-
-            if (liveList.Count == 1) {
-                sInner[key] = service;
-
-                // Index model if this service is BaseLogic
-                if (service is BaseLogic logic) {
-                    var model = logic.GetUntypedModel();
-                    if (model != null) {
-                        SyncLiveModel(model.GetType(), key, model);
-                        _logicToModelMap[logic] = (model.GetType(), key, model);
-                    }
+                if (enableLogging && _reportedDuplicates.Add(service)) {
+                    Debug.LogError($"[ServiceLocator] Duplicate registration of '{type.FullName}' with key '{key}': {Describe(existing)} already holds this key, {Describe(service)} was NOT registered. " +
+                        "Assign a distinct singletonName to each instance, or override RegisterAsSharedSingleton => false for multi-instance (pooled / repeated) units.");
                 }
-
-                return RegistrationResult.Added;
-            } else {
-                // Collision: 2 or more live instances share the same key. Evict from lookup!
-                sInner.Remove(key);
-
-                if (service is BaseLogic logic) {
-                    var model = logic.GetUntypedModel();
-                    if (model != null) {
-                        SyncLiveModel(model.GetType(), key, model);
-                        _logicToModelMap[logic] = (model.GetType(), key, model);
-                    }
-                }
-
-                return RegistrationResult.EvictedDuplicate;
+                return RegistrationResult.Duplicate;
             }
-        }
 
-        private static bool IsSubclassOfRawGeneric(Type generic, Type toCheck) {
-            while (toCheck != null && toCheck != typeof(object)) {
-                var cur = toCheck.IsGenericType ? toCheck.GetGenericTypeDefinition() : toCheck;
-                if (generic == cur) {
-                    return true;
-                }
-                toCheck = toCheck.BaseType;
-            }
-            return false;
-        }
-
-        public T Add<T>(T service, string name = null) {
-            var result = TryRegister(service, name);
-            return (result == RegistrationResult.Added || result == RegistrationResult.SameInstance) ? service : default;
+            _services[(type, key)] = service;
+            return RegistrationResult.Added;
         }
 
         private void ValidateSharedSingletonTypes() {
@@ -649,7 +294,7 @@ namespace SavableObservable {
                     if (enableLogging) {
                         Debug.LogError($"[ServiceLocator] Interface '{t.FullName}' must not derive from ISharedSingleton. Only concrete classes may be shared singletons.");
                     }
-                } else if (typeof(IObservablePresenter).IsAssignableFrom(t) || IsSubclassOfRawGeneric(typeof(BasePresenter<>), t)) {
+                } else if (typeof(IObservablePresenter).IsAssignableFrom(t)) {
                     if (enableLogging) {
                         Debug.LogError($"[ServiceLocator] Presenter class '{t.FullName}' must not implement ISharedSingleton. Presenters are rejected from ServiceLocator; only BaseLogic or custom MonoBehaviour services may be shared singletons.");
                     }
@@ -701,31 +346,17 @@ namespace SavableObservable {
                 }
             }
 
-            // Pass 2: Initialize and bind all scene IObservablePresenter components SECOND
+            // Pass 2: Initialize and bind all scene IObservablePresenter components SECOND.
+            // The single-model / single-presenter rule is validated once, by Observable.SetListeners.
             for (int i = 0; i < allMonoBehaviours.Count; i++) {
                 var mb = allMonoBehaviours[i];
                 if (mb == null) continue;
 
-                if (mb is IObservablePresenter) {
-                    BindPresenter(mb);
+                if (mb is IObservablePresenter p) {
+                    p.EnsureInitialized();
                 }
             }
 
-            return true;
-        }
-
-        /// <summary>Calls EnsureInitialized on the presenter component once.</summary>
-        private bool BindPresenter(MonoBehaviour mb) {
-            if (!(mb is IObservablePresenter p)) return false;
-
-            var models = mb.GetComponents<BaseObservableDataModel>();
-            if (models.Length > 1) {
-                if (enableLogging) {
-                    Debug.LogError($"[ServiceLocator] GameObject '{mb.gameObject.name}' has multiple BaseObservableDataModel components ({models.Length}). Exactly one model per presenter GameObject is allowed.", mb);
-                }
-            }
-
-            p.EnsureInitialized();
             return true;
         }
     }

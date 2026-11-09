@@ -7,11 +7,10 @@ namespace SavableObservable.Editor {
     /// <summary>
     /// Synchronizes script execution orders for project scripts under "Assets/".
     /// Target execution orders:
-    /// - BaseObservableDataModel: -300
-    /// - LoaderWithModel: -250
-    /// - ServiceLocator: -200
-    /// - BaseObservablePresenter: -150
-    /// - BaseLogic: 0
+    /// - ServiceLocator: -200 (registers services, then binds all scene presenters)
+    /// - BaseObservablePresenter: -150 (binds dynamically instantiated prefabs)
+    /// - BaseObservableDataModel / LoaderWithModel / BaseLogic: 0 (the default; they do not depend on execution order,
+    ///   so any earlier non-default order is reset to 0)
     /// </summary>
     [InitializeOnLoad]
     public static class MMVCExecutionOrderSynchronizer {
@@ -45,33 +44,18 @@ namespace SavableObservable.Editor {
         }
 
         public static int GetTargetExecutionOrder(Type type) {
-            if (typeof(BaseObservableDataModel).IsAssignableFrom(type) && type != typeof(BaseObservableDataModel)) {
-                return -300;
-            }
-            if (IsSubclassOfRawGeneric(typeof(LoaderWithModel<>), type)) {
-                return -250;
-            }
             if (typeof(ServiceLocator).IsAssignableFrom(type)) {
                 return -200;
             }
-            if (IsSubclassOfRawGeneric(typeof(BaseObservablePresenter<>), type)) {
+            if (TypeUtil.IsSubclassOfRawGeneric(typeof(BaseObservablePresenter<>), type)) {
                 return -150;
             }
-            if (typeof(BaseLogic).IsAssignableFrom(type)) {
+            if ((typeof(BaseObservableDataModel).IsAssignableFrom(type) && type != typeof(BaseObservableDataModel))
+                || TypeUtil.IsSubclassOfRawGeneric(typeof(LoaderWithModel<>), type)
+                || typeof(BaseLogic).IsAssignableFrom(type)) {
                 return 0;
             }
             return int.MinValue;
-        }
-
-        private static bool IsSubclassOfRawGeneric(Type generic, Type toCheck) {
-            while (toCheck != null && toCheck != typeof(object)) {
-                var cur = toCheck.IsGenericType ? toCheck.GetGenericTypeDefinition() : toCheck;
-                if (generic == cur) {
-                    return true;
-                }
-                toCheck = toCheck.BaseType;
-            }
-            return false;
         }
     }
 }

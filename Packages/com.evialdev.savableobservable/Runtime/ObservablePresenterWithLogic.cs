@@ -14,11 +14,6 @@ namespace SavableObservable {
 
         private LO _logic;
 
-        public LO GetLogic() {
-            if (_logic == null) {
-                _logic = GetComponent<LO>();
-            }
-            return _logic;
-        }
+        public LO GetLogic() => ComponentCache.Get(this, ref _logic);
     }
 }

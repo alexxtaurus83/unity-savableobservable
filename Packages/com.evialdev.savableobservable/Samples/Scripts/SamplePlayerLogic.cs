@@ -68,6 +68,13 @@ namespace SavableObservable.Samples {
             }
         }
 
+        public void Roll(int value) {
+            var model = GetModel();
+            if (model != null) {
+                model.lastRoll.Value = value;
+            }
+        }
+
         public void AddScore(int points) {
             var model = GetModel();
             if (model != null) {

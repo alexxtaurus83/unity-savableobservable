@@ -71,12 +71,17 @@ namespace SavableObservable.Tests {
 
         [UnityTest]
         public IEnumerator PlayMode_LogicTakeDamage_UpdatesModelAndUIInPlayMode() {
+            // Default health is 100 (InitializeDefaults): an equal assignment is silent, so the UI is not touched.
+            var textBefore = _hpText.text;
             _model.health.Value = 100;
             yield return null;
+            Assert.AreEqual(textBefore, _hpText.text, "Equal assignment must not notify or update the UI.");
 
-            Assert.AreEqual("100", _hpText.text);
+            _model.health.Value = 90;
+            yield return null;
+            Assert.AreEqual("90", _hpText.text);
 
-            _logic.TakeDamage(30);
+            _logic.TakeDamage(20);
             yield return null;
 
             Assert.AreEqual(70, _model.health.Value);
@@ -109,6 +114,41 @@ namespace SavableObservable.Tests {
             yield return null;
 
             Assert.AreEqual(0.25f, _model.energy.Value, 0.001f);
+        }
+
+        public class DefaultOrderPlayModelModel : BaseObservableDataModel {
+            public ObservableVariable<int> value = new ObservableVariable<int>();
+        }
+
+        public class DefaultOrderPlayPresenter : BaseObservablePresenter<DefaultOrderPlayModelModel> {
+            public int Changes { get; private set; }
+            public bool FieldsInitializedInAwake { get; private set; }
+
+            protected override void Awake() {
+                // Presenter Awake (-150) runs BEFORE the model's Awake (default order 0): fields must already be usable.
+                FieldsInitializedInAwake = GetModel() != null && GetModel().value != null;
+                base.Awake();
+            }
+
+            [ObservableHandler(nameof(DefaultOrderPlayModelModel.value))]
+            private void OnValue(int _) { Changes++; }
+        }
+
+        [UnityTest]
+        public IEnumerator PlayMode_ModelAtDefaultOrder_PresenterOnSameGameObject_BindsAndInitializesFields() {
+            var unit = new GameObject("DefaultOrderUnit");
+            unit.SetActive(false);
+            unit.transform.SetParent(_root.transform, false);
+            var model = unit.AddComponent<DefaultOrderPlayModelModel>();
+            var presenter = unit.AddComponent<DefaultOrderPlayPresenter>();
+
+            unit.SetActive(true);
+            yield return null;
+
+            Assert.IsTrue(presenter.FieldsInitializedInAwake, "GetModel() initializes the fields lazily even though the model's Awake has not run yet.");
+
+            model.value.Value = 4;
+            Assert.AreEqual(1, presenter.Changes, "The presenter is bound exactly once at the default model order.");
         }
 
         public class CustomDynamicPlayModeLogic : BaseLogic<SamplePlayerModel, SamplePlayerPresenter> { }

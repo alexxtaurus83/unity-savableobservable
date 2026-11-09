@@ -14,6 +14,18 @@ namespace SavableObservable {
         }
 
         /// <summary>
+        /// Ensures every listed component type exists on the same GameObject (Editor, non-play mode).
+        /// Used by <c>BaseLogic&lt;M,P&gt;</c>, <c>LoaderWithModel&lt;M&gt;</c> and <c>LoaderWithModelAndLogic&lt;M,LO&gt;</c>
+        /// from <c>Reset</c> (<paramref name="delayed"/> = false) and <c>OnValidate</c> (<paramref name="delayed"/> = true).
+        /// </summary>
+        internal static void EnsureComponents(MonoBehaviour owner, bool delayed, params Type[] componentTypes) {
+            if (componentTypes == null) return;
+            for (int i = 0; i < componentTypes.Length; i++) {
+                EnsureComponent(owner, componentTypes[i], delayed);
+            }
+        }
+
+        /// <summary>
         /// Ensures a component of <paramref name="componentType"/> exists on the same GameObject.
         /// Adds it automatically in the Unity Editor (non-play mode).
         /// </summary>

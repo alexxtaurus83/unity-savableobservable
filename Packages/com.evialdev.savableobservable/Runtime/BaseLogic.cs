@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System;
+using UnityEngine;
 
 namespace SavableObservable {
 
@@ -8,7 +9,6 @@ namespace SavableObservable {
     /// used when multiple instances of the same Logic class exist in a scene.
     /// </summary>
     [DisallowMultipleComponent]
-    [DefaultExecutionOrder(0)]
     public abstract class BaseLogic : MonoBehaviour, ISharedSingleton {
         [Header("Shared Singleton Identity")]
         [SerializeField] protected string singletonName;
@@ -45,6 +45,9 @@ namespace SavableObservable {
             }
         }
 
+        /// <summary>Exact model type of this Logic (used by <see cref="ServiceLocator.GetModel{M}"/> to filter before resolving).</summary>
+        internal abstract Type ModelType { get; }
+
         internal abstract BaseObservableDataModel GetUntypedModel();
     }
 
@@ -59,50 +62,35 @@ namespace SavableObservable {
         where P : BaseObservablePresenter<M> {
 
         protected virtual void Reset() {
-            ComponentAutoRequire.EnsureComponent<M>(this, delayed: false);
-            ComponentAutoRequire.EnsureComponent<P>(this, delayed: false);
+            ComponentAutoRequire.EnsureComponents(this, false, typeof(M), typeof(P));
         }
 
         protected virtual void OnValidate() {
-            ComponentAutoRequire.EnsureComponent<M>(this, delayed: true);
-            ComponentAutoRequire.EnsureComponent<P>(this, delayed: true);
-        }
-
-        protected override void Awake() {
-            base.Awake();
+            ComponentAutoRequire.EnsureComponents(this, true, typeof(M), typeof(P));
         }
 
         private M _model;
-        private bool _presenterInitialized;
+        private P _presenter;
 
-        private M ResolveAndInitializeModel() {
-            if (_model == null) {
-                _model = GetComponent<M>();
-            }
-            _model?.EnsureFieldsInitialized();
-            return _model;
-        }
+        private M ResolveAndInitializeModel() => ComponentCache.GetModel(this, ref _model);
 
+        /// <summary>
+        /// Returns the model on this GameObject and makes sure the paired presenter is initialized and bound
+        /// (idempotent, also for inactive GameObjects), so model writes always reach the view.
+        /// </summary>
         public M GetModel() {
             var model = ResolveAndInitializeModel();
-            if (!_presenterInitialized && model != null) {
-                var presenter = GetComponent<P>();
-                if (presenter != null) {
-                    _presenterInitialized = true;
-                    try {
-                        presenter.EnsureInitialized();
-                    } catch {
-                        _presenterInitialized = false;
-                        throw;
-                    }
-                }
+            if (model != null) {
+                ComponentCache.Get(this, ref _presenter)?.EnsureInitialized();
             }
             return model;
         }
 
+        internal override Type ModelType => typeof(M);
+
         /// <summary>
-        /// Used by <see cref="ServiceLocator"/> during Pass 1 registration to index the model
-        /// without prematurely triggering Presenter initialization before all services are registered.
+        /// Used by <see cref="ServiceLocator.GetModel{M}"/> to resolve the model
+        /// without triggering Presenter initialization.
         /// </summary>
         internal override BaseObservableDataModel GetUntypedModel() => ResolveAndInitializeModel();
     }

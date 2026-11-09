@@ -143,13 +143,13 @@ test("all four canonical scanner rules have positive and negative fixtures", asy
     await f.load()
     const prelude = "using SavableObservable; class M : BaseObservableDataModel {} class P : BaseObservablePresenter<M> {} "
     for (const [content, rule] of [
-      ["using SavableObservable; class P : BasePresenter<M>, ISharedSingleton {}", "MMVC001"],
+      ["using SavableObservable; class P : BaseObservablePresenter<M>, ISharedSingleton {}", "MMVC001"],
       [prelude + "class C { void F() { Services.Get<M>(); Services.Get<P>(); } }", "MMVC002"],
       [prelude + "class L : BaseLogic<M,P> { private P view; }", "MMVC003"],
       [prelude + "class L : BaseLogic<M,P> { void F() { new P(); } }", "MMVC003"],
       [prelude + "class L : BaseLogic<M,P> { void F() { GetComponent<P>(); } }", "MMVC003"],
       ["using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { Setup(); } }", "MMVC004"],
-      ["class P : SavableObservable.BasePresenter<M>, SavableObservable.ISharedSingleton {}", "MMVC001"],
+      ["class P : SavableObservable.BaseObservablePresenter<M>, SavableObservable.ISharedSingleton {}", "MMVC001"],
     ]) await assert.rejects(f.before("write", { filePath: "Rule.cs", content }), new RegExp(rule))
     for (const content of [
       prelude + "class L : BaseLogic<M,P> {}",
@@ -159,7 +159,7 @@ test("all four canonical scanner rules have positive and negative fixtures", asy
       "class PretendPresenter {} class L : BaseLogic<M,PretendPresenter> { PretendPresenter view; }",
       "using SavableObservable; class P : CustomExternalPresenter, ISharedSingleton {}",
       "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { base.InitializePresenter(); Setup(); } }",
-      "using SavableObservable; namespace A { class P : BasePresenter<M> {} } namespace B { class P {} } class L : BaseLogic<M,P> { P view; }",
+      "using SavableObservable; namespace A { class P : BaseObservablePresenter<M> {} } namespace B { class P {} } class L : BaseLogic<M,P> { P view; }",
     ]) await f.before("write", { filePath: "Rule.cs", content })
   } finally { f.close() }
 })
@@ -278,7 +278,7 @@ test("JSON config controls individual rules and skill gate independently", async
     const output = { title: "", output: "written", metadata: {} }
     await f.hooks["tool.execute.after"]!({ tool: "write", sessionID: "parent", callID: String(call), args: {} }, output)
     assert.match(output.output, /MMVC005/)
-    await assert.rejects(f.before("write", { filePath: "P.cs", content: "using SavableObservable; class P : BasePresenter<M> { protected override void InitializePresenter() {} }" }), /MMVC004/)
+    await assert.rejects(f.before("write", { filePath: "P.cs", content: "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() {} }" }), /MMVC004/)
   } finally { f.close() }
 })
 

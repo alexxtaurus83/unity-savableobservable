@@ -7,36 +7,28 @@ namespace SavableObservable {
     /// Generic parameter <typeparamref name="M"/> must derive from <see cref="BaseObservableDataModel"/>.
     /// Non-observable models and interfaces (e.g. IModel) are not supported.
     /// </summary>
-    [DefaultExecutionOrder(-250)]
     public abstract class LoaderWithModel<M> : MonoBehaviour where M : BaseObservableDataModel
     {
         protected virtual void Reset() {
-            ComponentAutoRequire.EnsureComponent<M>(this, delayed: false);
+            ComponentAutoRequire.EnsureComponents(this, false, typeof(M));
         }
 
         protected virtual void OnValidate() {
-            ComponentAutoRequire.EnsureComponent<M>(this, delayed: true);
+            ComponentAutoRequire.EnsureComponents(this, true, typeof(M));
         }
 
         private M _model;
 
-        public M GetModel() {
-            if (_model == null) {
-                _model = GetComponent<M>();
-            }
-            _model?.EnsureFieldsInitialized();
-            return _model;
-        }
-
         /// <summary>
-        /// Returns the model component to be used by a save system.
+        /// Returns the model component on this GameObject (observable fields initialized).
+        /// Save systems read the state to persist from it.
         /// </summary>
-        public M GetModelToSave() {
-            return GetModel();
-        }
+        public M GetModel() => ComponentCache.GetModel(this, ref _model);
 
         /// <summary>
-        /// Applies a loaded state to the model and sets up observable event listeners.
+        /// Applies a loaded state to the model. Existing presenter bindings are kept: the presenter
+        /// observes loaded values through normal change notifications (equal values are silent unless
+        /// the field opts in with <see cref="NotifyOnSameValueAttribute"/>).
         /// </summary>
         public virtual void LoadDataFromModel(object state) {
             var model = GetModel();
@@ -46,12 +38,6 @@ namespace SavableObservable {
             }
 
             model.LoadDataFromModel(state);
-            
-            // Set up listeners AFTER model state is loaded to prevent notifications during load.
-            var presenter = GetComponent<BaseObservablePresenter<M>>();
-            if (presenter != null) {
-                Observable.SetListeners(presenter, model);
-            }
         }
     }
 }

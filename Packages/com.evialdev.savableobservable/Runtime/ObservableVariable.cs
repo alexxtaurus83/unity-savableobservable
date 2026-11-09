@@ -5,8 +5,15 @@ using System.Reflection;
 using UnityEngine;
 
 namespace SavableObservable {
+    /// <summary>
+    /// Internal hook that lets the model enable same-value notification without generic reflection.
+    /// </summary>
+    internal interface ISameValuePolicy {
+        void EnableNotifyOnSameValue();
+    }
+
     [Serializable]
-    public class ObservableVariable<T> : IObservableVariable {
+    public class ObservableVariable<T> : IObservableVariable, ISameValuePolicy {
         /// <summary>
         /// The actual stored value. Set via the inspector or code.
         /// </summary>
@@ -49,13 +56,31 @@ namespace SavableObservable {
         public ObservableVariable() {
         }
 
+        [NonSerialized] private bool _notifyOnSameValue;
+
+        /// <summary>
+        /// When <c>true</c>, assigning a value equal to the current one still notifies subscribers
+        /// (with <see cref="PreviousValue"/> equal to <see cref="Value"/>). Default is <c>false</c>: equal assignments are silent.
+        /// Can be enabled per field with <see cref="NotifyOnSameValueAttribute"/>. Not serialized and not copied on load.
+        /// </summary>
+        public bool NotifyOnSameValue {
+            get => _notifyOnSameValue;
+            set => _notifyOnSameValue = value;
+        }
+
+        void ISameValuePolicy.EnableNotifyOnSameValue() {
+            _notifyOnSameValue = true;
+        }
+
         /// <summary>
         /// Main access point for getting and setting the variable.
-        /// Triggers change events when value is updated via code.
+        /// Triggers change events when the value changes (compared with <see cref="EqualityComparer{T}.Default"/>),
+        /// or on every assignment when <see cref="NotifyOnSameValue"/> is enabled.
         /// </summary>
         public T Value {
             get => _value;
             set {
+                if (!_notifyOnSameValue && EqualityComparer<T>.Default.Equals(_value, value)) return;
                 PreviousValue = _value;
                 _value = value;
                 OnValueChanged?.Invoke(this);
@@ -120,6 +145,52 @@ namespace SavableObservable {
         /// <param name="dataModel">The parent data model</param>
         public void SetParentDataModel(BaseObservableDataModel dataModel) {
             OnValueChanged.ParentDataModel = dataModel;
+            OnValueChanged.Owner = this;
+        }
+
+        Delegate IObservableVariable.CreateHandler(object target, MethodInfo method, int paramCount) {
+            switch (paramCount) {
+                case 0: {
+                    var act = (Action)Delegate.CreateDelegate(typeof(Action), target, method);
+                    Action<ObservableVariable<T>> handler = _ => act();
+                    return handler;
+                }
+                case 1: {
+                    try {
+                        var act = (Action<T>)Delegate.CreateDelegate(typeof(Action<T>), target, method);
+                        Action<ObservableVariable<T>> handler = v => act(v.Value);
+                        return handler;
+                    } catch {
+                        Action<ObservableVariable<T>> handler = v => method.Invoke(target, new object[] { v.Value });
+                        return handler;
+                    }
+                }
+                case 2: {
+                    try {
+                        var act = (Action<T, T>)Delegate.CreateDelegate(typeof(Action<T, T>), target, method);
+                        Action<ObservableVariable<T>> handler = v => act(v.Value, v.PreviousValue);
+                        return handler;
+                    } catch {
+                        Action<ObservableVariable<T>> handler = v => method.Invoke(target, new object[] { v.Value, v.PreviousValue });
+                        return handler;
+                    }
+                }
+                default:
+                    return null;
+            }
+        }
+
+        Delegate IObservableVariable.CreateAutoBindHandler(Action<object> modelToUiHandler) {
+            Action<ObservableVariable<T>> handler = v => modelToUiHandler(v.Value);
+            return handler;
+        }
+
+        void IObservableVariable.AddHandler(Delegate handler, object subscriber) {
+            OnValueChanged.Add((Action<ObservableVariable<T>>)handler, subscriber, managed: true);
+        }
+
+        void IObservableVariable.RemoveHandler(Delegate handler) {
+            OnValueChanged.Remove((Action<ObservableVariable<T>>)handler);
         }
     }
 

@@ -45,8 +45,8 @@ namespace SavableObservable.Tests {
             Assert.IsTrue(modelAttrs.Length > 0, "BaseObservableDataModel must have [DisallowMultipleComponent]");
 
             // Rule 2: One GameObject = one presenter.
-            var presenterAttrs = typeof(BasePresenter<SamplePlayerModel>).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
-            Assert.IsTrue(presenterAttrs.Length > 0, "BasePresenter must have [DisallowMultipleComponent]");
+            var presenterAttrs = typeof(BaseObservablePresenter<SamplePlayerModel>).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
+            Assert.IsTrue(presenterAttrs.Length > 0, "BaseObservablePresenter must have [DisallowMultipleComponent]");
 
             // Rule 3: One GameObject = one logic.
             var logicAttrs = typeof(BaseLogic).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
@@ -67,6 +67,84 @@ namespace SavableObservable.Tests {
 
             Assert.IsNotNull(_goA.GetComponent<SamplePlayerModel>());
             Assert.IsNotNull(_goA.GetComponent<SamplePlayerPresenter>());
+        }
+
+        private static void InvokeReset(MonoBehaviour target) {
+            var reset = target.GetType().GetMethod("Reset", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            Assert.IsNotNull(reset, $"{target.GetType().Name} must expose a Reset hook that provisions its required components.");
+            reset.Invoke(target, null);
+        }
+
+        [Test]
+        public void ComponentAutoRequire_EnsureComponents_AddsEveryListedType_AndIsIdempotent() {
+            var owner = _goA.AddComponent<MockTestLoader>();
+
+            ComponentAutoRequire.EnsureComponents(owner, false, typeof(SamplePlayerModel), typeof(SamplePlayerLogic));
+            ComponentAutoRequire.EnsureComponents(owner, false, typeof(SamplePlayerModel), typeof(SamplePlayerLogic));
+
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerModel>().Length);
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerLogic>().Length);
+        }
+
+        [Test]
+        public void BaseLogic_Reset_ProvisionsModelAndPresenter() {
+            var logic = _goA.AddComponent<SamplePlayerLogic>();
+
+            InvokeReset(logic);
+
+            Assert.IsNotNull(_goA.GetComponent<SamplePlayerModel>());
+            Assert.IsNotNull(_goA.GetComponent<SamplePlayerPresenter>());
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerModel>().Length);
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerPresenter>().Length);
+        }
+
+        [Test]
+        public void LoaderWithModel_Reset_ProvisionsModel() {
+            var loader = _goA.AddComponent<MockTestLoader>();
+
+            InvokeReset(loader);
+
+            Assert.IsNotNull(_goA.GetComponent<SamplePlayerModel>());
+        }
+
+        [Test]
+        public void LoaderWithModelAndLogic_Reset_ProvisionsModelAndLogic() {
+            var loader = _goA.AddComponent<SamplePlayerLoader>();
+
+            InvokeReset(loader);
+
+            Assert.IsNotNull(_goA.GetComponent<SamplePlayerModel>());
+            Assert.IsNotNull(_goA.GetComponent<SamplePlayerLogic>());
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerModel>().Length);
+            Assert.AreEqual(1, _goA.GetComponents<SamplePlayerLogic>().Length);
+        }
+
+        [Test]
+        public void InitializePresenter_RunsExactlyOnce_AcrossEveryEntryPath() {
+            var model = _goA.AddComponent<SamplePlayerModel>();
+            var presenter = _goA.AddComponent<SamplePlayerPresenter>();
+            var logic = _goA.AddComponent<SamplePlayerLogic>();
+
+            logic.GetModel();                             // Logic.GetModel -> presenter.EnsureInitialized
+            presenter.EnsureInitialized();                // explicit
+            logic.GetModel();                             // again
+            Observable.SetListeners(presenter, model);    // explicit rebind must not re-run InitializePresenter
+
+            Assert.AreEqual(1, presenter.InitializePresenterCount);
+        }
+
+        [Test]
+        public void SetListeners_RunsInitializePresenter_BeforeAttachingHandlers_WhenCalledFirst() {
+            var model = _goA.AddComponent<SamplePlayerModel>();
+            var presenter = _goA.AddComponent<SamplePlayerPresenter>();
+
+            Observable.SetListeners(presenter, model);
+
+            Assert.AreEqual(1, presenter.InitializePresenterCount);
+            model.health.Value = 10;
+            Assert.AreEqual(10, presenter.LastObservedHealth, "Handlers are attached after InitializePresenter.");
+            presenter.EnsureInitialized();
+            Assert.AreEqual(1, presenter.InitializePresenterCount, "EnsureInitialized after an explicit bind must not re-run InitializePresenter.");
         }
 
         public class MockInitializingPresenter : BaseObservablePresenter<SamplePlayerModel> {
@@ -105,9 +183,6 @@ namespace SavableObservable.Tests {
             public string Name => "MockPlainSharedSingleton";
         }
 
-        public class MockRawNonObservablePresenter : BasePresenter<SamplePlayerModel> {
-        }
-
         [Test]
         public void ServiceLocator_TryRegister_Rejects_PresentersAndModels() {
             var locatorGo = new GameObject("LocatorHost");
@@ -128,21 +203,15 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void ServiceLocator_TryRegister_Rejects_PlainClass_And_RawBasePresenter() {
+        public void ServiceLocator_TryRegister_Rejects_PlainClass() {
             var locatorGo = new GameObject("LocatorHost");
             var locator = locatorGo.AddComponent<ServiceLocator>();
 
-            // 1. Plain C# class implementing ISharedSingleton (not a MonoBehaviour) must be rejected
+            // Plain C# class implementing ISharedSingleton (not a MonoBehaviour) must be rejected
             var plainClass = new MockPlainSharedSingleton();
             LogAssert.Expect(LogType.Error, new Regex(@"is not a MonoBehaviour"));
             var resPlain = locator.TryRegister(plainClass);
             Assert.AreEqual(RegistrationResult.Rejected, resPlain);
-
-            // 2. Raw non-reactive BasePresenter<M> (does not implement IObservablePresenter) must be rejected
-            var rawPres = _goA.AddComponent<MockRawNonObservablePresenter>();
-            LogAssert.Expect(LogType.Error, new Regex(@"is rejected from ServiceLocator registration"));
-            var resRaw = locator.TryRegister(rawPres);
-            Assert.AreEqual(RegistrationResult.Rejected, resRaw);
 
             UnityEngine.Object.DestroyImmediate(locatorGo);
         }
@@ -168,7 +237,7 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void ServiceLocator_Collision_With_RemainingDistinctNamedService_BlocksUnnamedFallback() {
+        public void ServiceLocator_Duplicate_FirstWins_AndNamedInstanceIsUnaffected() {
             var locatorGo = new GameObject("LocatorHost");
             var locator = locatorGo.AddComponent<ServiceLocator>();
 
@@ -176,30 +245,34 @@ namespace SavableObservable.Tests {
             var logicNamed = _goA.AddComponent<SamplePlayerLogic>();
             logicNamed.SetSingletonName("NamedPlayer");
 
-            // Two colliding unnamed services
+            // Two unnamed services sharing the default key: the first keeps it
             var logicB = _goB.AddComponent<SamplePlayerLogic>();
             var logicC = _goC.AddComponent<SamplePlayerLogic>();
 
             Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicNamed));
             Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicB));
-            Assert.AreEqual(RegistrationResult.EvictedDuplicate, locator.TryRegister(logicC));
 
-            // Named resolution succeeds
+            LogAssert.Expect(LogType.Error, new Regex(@"Duplicate registration of .*SamplePlayerLogic.* key 'SamplePlayerLogic'.*UnitB.*already holds this key.*UnitC.*NOT registered"));
+            Assert.AreEqual(RegistrationResult.Duplicate, locator.TryRegister(logicC));
+
+            // Named resolution succeeds, the default key resolves to the FIRST instance (no error, nothing displaced)
             Assert.AreSame(logicNamed, locator.Get<SamplePlayerLogic>("NamedPlayer"));
+            Assert.AreSame(logicB, locator.Get<SamplePlayerLogic>(), "The first registration keeps the default key.");
+            Assert.AreSame(logicB, locator.Get<SamplePlayerLogic>("SamplePlayerLogic"));
 
-            // Unnamed resolution must detect that a collision exists and block fallback (return null + log error)
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous Get request for type.*evicted from singleton lookup"));
-            Assert.IsNull(locator.Get<SamplePlayerLogic>(), "Collided unnamed instances must block unnamed single fallback even when a distinct named instance exists");
+            // Models come from the registered Logic units: named lookup is exact
+            Assert.AreSame(logicNamed.GetModel(), locator.GetModel<SamplePlayerModel>("NamedPlayer"));
+            Assert.AreSame(logicB.GetModel(), locator.GetModel<SamplePlayerModel>("SamplePlayerLogic"));
 
-            // Models are provisioned by the Logic components above.
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous GetModel request for model type.*evicted from singleton lookup"));
-            Assert.IsNull(locator.GetModel<SamplePlayerModel>(), "Collided unnamed model instances must block unnamed single fallback");
+            // Unnamed GetModel: two registered Logic units own this model type -> ambiguous
+            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous GetModel request for model type.*SamplePlayerModel"));
+            Assert.IsNull(locator.GetModel<SamplePlayerModel>());
 
             UnityEngine.Object.DestroyImmediate(locatorGo);
         }
 
         [Test]
-        public void ServiceLocator_Remove_OnlyRemoves_TargetUnitModel() {
+        public void ServiceLocator_Unregister_OnlyRemoves_TargetUnitModel() {
             var locatorGo = new GameObject("LocatorHost");
             var locator = locatorGo.AddComponent<ServiceLocator>();
 
@@ -217,8 +290,8 @@ namespace SavableObservable.Tests {
             Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>("PlayerA"));
             Assert.AreSame(modelB, locator.GetModel<SamplePlayerModel>("PlayerB"));
 
-            // Remove PlayerA
-            locator.Remove<SamplePlayerLogic>("PlayerA");
+            // Unregister PlayerA
+            locator.Unregister(logicA);
 
             // PlayerA model should be removed; PlayerB model must remain intact!
             Assert.IsNull(locator.GetModel<SamplePlayerModel>("PlayerA"));
@@ -262,14 +335,14 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
-        public void ServiceLocator_Collision_OnDistinctNamedService_DoesNotBlockDefaultUnnamedService() {
+        public void ServiceLocator_Duplicate_OnNamedKey_DoesNotAffectDefaultKey() {
             var locatorGo = new GameObject("LocatorHost");
             var locator = locatorGo.AddComponent<ServiceLocator>();
 
             // 1. One default unnamed service (key = "SamplePlayerLogic")
             var logicDefault = _goA.AddComponent<SamplePlayerLogic>();
 
-            // 2. Two colliding named services (key = "Secondary")
+            // 2. Two services sharing the named key "Secondary": the first keeps it
             var logicSec1 = _goB.AddComponent<SamplePlayerLogic>();
             logicSec1.SetSingletonName("Secondary");
             var logicSec2 = _goC.AddComponent<SamplePlayerLogic>();
@@ -277,58 +350,129 @@ namespace SavableObservable.Tests {
 
             Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicDefault));
             Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicSec1));
-            Assert.AreEqual(RegistrationResult.EvictedDuplicate, locator.TryRegister(logicSec2));
 
-            // Default unnamed resolution must succeed because the requested key "SamplePlayerLogic" did NOT collide!
+            LogAssert.Expect(LogType.Error, new Regex(@"Duplicate registration of .*SamplePlayerLogic.* key 'Secondary'"));
+            Assert.AreEqual(RegistrationResult.Duplicate, locator.TryRegister(logicSec2));
+
             Assert.AreSame(logicDefault, locator.Get<SamplePlayerLogic>());
             Assert.AreSame(logicDefault.GetModel(), locator.GetModel<SamplePlayerModel>("SamplePlayerLogic"));
 
-            // Collided named key "Secondary" must be blocked
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous Get request for type.*Secondary.*evicted from singleton lookup"));
-            Assert.IsNull(locator.Get<SamplePlayerLogic>("Secondary"));
-
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous GetModel request for model type.*Secondary.*evicted"));
-            Assert.IsNull(locator.GetModel<SamplePlayerModel>("Secondary"));
+            // The duplicated key resolves to its FIRST holder (not null, no error)
+            Assert.AreSame(logicSec1, locator.Get<SamplePlayerLogic>("Secondary"));
+            Assert.AreSame(logicSec1.GetModel(), locator.GetModel<SamplePlayerModel>("Secondary"));
 
             UnityEngine.Object.DestroyImmediate(locatorGo);
         }
 
         [Test]
-        public void ServiceLocator_CollisionEviction_And_Recovery_Lifecycle() {
+        public void ServiceLocator_Duplicate_FirstKeepsKey_RejectedInstanceNeverRegistered_And_KeyEmptiesWhenFirstDies() {
             var locatorGo = new GameObject("LocatorHost");
             var locator = locatorGo.AddComponent<ServiceLocator>();
 
             var logicA = _goA.AddComponent<SamplePlayerLogic>();
             var modelA = _goA.GetComponent<SamplePlayerModel>() ?? _goA.AddComponent<SamplePlayerModel>();
-
             var logicB = _goB.AddComponent<SamplePlayerLogic>();
-            var modelB = _goB.GetComponent<SamplePlayerModel>() ?? _goB.AddComponent<SamplePlayerModel>();
+            _goB.GetComponent<SamplePlayerModel>();
 
             // Both have default Name = "SamplePlayerLogic"
-            var res1 = locator.TryRegister(logicA);
-            Assert.AreEqual(RegistrationResult.Added, res1);
+            Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicA));
             Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>());
             Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>());
 
-            // Second instance with same Name collides: evicted from lookup
-            var res2 = locator.TryRegister(logicB);
-            Assert.AreEqual(RegistrationResult.EvictedDuplicate, res2);
+            // Second instance with the same key: error at registration time, first instance keeps the key
+            LogAssert.Expect(LogType.Error, new Regex(@"Duplicate registration of .*SamplePlayerLogic.*already holds this key"));
+            Assert.AreEqual(RegistrationResult.Duplicate, locator.TryRegister(logicB));
+            Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>());
+            Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>());
 
-            // Get<SamplePlayerLogic>() logs error and returns null
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous Get request for type.*SamplePlayerLogic.*evicted from singleton lookup"));
+            // Unregistering the rejected duplicate must not displace the holder
+            locator.Unregister(logicB);
+            Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>(), "Unregister of a never-registered instance is a no-op.");
+
+            // Destroy the first holder: the key is empty (the second was never registered), no error, no recovery
+            UnityEngine.Object.DestroyImmediate(logicA);
+            Assert.IsNull(locator.Get<SamplePlayerLogic>(), "The rejected instance does not silently take over the key.");
+            Assert.IsNull(locator.GetModel<SamplePlayerModel>(), "A destroyed Logic no longer resolves its model.");
+            Assert.IsFalse(locator.IsRegistered<SamplePlayerLogic>());
+
+            // A fresh registration of the surviving instance now succeeds
+            Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicB));
+            Assert.AreSame(logicB, locator.Get<SamplePlayerLogic>());
+
+            UnityEngine.Object.DestroyImmediate(locatorGo);
+        }
+
+        [Test]
+        public void ServiceLocator_Get_Unnamed_SoleEntryFallback_And_AmbiguousAcrossKeys() {
+            var locatorGo = new GameObject("LocatorHost");
+            var locator = locatorGo.AddComponent<ServiceLocator>();
+
+            var logicA = _goA.AddComponent<SamplePlayerLogic>();
+            logicA.SetSingletonName("PlayerA");
+            var logicB = _goB.AddComponent<SamplePlayerLogic>();
+            logicB.SetSingletonName("PlayerB");
+
+            Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicA));
+
+            // Default key is absent, exactly one instance of the type is registered: unnamed Get falls back to it
+            Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>());
+            Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>("PlayerA"));
+            Assert.IsNull(locator.Get<SamplePlayerLogic>("Missing"));
+
+            Assert.AreEqual(RegistrationResult.Added, locator.TryRegister(logicB));
+
+            // Two instances under different keys and no default key: unnamed Get is ambiguous
+            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous Get request for type.*SamplePlayerLogic.*PlayerA.*PlayerB|Ambiguous Get request for type.*SamplePlayerLogic.*PlayerB.*PlayerA"));
             Assert.IsNull(locator.Get<SamplePlayerLogic>());
+            Assert.AreSame(logicB, locator.Get<SamplePlayerLogic>("PlayerB"));
 
-            // GetModel<SamplePlayerModel>() logs error and returns null
-            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous GetModel request for model type.*SamplePlayerModel.*evicted from singleton lookup"));
-            Assert.IsNull(locator.GetModel<SamplePlayerModel>());
+            UnityEngine.Object.DestroyImmediate(locatorGo);
+        }
 
-            // Destroy colliding instance logicB
+        [Test]
+        public void ServiceLocator_GetModel_Unique_Named_Ambiguous_AndNullAfterLogicDestroyed() {
+            var locatorGo = new GameObject("LocatorHost");
+            var locator = locatorGo.AddComponent<ServiceLocator>();
+
+            var logicA = _goA.AddComponent<SamplePlayerLogic>();
+            logicA.SetSingletonName("PlayerA");
+            var modelA = _goA.GetComponent<SamplePlayerModel>();
+            var logicB = _goB.AddComponent<SamplePlayerLogic>();
+            logicB.SetSingletonName("PlayerB");
+            var modelB = _goB.GetComponent<SamplePlayerModel>();
+
+            Assert.IsNull(locator.GetModel<SamplePlayerModel>(), "Nothing registered: no model.");
+
+            locator.TryRegister(logicA);
+            Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>(), "A unique model resolves without a name.");
+
+            locator.TryRegister(logicB);
+            Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>("PlayerA"));
+            Assert.AreSame(modelB, locator.GetModel<SamplePlayerModel>("PlayerB"));
+            LogAssert.Expect(LogType.Error, new Regex(@"Ambiguous GetModel request for model type.*SamplePlayerModel"));
+            Assert.IsNull(locator.GetModel<SamplePlayerModel>(), "Two Logic units own this model type: unnamed lookup is ambiguous.");
+
             UnityEngine.Object.DestroyImmediate(logicB);
-            UnityEngine.Object.DestroyImmediate(_goB);
+            Assert.IsNull(locator.GetModel<SamplePlayerModel>("PlayerB"), "A destroyed Logic no longer resolves its model.");
+            Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>(), "The surviving Logic's model is unique again.");
 
-            // Pruning restores single remaining instance logicA and modelA
-            Assert.AreSame(logicA, locator.Get<SamplePlayerLogic>());
-            Assert.AreSame(modelA, locator.GetModel<SamplePlayerModel>());
+            UnityEngine.Object.DestroyImmediate(locatorGo);
+        }
+
+        [Test]
+        public void ServiceLocator_Unregister_OfNonStoredInstance_IsNoOp() {
+            var locatorGo = new GameObject("LocatorHost");
+            var locator = locatorGo.AddComponent<ServiceLocator>();
+
+            var holder = _goA.AddComponent<SamplePlayerLogic>();
+            var stranger = _goB.AddComponent<SamplePlayerLogic>();
+            locator.TryRegister(holder);
+
+            locator.Unregister(stranger);
+            Assert.AreSame(holder, locator.Get<SamplePlayerLogic>(), "A different instance with the same key must not remove the holder.");
+
+            locator.Unregister(holder);
+            Assert.IsFalse(locator.IsRegistered<SamplePlayerLogic>());
 
             UnityEngine.Object.DestroyImmediate(locatorGo);
         }
@@ -553,7 +697,7 @@ namespace SavableObservable.Tests {
             model.health.Value = 80;
             Assert.AreEqual(1, presenter.HealthHandlerCalls, "Exactly one callback invocation expected; repeated EnsureInitialized must not duplicate listeners");
 
-            // Explicit loader rebind via Observable.SetListeners cleans up and rebinds without duplicate callbacks
+            // Loaders no longer rebind; an explicit Observable.SetListeners call still replaces subscriptions cleanly
             Observable.SetListeners(presenter, model);
             model.health.Value = 60;
             Assert.AreEqual(2, presenter.HealthHandlerCalls, "Observable.SetListeners replaces subscriptions cleanly without duplicating callbacks");
@@ -563,17 +707,78 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void MMVCExecutionOrderSynchronizer_GetTargetExecutionOrder_ReturnsExpectedExecutionOrders() {
-            Assert.AreEqual(-300, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(SamplePlayerModel)));
-            Assert.AreEqual(-250, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(MockTestLoader)));
+            // Models, loaders and logic have no order dependency: they sit at 0 (this also resets an earlier non-default order)
+            Assert.AreEqual(0, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(SamplePlayerModel)));
+            Assert.AreEqual(0, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(MockTestLoader)));
             Assert.AreEqual(-200, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(ServiceLocator)));
             Assert.AreEqual(-150, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(SamplePlayerPresenter)));
             Assert.AreEqual(0, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(SamplePlayerLogic)));
             Assert.AreEqual(int.MinValue, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(MonoBehaviour)));
             Assert.AreEqual(int.MinValue, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(string)));
+            Assert.AreEqual(int.MinValue, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(BaseObservableDataModel)), "The abstract base itself is not synchronized.");
         }
 
         [Test]
-        public void DynamicBaseLogic_AutoRegistersOnAwake_And_UnregistersOnDestroy_WithCollisionRecovery() {
+        public void FrameworkBaseClasses_DeclareOnlyServiceLocatorAndPresenterExecutionOrder() {
+            Assert.IsEmpty(typeof(BaseObservableDataModel).GetCustomAttributes(typeof(DefaultExecutionOrder), false));
+            Assert.IsEmpty(typeof(LoaderWithModel<SamplePlayerModel>).GetCustomAttributes(typeof(DefaultExecutionOrder), false));
+            Assert.IsEmpty(typeof(BaseLogic).GetCustomAttributes(typeof(DefaultExecutionOrder), false));
+
+            var locator = (DefaultExecutionOrder)typeof(ServiceLocator).GetCustomAttributes(typeof(DefaultExecutionOrder), false)[0];
+            var presenter = (DefaultExecutionOrder)typeof(BaseObservablePresenter<SamplePlayerModel>).GetCustomAttributes(typeof(DefaultExecutionOrder), false)[0];
+            Assert.AreEqual(-200, locator.order);
+            Assert.AreEqual(-150, presenter.order);
+        }
+
+        public class DefaultOrderModel : BaseObservableDataModel {
+            public ObservableVariable<int> level = new ObservableVariable<int>();
+        }
+
+        public class DefaultOrderPresenter : BaseObservablePresenter<DefaultOrderModel> {
+            public int Changes { get; private set; }
+
+            [ObservableHandler(nameof(DefaultOrderModel.level))]
+            private void OnLevel(int _) { Changes++; }
+        }
+
+        public class DefaultOrderLoader : LoaderWithModel<DefaultOrderModel> { }
+
+        [Test]
+        public void Model_AtDefaultOrder_WithPresenterOnSameGameObject_PresenterBindsAndFieldsAreInitialized() {
+            // Presenter first, model second: simulates the presenter's earlier Awake relative to the model's
+            var presenter = _goA.AddComponent<DefaultOrderPresenter>();
+            var model = _goA.AddComponent<DefaultOrderModel>();
+
+            presenter.EnsureInitialized();
+            model.level.Value = 3;
+
+            Assert.IsNotNull(model.level, "Fields are initialized lazily through GetModel().");
+            Assert.AreEqual(1, presenter.Changes, "The presenter binds regardless of the model's Awake order.");
+        }
+
+        [Test]
+        public void Loader_LoadDataFromModel_BeforeModelAwake_WorksThroughLazyInit() {
+            var loader = _goA.AddComponent<DefaultOrderLoader>(); // Reset auto-provisions the model in the Editor
+            var model = _goA.GetComponent<DefaultOrderModel>();
+            Assert.IsNotNull(model);
+            model.level = null; // as if the model's Awake had not initialized its fields yet
+
+            var sourceGo = new GameObject("Source");
+            try {
+                var source = sourceGo.AddComponent<DefaultOrderModel>();
+                source.EnsureFieldsInitialized();
+                source.level.Value = 9;
+
+                loader.LoadDataFromModel(source);
+
+                Assert.AreEqual(9, model.level.Value, "GetModel() initializes the fields lazily, so loading before Awake works.");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(sourceGo);
+            }
+        }
+
+        [Test]
+        public void DynamicBaseLogic_AutoRegistersOnAwake_And_UnregistersOnDestroy_DuplicateNeverEvictsFirst() {
             var locatorObj = new GameObject("LocatorHost");
             var locator = locatorObj.AddComponent<ServiceLocator>();
             Services.SetTestLocator(locator);
@@ -594,29 +799,28 @@ namespace SavableObservable.Tests {
                 Assert.AreSame(logic1, Services.Get<SamplePlayerLogic>());
                 Assert.IsNotNull(Services.GetModel<SamplePlayerModel>(), "Model of dynamically created BaseLogic must be resolvable");
 
-                // Dynamically instantiate a second colliding BaseLogic instance (same Name)
+                // Dynamically instantiate a second BaseLogic instance with the same Name: duplicate = error, first wins
                 var dynamicObj2 = new GameObject("DynamicUnit2");
                 dynamicObj2.AddComponent<SamplePlayerModel>();
                 dynamicObj2.AddComponent<SamplePlayerPresenter>();
                 var logic2 = dynamicObj2.AddComponent<SamplePlayerLogic>();
+                LogAssert.Expect(LogType.Error, new Regex(@"\[ServiceLocator\] Duplicate registration of .*SamplePlayerLogic"));
                 awakeMethod.Invoke(logic2, null);
 
-                // Key should now be evicted due to collision (> 1 live instance with same Name)
-                LogAssert.Expect(LogType.Error, new Regex(@"\[ServiceLocator\] Ambiguous Get request for type"));
-                Assert.IsNull(Services.Get<SamplePlayerLogic>(), "Colliding instances should be evicted from lookup");
+                Assert.AreSame(logic1, Services.Get<SamplePlayerLogic>(), "The first instance keeps the key; the duplicate is not registered.");
 
-                // Destroy logic2: logic1 should recover lookup cleanly
+                // Destroy the duplicate: the holder must stay registered (OnDestroy only removes a stored instance)
                 onDestroyMethod.Invoke(logic2, null);
                 UnityEngine.Object.DestroyImmediate(dynamicObj2);
 
-                Assert.IsTrue(locator.IsRegistered<SamplePlayerLogic>(), "Surviving instance must recover lookup after colliding instance is destroyed");
-                Assert.AreSame(logic1, Services.Get<SamplePlayerLogic>(), "Surviving instance must resolve correctly");
+                Assert.IsTrue(locator.IsRegistered<SamplePlayerLogic>(), "Destroying the rejected duplicate must not unregister the holder");
+                Assert.AreSame(logic1, Services.Get<SamplePlayerLogic>());
 
                 // Destroy logic1: binding must be completely removed
                 onDestroyMethod.Invoke(logic1, null);
                 UnityEngine.Object.DestroyImmediate(dynamicObj1);
 
-                Assert.IsFalse(locator.IsRegistered<SamplePlayerLogic>(), "Service must be unregistered after all instances are destroyed");
+                Assert.IsFalse(locator.IsRegistered<SamplePlayerLogic>(), "Service must be unregistered after the holder is destroyed");
                 Assert.IsNull(Services.Get<SamplePlayerLogic>());
             } finally {
                 UnityEngine.Object.DestroyImmediate(locatorObj);

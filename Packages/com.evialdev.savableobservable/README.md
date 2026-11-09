@@ -12,8 +12,8 @@ At its core, the framework is built on these key principles:
 * **Convention over Configuration**: The framework uses reflection to automatically wire up dependencies, reducing boilerplate code and simplifying setup.
 * **Attribute-Based Binding**: Use `[ObservableHandler]` and `[AutoBind]` attributes to declaratively connect observables to handlers and UI elements.
 * **Primary Component & Automatic Component Requirements**: In the Unity Editor, adding `BaseLogic<M, P>` to a GameObject automatically provisions its paired `Model` and `Presenter` components on the same GameObject (no `[RequireComponent]` attributes required on concrete classes).
-* **Built-in Service Locator & Logic Singletons**: `ServiceLocator`, `Services.Get<TLogic>()`, and `Services.GetModel<TModel>()` provide automatic scene discovery, live-instance collision-eviction, and zero-boilerplate access to MMVC Logic and Model instances.
-* **Deterministic 5-Stage Execution-Order Pipeline**: `BaseObservableDataModel` (`-300`) -> `LoaderWithModel<M>` (`-250`) -> `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`) -> `BaseLogic<M, P>` (`0`), automatically synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer`.
+* **Built-in Service Locator & Logic Singletons**: `ServiceLocator`, `Services.Get<TLogic>()`, and `Services.GetModel<TModel>()` provide automatic scene discovery, a clear duplicate-key rule (duplicate = error, first registration wins), and zero-boilerplate access to MMVC Logic and Model instances.
+* **Two-Stage Execution Order**: `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`); models, loaders and logic run at the default order because they initialize lazily through `GetModel()`. Synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer`.
 
 ## Core Components
 
@@ -26,7 +26,7 @@ The `Model` is the data layer of your application. It holds the state and is res
 **Key Features:**
 
 * It uses `ObservableVariable<T>` fields to store data, which automatically notify any listeners when their value changes.
-* `BaseObservableDataModel.Awake()` (`-300`) and `GetModel()` automatically call `EnsureFieldsInitialized()` to initialize any null `ObservableVariable` fields and set up parent references for cleanup.
+* `BaseObservableDataModel.Awake()` and `GetModel()` automatically call `EnsureFieldsInitialized()` to initialize any null `ObservableVariable` fields and set up parent references for cleanup. Because `GetModel()` initializes lazily, nothing depends on the model's `Awake()` order.
 * **Transient Fields (`[NonSaved]`)**: Decorate transient session or runtime UI tokens (`ObservableVariable<T>` or `ObservableList<T>`) with `[NonSaved]`. These fields are automatically skipped by `BaseObservableDataModel.LoadDataFromModel` and persistence loaders.
 * **Mixed Data Types**: You can include regular, non-observable fields (like `int`, `string`, `List<T>`) alongside `ObservableVariable` fields in your model. The save/load system will correctly handle both.
 
@@ -45,6 +45,28 @@ public class PlayerDataModel : BaseObservableDataModel {
     public List<string> achievements;
 }
 ```
+
+### Change notification semantics
+
+* **Default:** assigning a value equal to the current one (`EqualityComparer<T>.Default`) does **not** notify; `Value` and `PreviousValue` stay unchanged.
+* **Opt-in:** mark the field with `[NotifyOnSameValue]`, or set `model.field.NotifyOnSameValue = true` at runtime. Every assignment then notifies, and an equal assignment gives `PreviousValue == Value`.
+
+```csharp
+[NotifyOnSameValue] public ObservableVariable<int> lastRoll;
+
+[ObservableHandler(nameof(MyModel.lastRoll))]
+void OnRoll(int value, int previous) {
+    if (value == previous) HandleSameRoll(); else HandleNewRoll(value);
+}
+```
+
+* `ForceNotify()` always fires. `ObservableList<T>` notifies on every mutation; `[NotifyOnSameValue]` on a list (or on a non-observable field) logs a one-time warning and has no effect.
+* **Gotchas:**
+  * Reference types are compared by reference: mutating an object and re-assigning the same reference is silent. Call `ForceNotify()`.
+  * `NaN == NaN` is treated as equal, so it is suppressed.
+  * The flag is not serialized, not saved, and not copied by `LoadDataFromModel`.
+  * Inspector edits fire only on a real change.
+  * Loading values equal to the current ones is silent.
 
 ### ObservableList<T>
 
@@ -142,11 +164,12 @@ Each GameObject represents a single MMVC unit containing:
 - Optional **one Loader** (`LoaderWithModel<M>`)
 
 **Guards and Validation:**
-- **Editor Guard:** All MMVC base classes (`BaseObservableDataModel`, `BasePresenter<M>`, `BaseObservablePresenter<M>`, `BaseLogic`) are decorated with `[DisallowMultipleComponent]`. Unity blocks adding duplicate instances of these components to the same GameObject in the Inspector.
+- **Editor Guard:** All MMVC base classes (`BaseObservableDataModel`, `BaseObservablePresenter<M>`, `BaseLogic`) are decorated with `[DisallowMultipleComponent]`. Unity blocks adding duplicate instances of these components to the same GameObject in the Inspector.
 - **Runtime Guard (Multiple Components):** If duplicate model or presenter components exist on a GameObject (e.g. from legacy prefabs or runtime script additions), `Observable.SetListeners()` logs a `Debug.LogError` describing the violation and binds to the resolved model.
-- **Runtime Guard (Cross-GameObject Binding):** Explicit-model overloads `Observable.SetListeners(subscriber, model)` and `Observable.SetAutoBindListeners(subscriber, model)` strictly require `model.gameObject == subscriber.gameObject`. Attempting cross-GameObject binding logs a `Debug.LogError` and rejects the binding to prevent dangling subscriptions and lifecycle leaks.
+- **Runtime Guard (Cross-GameObject Binding):** `Observable.SetListeners(subscriber, model)` is the only bind API and strictly requires `model.gameObject == subscriber.gameObject`. Attempting cross-GameObject binding logs a `Debug.LogError` and rejects the binding to prevent dangling subscriptions and lifecycle leaks. Calling it again replaces the framework-created bindings of that subscriber and keeps its manual subscriptions; `Observable.RemoveListeners(model, subscriber)` removes everything of that subscriber.
+- **Unbound fields (opt-in warning):** a presenter may ignore model fields it does not display. Set `ObservableSettings.StrictBinding = true` (for example in a bootstrap or a test) to get a warning for every observable field that has neither an `[ObservableHandler]` method nor an `[AutoBind]` field. An `[AutoBind]` naming a field the model does not have is always reported.
 
-> **Strict Generic Constraints:** All generic base classes (`BasePresenter<M>`, `BaseObservablePresenter<M>`, `BaseLogic<M, P>`, `LoaderWithModel<M>`) strictly enforce `where M : BaseObservableDataModel`. In addition, `BaseLogic<M, P>` strictly requires `where P : BaseObservablePresenter<M>`, and `ObservablePresenterWithLogic<M, LO>` and `LoaderWithModelAndLogic<M, LO>` require `where LO : BaseLogic`. Non-observable models and interfaces (such as `IModel`) are **not supported** and produce compile-time errors.
+> **Strict Generic Constraints:** All generic base classes (`BaseObservablePresenter<M>`, `BaseLogic<M, P>`, `LoaderWithModel<M>`) strictly enforce `where M : BaseObservableDataModel`. In addition, `BaseLogic<M, P>` strictly requires `where P : BaseObservablePresenter<M>`, and `ObservablePresenterWithLogic<M, LO>` and `LoaderWithModelAndLogic<M, LO>` require `where LO : BaseLogic`. Non-observable models and interfaces (such as `IModel`) are **not supported** and produce compile-time errors.
 
 #### Cross-Component Access
 
@@ -178,25 +201,20 @@ The framework auto-adds required components in the Unity Editor (during `Reset` 
 | `BaseLogic<M, P>` | `M` (Model) + `P` (Presenter) |
 | `LoaderWithModel<M>` | `M` (Model) |
 | `LoaderWithModelAndLogic<M, L>` | `M` (Model) + `L` (Logic) |
-| `BasePresenter<M>` / `BaseObservablePresenter<M>` | *None* (prevents circular Inspector locks; `BaseLogic<M, P>` is primary) |
-
-#### `BasePresenter<M>`
-
-This is the non-reactive presenter base class. It should be used when the presenter manages a `BaseObservableDataModel` but does not need declarative `[AutoBind]` or `[ObservableHandler]` reactivity. It provides a strongly-typed `GetModel()` method. All models must inherit from `BaseObservableDataModel`.
+| `BaseObservablePresenter<M>` | *None* (prevents circular Inspector locks; `BaseLogic<M, P>` is primary) |
 
 #### `BaseObservablePresenter<M>`
 
-This is the reactive presenter, which inherits from `BasePresenter<M>`. It's designed to work with a `Model` that uses `ObservableVariable` fields.
+This is the presenter base class. It binds the unit's `ObservableVariable` / `ObservableList` fields to the view and provides a strongly-typed `GetModel()`. All models must inherit from `BaseObservableDataModel`. Presenter hierarchy: `BaseObservablePresenter<M>` -> `ObservablePresenterWithLogic<M, LO>`.
 
 **Key Features:**
 
-*   It inherits from `BasePresenter<M>`.
 *   It has references to UI elements (e.g., `Button`, `TextMeshProUGUI`, `Slider`).
 *   It provides two powerful, declarative ways to handle model changes:
     * `[AutoBind]` attribute for simple UI bindings
     * `[ObservableHandler]` attribute for custom handler methods
 *   **`InitializePresenter()` Hook**: Override `protected virtual void InitializePresenter()` to configure UI controls (slider min/max, dropdown options, button click listeners, initial CanvasGroup state). It is guaranteed to run once **after** `ServiceLocator` (`-200`) has registered all scene services and **before** `Observable.SetListeners` attaches handlers (even on inactive scene GameObjects or disabled runtime prefabs).
-*   **Idempotent Initialization & Explicit Loader Rebind**: Calling `EnsureInitialized()` repeatedly after initial binding is an idempotent no-op that avoids repeated destructive rebinds. In contrast, explicit calls to `Observable.SetListeners(subscriber, model)` (such as from `LoaderWithModel.LoadDataFromModel`) retain their explicit rebind semantics.
+*   **Idempotent Initialization**: Calling `EnsureInitialized()` repeatedly after initial binding is an idempotent no-op that avoids repeated destructive rebinds. Loaders do not rebind: loading data into the model reaches the presenter through its existing binding as ordinary change notifications.
 *   **Setup Validation**: Logs descriptive errors if duplicate MMVC components or cross-GameObject bindings are detected.
 
 #### `ObservablePresenterWithLogic<M, L>`
@@ -206,10 +224,10 @@ This presenter extends `BaseObservablePresenter<M>` and adds a `GetLogic()` meth
 ```csharp
 public class PlayerPresenter : ObservablePresenterWithLogic<PlayerDataModel, PlayerLogic> {
     
-    [AutoBind("health")]
+    [AutoBind(nameof(PlayerDataModel.health))]
     [SerializeField] private TextMeshProUGUI healthText;
     
-    [AutoBind("score")]
+    [AutoBind(nameof(PlayerDataModel.score))]
     [SerializeField] private TextMeshProUGUI scoreText;
     
     [SerializeField] private Button damageButton;
@@ -229,9 +247,9 @@ The `Loader` is responsible for integrating the MMVC components with a save/load
 
 **Key Features:**
 
-* Inherits from `LoaderWithModel<M>` (`[DefaultExecutionOrder(-250)]`), where `M` is the type of the `Model`.
-* Provides a `GetModelToSave()` method that returns the `Model` instance.
-* Provides a `LoadDataFromModel(object state)` method that loads saved data into the `Model` and sets up the listeners.
+* Inherits from `LoaderWithModel<M>`, where `M` is the type of the `Model`. It has no execution-order requirement: `GetModel()` initializes the model's fields lazily, so loading works even before the model's `Awake()`.
+* Provides a `GetModel()` method that returns the `Model` instance (use it to read the state to save).
+* Provides a `LoadDataFromModel(object state)` method that loads saved data into the `Model`. It does **not** rebind the presenter: the presenter observes loaded values through its existing binding, and values equal to the current ones are silent (see [Change notification semantics](#change-notification-semantics)).
 * Does **not** implement any specific save system interface. This is intentional to keep the framework decoupled from any particular save/load implementation.
 
 ## How to Use the Framework
@@ -256,7 +274,7 @@ Here's a step-by-step guide to implementing the MMVC framework in your Unity pro
 4.  **Create Your Loader**:
     * Create a new C# script that inherits from `LoaderWithModel<YourModel>` or `LoaderWithModelAndLogic<YourModel, YourLogic>`.
     * Implement the interface of **your** save/load system (e.g., `ISaveable`).
-    * In your implementation, call the `GetModelToSave()` and `LoadDataFromModel(state)` methods from the base class.
+    * In your implementation, call the `GetModel()` and `LoadDataFromModel(state)` methods from the base class.
  
 5.  **Set Up the GameObject**:
     * In the Unity Editor, create a new `GameObject`.
@@ -308,16 +326,16 @@ The presenter uses `[AutoBind]` for simple bindings and `[ObservableHandler]` fo
 public class ComponentPresenter : ObservablePresenterWithLogic<ComponentDataModel, ComponentLogic> {
     
     // Simple bindings - use AutoBind
-    [AutoBind("status")]
+    [AutoBind(nameof(ComponentDataModel.status))]
     [SerializeField] private TextMeshProUGUI statusText;
     
-    [AutoBind("timerValue")]
+    [AutoBind(nameof(ComponentDataModel.timerValue))]
     [SerializeField] private TextMeshProUGUI timerText;
     
     [SerializeField] private GameObject timerPanel;
 
     // Complex logic - use ObservableHandler
-    [ObservableHandler("timerEnabled")]
+    [ObservableHandler(nameof(ComponentDataModel.timerEnabled))]
     private void OnTimerEnabledChanged(bool enabled) {
         if (timerPanel != null) {
             timerPanel.SetActive(enabled);
@@ -339,35 +357,43 @@ The framework includes built-in service locator and singleton support via `Savab
 - May be implemented by custom non-MMVC `MonoBehaviour` services (such as `AudioService`).
 - **Never implement `ISharedSingleton` on Presenters or Models.** Presenters and Models are strictly rejected by `ServiceLocator`.
 
-### 2. 5-Stage Execution-Order Pipeline
+### 2. Two-Stage Execution Order
 
 `MMVCExecutionOrderSynchronizer` automatically synchronizes script execution order in the Unity Editor:
-1. `BaseObservableDataModel` (`-300`): Initializes fields.
-2. `LoaderWithModel<M>` (`-250`): Wires persistence callbacks.
-3. `ServiceLocator` (`-200`): Discovers and registers all scene `ISharedSingleton` instances in Pass 1, then initializes and binds all scene `IObservablePresenter` components in Pass 2.
-4. `BaseObservablePresenter<M>` (`-150`): Initializes dynamically instantiated prefabs.
-5. `BaseLogic<M, P>` & services (`0`): Business logic startup (`Start()`).
+1. `ServiceLocator` (`-200`): Discovers and registers all scene `ISharedSingleton` instances in Pass 1, then initializes and binds all scene `IObservablePresenter` components in Pass 2.
+2. `BaseObservablePresenter<M>` (`-150`): Initializes dynamically instantiated prefabs.
 
-Because Pass 1 finishes before Pass 2 starts, `Services.Get<T>()` is guaranteed populated inside every `InitializePresenter()`!
+Models, loaders, `BaseLogic<M, P>` and services run at the default order (`0`): they have no ordering requirement because every reader initializes the model's fields lazily through `GetModel()`.
 
-### 3. Live-Instance Collision-Eviction Rule
+Because Pass 1 finishes before Pass 2 starts, `Services.Get<T>()` resolves every scene-resident, eligible (not opted out) and uniquely keyed service inside `InitializePresenter()` of scene presenters. Dynamically instantiated prefabs and components initialized before `ServiceLocator.Awake()` are not covered by Pass 1 (see the Unity Lifecycle guide).
+
+### 3. Duplicate Registration Rule (duplicate = error, first wins)
+
+A `(type, key)` pair is held by one live instance. The key is the Logic's `singletonName`, or the class name when it is empty.
 
 - **Single instances** of a class resolve directly:
   ```csharp
   var logic = Services.Get<ComponentLogic>();
   var model = Services.GetModel<ComponentDataModel>();
   ```
-- **Multiple instances of the same class** must assign distinct `singletonName` values on `BaseLogic` in the Inspector:
+- **Multiple instances of the same class that must all be resolvable** assign distinct `singletonName` values on `BaseLogic` in the Inspector:
   ```csharp
   var blueAI = Services.Get<AISettingsLogic>("BlueAI");
   var blueModel = Services.GetModel<AISettingsDataModel>("BlueAI");
   ```
-- **Unnamed duplicates** (e.g. 49 board cell prefabs sharing default `Name = "PlayerChipLogic"`) are automatically evicted from `Services` lookup without throwing during registration, while their local Presenter and Model remain fully bound on their own GameObject. Attempting to resolve an evicted key logs a clear `Debug.LogError` instructing you to assign distinct `singletonName` values.
+- **Multi-instance units that are not global services** (pooled prefabs, e.g. 49 board cells) override `RegisterAsSharedSingleton => false`. They are skipped silently, and their local Presenter and Model stay fully bound on their own GameObject:
+  ```csharp
+  public class PlayerChipLogic : BaseLogic<PlayerChipDataModel, PlayerChipPresenter> {
+      protected override bool RegisterAsSharedSingleton => false;
+  }
+  ```
+- **Unnamed duplicates that still register** (the opt-out was forgotten) log a `Debug.LogError` at registration time that names the type, the key and both GameObjects. The second instance is **not** registered; the first keeps the key, so `Services.Get<T>()` returns the first instance. Local binding of the second unit is unaffected.
+- `Services.GetModel<M>()` is derived from the registered Logic units: with several Logic units owning the same model type, pass the Logic name; without one it logs an ambiguity error and returns `null`.
 
 ## Architectural Guides & Technical Documentation
 
 For in-depth explanations, execution-order diagrams, and runtime patterns, see:
-* [Unity Lifecycle & Automatic SetListeners](Documentation~/UnityLifecycle.md): Comprehensive 5-stage execution pipeline, ServiceLocator dual-pass discovery, initialization hooks, and reactive binding mechanics.
+* [Unity Lifecycle & Automatic SetListeners](Documentation~/UnityLifecycle.md): Execution order, ServiceLocator dual-pass discovery, initialization hooks, and reactive binding mechanics.
 * [Runtime Objects, Prefabs & Pooling](Documentation~/RuntimeObjects.md): Best practices for active/inactive prefab instantiation, object pooling, configure-first patterns, and programmatic GameObject composition.
 * [Testing Guide & Universal Test Runner](Documentation~/Testing.md): Unattended test runner setup, live editor vs batch mode workflows, and consumer project wrappers.
 
@@ -383,4 +409,4 @@ From this repository, `pwsh -File Tools/Invoke-UnityTests.ps1 -Suite All` runs a
 The MMVC framework provides a clean, reactive, and decoupled architecture for Unity:
 * **Decoupled Components**: Models hold state, Logic holds rules, Presenters render and delegate input.
 * **Logic-First Services**: Access foreign units via `Services.Get<Logic>()` or `Services.GetModel<Model>()`, never through Presenters.
-* **Deterministic Lifecycle**: Guaranteed initialization order from Model to Presenter to Logic.
+* **Predictable Lifecycle**: `ServiceLocator` registers services, then presenters initialize and bind; models initialize lazily through `GetModel()`, so nothing depends on their `Awake()` order.
