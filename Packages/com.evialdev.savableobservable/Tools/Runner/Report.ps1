@@ -1,3 +1,101 @@
+function Test-InventoryNameMatch {
+    <#
+    Same semantics as `unity test --filter` / `test run --filter_type testName`: ';' separates patterns,
+    a leading '!' negates, matching is a case-insensitive substring of the full test name.
+    #>
+    param([string]$FullName, [string]$Filter)
+
+    if ([string]::IsNullOrWhiteSpace($Filter)) { return $true }
+    $positives = [System.Collections.Generic.List[string]]::new()
+    foreach ($raw in $Filter.Split(';')) {
+        $pat = $raw.Trim()
+        if ([string]::IsNullOrEmpty($pat)) { continue }
+        if ($pat.StartsWith('!')) {
+            $neg = $pat.Substring(1)
+            if ($neg.Length -gt 0 -and $FullName.IndexOf($neg, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $false }
+        } else {
+            $positives.Add($pat)
+        }
+    }
+    if ($positives.Count -eq 0) { return $true }
+    foreach ($pat in $positives) {
+        if ($FullName.IndexOf($pat, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
+function Get-LiveTestInventory {
+    <#
+    Per-case inventory from the live editor's `unity command test list` (Unity Pipeline). It reports one entry per NUnit
+    test case, which is exactly what a run reports as Summary.Total: [TestCase]/[TestCaseSource] expansions and tests
+    inherited from abstract base fixtures are counted, [Explicit] tests are not. (`mmvc_list_tests` only counts declared
+    [Test] methods, so it under-counts parameterized and inherited tests.)
+    Returns $null when the command is unavailable so callers can fall back.
+    #>
+    param(
+        [string]$TargetProjectPath,
+        [string]$SuiteName = 'All',
+        [string]$TestFilter = '',
+        [string[]]$IncludeCategories = @(),
+        [string[]]$ExcludeCategories = @(),
+        [string[]]$ExcludeAssemblies = @()
+    )
+
+    $modeArg = switch ($SuiteName) { 'EditMode' { 'editor' } 'PlayMode' { 'playmode' } default { 'all' } }
+    try {
+        $res = Invoke-UnityCliJson -CliArgs @("command", "test", "list", "--mode", $modeArg, "--project-path", $TargetProjectPath) -TimeoutSec 60
+    } catch {
+        return $null
+    }
+    $payload = Extract-CommandResultPayload -Envelope $res.Envelope
+    if (-not ($payload -is [hashtable]) -or -not $payload.ContainsKey('Tests')) { return $null }
+
+    $inc = @($IncludeCategories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    $exc = @($ExcludeCategories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    $excAsm = @($ExcludeAssemblies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+
+    $tests = [System.Collections.Generic.List[hashtable]]::new()
+    $groups = [ordered]@{}
+
+    foreach ($t in $payload['Tests']) {
+        if ($t -isnot [hashtable]) { continue }
+        if ($t.ContainsKey('Explicit') -and [bool]$t['Explicit']) { continue }
+
+        $fullName = [string]$t['FullName']
+        $asm = [string]$t['Assembly']
+        $mode = [string]$t['Mode']
+        $cats = @($t['Categories'] | ForEach-Object { [string]$_ })
+
+        if ($excAsm -contains $asm) { continue }
+        if (-not (Test-InventoryNameMatch -FullName $fullName -Filter $TestFilter)) { continue }
+        if ($inc.Count -gt 0 -and -not ($cats | Where-Object { $inc -contains $_ })) { continue }
+        if ($exc.Count -gt 0 -and ($cats | Where-Object { $exc -contains $_ })) { continue }
+
+        $tests.Add(@{ fullName = $fullName; mode = $mode; assembly = $asm; categories = $cats })
+
+        # Fixture = full name without the parameter list and the method segment.
+        $paren = $fullName.IndexOf('(')
+        $head = if ($paren -ge 0) { $fullName.Substring(0, $paren) } else { $fullName }
+        $dot = $head.LastIndexOf('.')
+        $fixture = if ($dot -gt 0) { $head.Substring(0, $dot) } else { $head }
+
+        $key = "$asm|$fixture"
+        if (-not $groups.Contains($key)) {
+            $groups[$key] = @{ assembly = $asm; fixture = $fixture; testCount = 0; categories = [System.Collections.Generic.List[string]]::new() }
+        }
+        $groups[$key].testCount++
+        foreach ($c in $cats) {
+            if ($c -ne 'Uncategorized' -and -not $groups[$key].categories.Contains($c)) { $groups[$key].categories.Add($c) }
+        }
+    }
+
+    $fixtures = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($g in $groups.Values) {
+        $fixtures.Add(@{ assembly = $g.assembly; fixture = $g.fixture; testCount = $g.testCount; categories = @($g.categories) })
+    }
+    return @{ Fixtures = $fixtures; Tests = $tests }
+}
+
 function Discover-TestsStatic {
     param(
         [string]$TargetProjectPath,

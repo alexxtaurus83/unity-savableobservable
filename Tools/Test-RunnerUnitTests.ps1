@@ -1171,5 +1171,72 @@ if ($resBatchSelf['ExitCode'] -ne 0) {
 }
 Write-Host "Test 15 (Batch SelfTest via Editor log): PASS" -ForegroundColor Green
 
+# -------------------------------------------------------------------------------------------------
+# 16. -ListOnly uses the per-case `test list` inventory (parameterized cases counted, '!' negation, [Explicit] skipped)
+# -------------------------------------------------------------------------------------------------
+$testScriptPerCase = @"
+`$fixtureTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityFixture_' + [System.Guid]::NewGuid().ToString('N'))
+`$outReportDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityReport_' + [System.Guid]::NewGuid().ToString('N'))
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'Assets')) | Out-Null
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'ProjectSettings')) | Out-Null
+[System.IO.Directory]::CreateDirectory(`$outReportDir) | Out-Null
+Set-Content -LiteralPath (Join-Path `$fixtureTempDir 'ProjectSettings\ProjectVersion.txt') -Value 'm_EditorVersion: 6000.0.0f1' -Encoding utf8
+try {
+    `$mockPerCase = @{
+        Invoke = {
+            param(`$CliArgs, `$TimeoutSec)
+            if (`$CliArgs[0] -eq 'status') {
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{
+                        success = `$true; command = 'status'
+                        data = @{ instances = @(@{ project = `$fixtureTempDir; projectPath = `$fixtureTempDir; pid = 4242; state = 'ready' }) }
+                    }
+                }
+            }
+            if (`$CliArgs[0] -eq 'command' -and `$CliArgs[1] -eq 'test' -and `$CliArgs[2] -eq 'list') {
+                `$tests = @(
+                    @{ FullName = 'Ns.Fix.Param("a",T1)'; Mode = 'EditMode'; Assembly = 'Edit.Asm'; Categories = @('Uncategorized'); Explicit = `$false },
+                    @{ FullName = 'Ns.Fix.Param("b",T2)'; Mode = 'EditMode'; Assembly = 'Edit.Asm'; Categories = @('Uncategorized'); Explicit = `$false },
+                    @{ FullName = 'Ns.Fix.Param("c",T3)'; Mode = 'EditMode'; Assembly = 'Edit.Asm'; Categories = @('Uncategorized'); Explicit = `$false },
+                    @{ FullName = 'Ns.Fix.Plain';         Mode = 'EditMode'; Assembly = 'Edit.Asm'; Categories = @('Quick'); Explicit = `$false },
+                    @{ FullName = 'Ns.Fix.NotRun';        Mode = 'EditMode'; Assembly = 'Edit.Asm'; Categories = @('Uncategorized'); Explicit = `$true },
+                    @{ FullName = 'Scn.Online.Run';       Mode = 'EditMode'; Assembly = 'Scn.Asm';  Categories = @('Online'); Explicit = `$false }
+                )
+                return @{
+                    ExitCode = 0; TimedOut = `$false; StdOut = '{}'; StdErr = ''; DurationMs = 5
+                    Envelope = @{ success = `$true; data = @{ command = 'test list'; result = @{ Mode = 'EditMode'; Count = 6; Tests = `$tests } } }
+                }
+            }
+            throw \"Unexpected call `$(`$CliArgs -join ' ')\"
+        }
+    }
+
+    & '$packageRunner' -ProjectPath @(`$fixtureTempDir) -Suite EditMode -ListOnly -Filter '!scn.online' -OutputDirectory `$outReportDir -MockExecutor `$mockPerCase
+    `$inv = Get-Content -LiteralPath (Join-Path `$outReportDir 'test-inventory.json') -Raw | ConvertFrom-Json
+    if (`$inv.TotalTests -ne 4) { throw ('Expected 4 cases (3 parameterized + 1 plain; explicit and negated excluded), got ' + `$inv.TotalTests) }
+    if (@(`$inv.Tests).Count -ne 4) { throw ('Expected 4 entries in Tests[], got ' + @(`$inv.Tests).Count) }
+    `$fx = @(`$inv.Fixtures)
+    if (`$fx.Count -ne 1 -or `$fx[0].fixture -ne 'Ns.Fix' -or `$fx[0].testCount -ne 4) { throw ('Expected one fixture Ns.Fix with 4 cases, got ' + (`$fx | ConvertTo-Json -Compress)) }
+    if (@(`$fx[0].categories) -notcontains 'Quick') { throw 'Expected fixture categories to contain Quick' }
+
+    & '$packageRunner' -ProjectPath @(`$fixtureTempDir) -Suite EditMode -ListOnly -IncludeCategories @('Online') -OutputDirectory `$outReportDir -MockExecutor `$mockPerCase
+    `$inv2 = Get-Content -LiteralPath (Join-Path `$outReportDir 'test-inventory.json') -Raw | ConvertFrom-Json
+    if (`$inv2.TotalTests -ne 1) { throw ('Expected 1 Online case, got ' + `$inv2.TotalTests) }
+    exit 0
+} finally {
+    Remove-Item -LiteralPath `$fixtureTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath `$outReportDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+$resPerCase = Run-SubprocessTest -Code $testScriptPerCase
+if ($resPerCase['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resPerCase['StdOut'])"
+    Write-Host "STDERR: $($resPerCase['StdErr'])"
+    throw "Test 16 (per-case ListOnly inventory) failed with exit code $($resPerCase['ExitCode'])"
+}
+Write-Host "Test 16 (per-case ListOnly inventory): PASS" -ForegroundColor Green
+
 Write-Host "All unit tests for Universal Modular Unity Test Runner passed successfully!" -ForegroundColor Green
 exit 0

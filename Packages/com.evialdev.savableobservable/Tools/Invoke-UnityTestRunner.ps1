@@ -116,6 +116,7 @@ $runnerModulesDir = Join-Path $PSScriptRoot "Runner"
 if ($ListOnly) {
     Write-RunnerLog "Executing -ListOnly discovery for Project(s)..." "INFO"
     $inventoryReport = [System.Collections.Generic.List[PSObject]]::new()
+    $inventoryTests = [System.Collections.Generic.List[hashtable]]::new()
     $totalCount = 0
 
     foreach ($p in $flattenedProjectPaths) {
@@ -132,17 +133,31 @@ if ($ListOnly) {
         $excludeCatStr = if ($ExcludeCategories.Length -gt 0) { ($ExcludeCategories -join ';') } else { '' }
 
         if ($isLive) {
-            $listArgs = @("command", "mmvc_list_tests", "--mode", $Suite.ToLowerInvariant(), "--project-path", $normPath)
-            if (-not [string]::IsNullOrWhiteSpace($Filter)) { $listArgs += @("--filter", $Filter) }
-            if (-not [string]::IsNullOrWhiteSpace($includeCatStr)) { $listArgs += @("--include_categories", $includeCatStr) }
-            if (-not [string]::IsNullOrWhiteSpace($excludeCatStr)) { $listArgs += @("--exclude_categories", $excludeCatStr) }
-
-            $res = Invoke-UnityCliJson -CliArgs $listArgs -TimeoutSec 30
-            $payload = Extract-CommandResultPayload -Envelope $res.Envelope
-            if ($payload -is [hashtable] -and $payload.ContainsKey('fixtures')) {
-                foreach ($f in $payload['fixtures']) {
+            # Preferred: per-case inventory (what a run reports as Summary.Total, incl. [TestCase]/[TestCaseSource]).
+            $live = Get-LiveTestInventory -TargetProjectPath $normPath -SuiteName $Suite -TestFilter $Filter `
+                -IncludeCategories $IncludeCategories -ExcludeCategories $ExcludeCategories -ExcludeAssemblies $ExcludeAssemblies
+            if ($null -ne $live) {
+                foreach ($f in $live['Fixtures']) {
                     $inventoryReport.Add([pscustomobject]$f)
                     $totalCount += [int]$f['testCount']
+                }
+                foreach ($t in $live['Tests']) { $inventoryTests.Add($t) }
+            } else {
+                # Fallback: reflection-based list. It counts declared [Test] methods only, so parameterized and
+                # inherited tests are under-counted and it understands no '!' negation in -Filter.
+                Write-RunnerLog "'test list' unavailable; falling back to mmvc_list_tests (method counts, not per-case counts)." "WARN"
+                $listArgs = @("command", "mmvc_list_tests", "--mode", $Suite.ToLowerInvariant(), "--project-path", $normPath)
+                if (-not [string]::IsNullOrWhiteSpace($Filter)) { $listArgs += @("--filter", $Filter) }
+                if (-not [string]::IsNullOrWhiteSpace($includeCatStr)) { $listArgs += @("--include_categories", $includeCatStr) }
+                if (-not [string]::IsNullOrWhiteSpace($excludeCatStr)) { $listArgs += @("--exclude_categories", $excludeCatStr) }
+
+                $res = Invoke-UnityCliJson -CliArgs $listArgs -TimeoutSec 30
+                $payload = Extract-CommandResultPayload -Envelope $res.Envelope
+                if ($payload -is [hashtable] -and $payload.ContainsKey('fixtures')) {
+                    foreach ($f in $payload['fixtures']) {
+                        $inventoryReport.Add([pscustomobject]$f)
+                        $totalCount += [int]$f['testCount']
+                    }
                 }
             }
         }
@@ -165,9 +180,11 @@ if ($ListOnly) {
     ) | Out-String | Write-Host
 
     $inventoryFile = Join-Path $OutputDirectory "test-inventory.json"
+    # 'Tests' is the per-case list (empty when only the reflection/static fallbacks were available).
     $invData = @{
         TotalTests = $totalCount
         Fixtures = $inventoryReport
+        Tests = $inventoryTests
     }
     Set-Content -LiteralPath $inventoryFile -Value (ConvertTo-Json $invData -Depth 5) -Encoding utf8
     Write-RunnerLog "Inventory written to $inventoryFile" "INFO"

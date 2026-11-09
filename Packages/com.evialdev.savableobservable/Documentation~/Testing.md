@@ -34,7 +34,7 @@ The runner script is located at:
 | `-IncludeCategories` | `string[]` | `@()` | Categories to explicitly include (e.g. `Quick`, `Visual`, `LiveUi`). |
 | `-ExcludeCategories` | `string[]` | `@()` | Categories to exclude (e.g. `Online`, `Flaky`). |
 | `-ExcludeAssemblies` | `string[]` | `@()` | Test assemblies to exclude (e.g. `ScenarioTests`). |
-| `-ListOnly` | `switch` | `$false` | Discovers and prints test counts by assembly and fixture without executing tests. |
+| `-ListOnly` | `switch` | `$false` | Discovers and prints test counts by assembly and fixture without executing tests. With a live Editor it counts NUnit test **cases** (`unity command test list`: `[TestCase]`/`[TestCaseSource]` expansions and inherited tests included, `[Explicit]` excluded), matching a run's `Summary.Total`; `-Filter` accepts `;`-separated patterns with `!` negation. `test-inventory.json` contains `Fixtures[]` and the per-case `Tests[]`. Without an Editor it falls back to counting `[Test]` methods, which under-counts parameterized tests. |
 | `-SelfTestCommand` | `string` | `''` | Custom CLI command for live self-tests (e.g. `mmvc_selftest --mode all`). |
 | `-SelfTestMethod` | `string` | `''` | Static C# method for batch self-tests. |
 | `-OutputDirectory` | `string` | `Temp` | Directory for NUnit XML and markdown/JSON summary reports. |
