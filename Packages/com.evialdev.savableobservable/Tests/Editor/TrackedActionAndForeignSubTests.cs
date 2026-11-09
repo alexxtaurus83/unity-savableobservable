@@ -330,6 +330,38 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
+        public void SetListeners_Rebind_PreservesManualSubscriptionsAddedAfterBinding_OfPresenterAndForeignSubscriber() {
+            var host = new GameObject("RebindLateManualHost");
+            host.transform.SetParent(_fixtureRoot.transform, false);
+
+            var model = host.AddComponent<ClampingModel>();
+            model.EnsureFieldsInitialized();
+            var presenter = host.AddComponent<ClampingPresenter>();
+            var foreign = host.AddComponent<ForeignSubscriberComponent>();
+
+            // The binding exists first; the manual subscriptions are added afterwards (a Logic subscribing to its model at runtime).
+            Observable.SetListeners(presenter, model);
+
+            int presenterManual = 0;
+            model.depth.OnValueChanged.Add(_ => presenterManual++, presenter);
+            model.depth.OnValueChanged.Add(foreign.OnForeignValueChanged, foreign);
+
+            model.depth.Value = 3;
+            Assert.AreEqual(1, presenterManual);
+            Assert.AreEqual(1, foreign.NotificationCount);
+            Assert.AreEqual(1, presenter.DepthHandlerCount);
+
+            // Rebind (e.g. after a load): the attribute handler is replaced, never duplicated; both manual subscriptions stay.
+            Observable.SetListeners(presenter, model);
+            Observable.SetListeners(presenter, model);
+
+            model.depth.Value = 8;
+            Assert.AreEqual(2, presenterManual, "A manual subscription added after the first bind must survive rebinds.");
+            Assert.AreEqual(2, foreign.NotificationCount, "A foreign subscriber's manual subscription must be untouched by the presenter's rebind.");
+            Assert.AreEqual(2, presenter.DepthHandlerCount, "The attribute handler fires exactly once per change after rebinding.");
+            Assert.AreEqual(8, foreign.LastObservedValue);
+        }
+        [Test]
         public void SetListeners_Repeated_IsIdempotent_AndPreservesHandlerBindings() {
             var host = new GameObject("AutoBindIdempotentHost");
             host.transform.SetParent(_fixtureRoot.transform, false);

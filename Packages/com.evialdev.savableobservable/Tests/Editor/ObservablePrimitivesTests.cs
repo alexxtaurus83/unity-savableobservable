@@ -230,6 +230,11 @@ namespace SavableObservable.Tests {
 
         [Test]
         public void NotifyOnSameValueAttribute_OnListOrPlainField_LogsNoEffectWarning() {
+            // The warning is logged once per model type, when its descriptor is first built, and descriptors stay cached for the whole
+            // Editor session. Without a domain reload (a rerun, or an earlier test that touched the type) it would not be logged again,
+            // so evict the type first: the test must not depend on what ran before it.
+            EvictModelDescriptor(typeof(SameValueInvalidTargetsModel));
+
             // Expectations first: the warning is emitted when the per-type metadata is first built,
             // which may already happen during AddComponent (Awake).
             LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex(@"NotifyOnSameValueAttribute\] on 'listField'.*no effect"));
@@ -242,6 +247,19 @@ namespace SavableObservable.Tests {
                 model.EnsureFieldsInitialized(); // cached metadata: warns once per model type only
             } finally {
                 UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        /// <summary>Removes the cached <c>ModelDescriptor</c> of <paramref name="modelType"/> so the next use rebuilds it (and logs its one-time warnings again).</summary>
+        private static void EvictModelDescriptor(Type modelType) {
+            const BindingFlags Static = BindingFlags.NonPublic | BindingFlags.Static;
+            var cacheField = typeof(ModelDescriptor).GetField("_cache", Static);
+            var lockField = typeof(ModelDescriptor).GetField("_cacheLock", Static);
+            Assert.IsNotNull(cacheField, "ModelDescriptor._cache was renamed: update EvictModelDescriptor.");
+            Assert.IsNotNull(lockField, "ModelDescriptor._cacheLock was renamed: update EvictModelDescriptor.");
+            var cache = (System.Collections.IDictionary)cacheField.GetValue(null);
+            lock (lockField.GetValue(null)) {
+                cache.Remove(modelType);
             }
         }
 
