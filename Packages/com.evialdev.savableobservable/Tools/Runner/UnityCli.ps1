@@ -43,6 +43,57 @@ function Extract-CommandResultPayload {
     return $res
 }
 
+function Build-UnityCliArgs {
+    <#
+    Appends the CLI-global flags (--format json, --no-banner) to the CLI part of the argument list.
+    Everything after a literal '--' is forwarded verbatim to the Unity Editor by `unity test` / `unity run`
+    (unity CLI 1.0.0-beta.17), so the global flags must be inserted BEFORE the separator; flags placed after it
+    are never parsed by the CLI and the output silently stops being JSON.
+    #>
+    param([Parameter(Mandatory=$true)][string[]]$CliArgs)
+
+    $head = [System.Collections.Generic.List[string]]::new()
+    $tail = [System.Collections.Generic.List[string]]::new()
+    $sepIdx = [Array]::IndexOf($CliArgs, '--')
+    for ($i = 0; $i -lt $CliArgs.Length; $i++) {
+        if ($sepIdx -ge 0 -and $i -ge $sepIdx) { $tail.Add($CliArgs[$i]) } else { $head.Add($CliArgs[$i]) }
+    }
+
+    if (-not ($head -contains "--format") -and -not ($head -contains "--json")) {
+        $head.Add("--format")
+        $head.Add("json")
+    }
+    if (-not ($head -contains "--no-banner")) {
+        $head.Add("--no-banner")
+    }
+
+    $head.AddRange($tail)
+    return $head.ToArray()
+}
+
+function Get-UnityCliErrorText {
+    <# Extracts "CODE: message" pairs from a CLI JSON envelope so failures are diagnosable from the summary report. #>
+    param($Result)
+
+    if ($null -eq $Result) { return "" }
+    $env = $null
+    if ($Result -is [hashtable] -and $Result.ContainsKey('Envelope')) { $env = $Result['Envelope'] }
+    if ($env -is [hashtable] -and $env.ContainsKey('errors') -and ($env['errors'] -is [System.Collections.IList])) {
+        $parts = foreach ($e in $env['errors']) {
+            if ($e -is [hashtable]) {
+                $code = if ($e.ContainsKey('code')) { [string]$e['code'] } else { 'ERROR' }
+                $msg = if ($e.ContainsKey('message')) { [string]$e['message'] } else { '' }
+                "${code}: $msg"
+            }
+        }
+        if ($null -ne $parts) { return (@($parts) -join ' | ') }
+    }
+    if ($Result -is [hashtable] -and $Result.ContainsKey('StdErr') -and -not [string]::IsNullOrWhiteSpace([string]$Result['StdErr'])) {
+        return ([string]$Result['StdErr']).Trim()
+    }
+    return ""
+}
+
 function Invoke-UnityCliJson {
     param(
         [Parameter(Mandatory=$true)][string[]]$CliArgs,
@@ -54,17 +105,9 @@ function Invoke-UnityCliJson {
         return & $mockScript $CliArgs $TimeoutSec
     }
 
-    $fullArgs = [System.Collections.Generic.List[string]]::new()
-    $fullArgs.AddRange($CliArgs)
-    if (-not ($fullArgs -contains "--format") -and -not ($fullArgs -contains "--json")) {
-        $fullArgs.Add("--format")
-        $fullArgs.Add("json")
-    }
-    if (-not ($fullArgs -contains "--no-banner")) {
-        $fullArgs.Add("--no-banner")
-    }
+    $fullArgs = Build-UnityCliArgs -CliArgs $CliArgs
 
-    $raw = Invoke-ProcessWithTimeout -FilePath "unity" -ArgumentList $fullArgs.ToArray() -TimeoutMs ($TimeoutSec * 1000)
+    $raw = Invoke-ProcessWithTimeout -FilePath "unity" -ArgumentList $fullArgs -TimeoutMs ($TimeoutSec * 1000)
     $envelope = Parse-UnityEnvelope -RawOutput $raw.StdOut
 
     return @{

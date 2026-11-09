@@ -84,6 +84,39 @@ namespace SavableObservable.Tests {
         }
     }
 
+    public class ReentrantInitModel : BaseObservableDataModel {
+        public ObservableVariable<int> score = new ObservableVariable<int>();
+        public ObservableVariable<bool> isReady = new ObservableVariable<bool>();
+    }
+
+    public class ReentrantInitLogic : BaseLogic<ReentrantInitModel, ReentrantInitPresenter> {
+        protected override bool RegisterAsSharedSingleton => false;
+    }
+
+    public class ReentrantInitPresenter : ObservablePresenterWithLogic<ReentrantInitModel, ReentrantInitLogic> {
+        [AutoBind(nameof(ReentrantInitModel.isReady))]
+        public Toggle readyToggle;
+
+        public int ScoreHandlerCountInsideInit { get; private set; } = -1;
+        public int ScoreChangedCount { get; private set; }
+
+        protected override void InitializePresenter() {
+            // Reentrant path: logic.GetModel() triggers presenter.EnsureInitialized() while initializing.
+            var model = GetLogic().GetModel();
+            ScoreHandlerCountInsideInit = model.score.OnValueChanged.HandlerCount;
+
+            // The UI control is created AFTER the reentrant call; its two-way listener must still be attached.
+            var toggleObject = new GameObject("ReentrantToggle", typeof(RectTransform), typeof(Toggle));
+            toggleObject.transform.SetParent(transform, false);
+            readyToggle = toggleObject.GetComponent<Toggle>();
+        }
+
+        [ObservableHandler(nameof(ReentrantInitModel.score))]
+        private void OnScoreChanged(int current) {
+            ScoreChangedCount++;
+        }
+    }
+
     #endregion
 
     [TestFixture]
@@ -268,6 +301,101 @@ namespace SavableObservable.Tests {
                 // Two-way interaction after reuse
                 presenter.readyToggle.isOn = false;
                 Assert.IsFalse(model.isReady.Value);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(clone);
+            }
+        }
+
+        private ReentrantInitPresenter CreateReentrantHost(out ReentrantInitModel model) {
+            var host = new GameObject("ReentrantInitHost");
+            host.transform.SetParent(_fixtureRoot.transform, false);
+            model = host.AddComponent<ReentrantInitModel>();
+            var presenter = host.AddComponent<ReentrantInitPresenter>();
+            host.AddComponent<ReentrantInitLogic>();
+            return presenter;
+        }
+
+        [Test]
+        public void ReentrantInitialize_UiCreatedAfterGetModel_TwoWayBindingIsAttached() {
+            var presenter = CreateReentrantHost(out var model);
+
+            presenter.EnsureInitialized();
+
+            Assert.IsNotNull(presenter.readyToggle);
+
+            presenter.readyToggle.isOn = true;
+            Assert.IsTrue(model.isReady.Value, "UI -> Model listener must be attached for a control assigned in InitializePresenter().");
+
+            model.isReady.Value = false;
+            Assert.IsFalse(presenter.readyToggle.isOn);
+
+            model.score.Value = 5;
+            Assert.AreEqual(1, presenter.ScoreChangedCount, "Handler must fire exactly once per change.");
+            model.score.Value = 6;
+            Assert.AreEqual(2, presenter.ScoreChangedCount);
+        }
+
+        [Test]
+        public void ReentrantInitialize_InitializePresenterRunsBeforeHandlerRegistration() {
+            var presenter = CreateReentrantHost(out var model);
+
+            presenter.EnsureInitialized();
+
+            Assert.AreEqual(0, presenter.ScoreHandlerCountInsideInit,
+                "No managed handler may be registered while InitializePresenter() is still running.");
+            Assert.AreEqual(1, model.score.OnValueChanged.HandlerCount);
+        }
+
+        [Test]
+        public void RemoveListeners_ThenEnsureInitialized_RebindsExactlyOnce() {
+            var template = CreatePrefabTemplate(activeByDefault: true);
+            var clone = UnityEngine.Object.Instantiate(template, _fixtureRoot.transform);
+            try {
+                var model = clone.GetComponent<PrefabTestModel>();
+                var presenter = clone.GetComponent<PrefabTestPresenter>();
+                presenter.EnsureInitialized();
+
+                model.score.Value = 1;
+                Assert.AreEqual(1, presenter.ScoreChangedCount);
+
+                Observable.RemoveListeners(model, presenter);
+
+                model.score.Value = 2;
+                Assert.AreEqual(1, presenter.ScoreChangedCount, "No handler may fire after RemoveListeners.");
+
+                presenter.EnsureInitialized();
+
+                model.score.Value = 3;
+                Assert.AreEqual(2, presenter.ScoreChangedCount, "Handler must fire exactly once after rebind.");
+                Assert.AreEqual("3", presenter.scoreInput.text);
+
+                model.playerName.Value = "Rebound";
+                Assert.AreEqual("Rebound", presenter.nameDisplay.text);
+
+                model.isReady.Value = false;
+                presenter.readyToggle.isOn = true;
+                Assert.IsTrue(model.isReady.Value, "Two-way UI -> Model must work after rebind.");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(clone);
+            }
+        }
+
+        [Test]
+        public void EnsureInitialized_ExplicitSetListeners_DoesNotDoubleBind() {
+            var template = CreatePrefabTemplate(activeByDefault: true);
+            var clone = UnityEngine.Object.Instantiate(template, _fixtureRoot.transform);
+            try {
+                var model = clone.GetComponent<PrefabTestModel>();
+                var presenter = clone.GetComponent<PrefabTestPresenter>();
+
+                presenter.EnsureInitialized();
+                Observable.SetListeners(presenter, model);
+                presenter.EnsureInitialized();
+
+                model.score.Value = 7;
+                Assert.AreEqual(1, presenter.ScoreChangedCount, "Exactly one invocation per change.");
+                model.score.Value = 8;
+                Assert.AreEqual(2, presenter.ScoreChangedCount);
             } finally {
                 UnityEngine.Object.DestroyImmediate(clone);
             }

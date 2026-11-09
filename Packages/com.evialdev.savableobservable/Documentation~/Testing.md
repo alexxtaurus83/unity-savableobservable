@@ -16,7 +16,11 @@ The runner script is located at:
    - Bypasses slow editor startups (executes in 2-5 seconds).
    - Automatically handles domain reloads, dirty scene backups, and transient PlayMode recovery.
 2. **Batch Mode (CI / Headless):**
-   When no live editor is reachable, automatically launches Unity in batch mode (`-batchmode -nographics`) using `unity run` with raw runner flags (`-runTests -testPlatform <Mode> -testResults <XmlPath> -testCategory <Categories> -assemblyNames <Assemblies>`).
+   When no live editor is reachable, automatically launches Unity in batch mode through `unity test <project> --mode <Mode> --report-format nunit --output <XmlPath>` (Unity CLI 1.0.0-beta.17 or newer).
+   - `--output` is a **file** path. A pre-created directory fails with `TEST_RESULTS_MISSING` (exit 6).
+   - Name filters map to `--filter` (`;` separated, `!` negates).
+   - Category and assembly filters are forwarded to the editor after the `--` separator: `-- -testCategory <Categories> -assemblyNames <Assemblies>`.
+   - Batch self-tests run `unity run --log-file <log> -- -executeMethod <Method>`; the `RESULT:` line is read back from the Editor log because `unity run` does not forward it to stdout.
 
 ---
 

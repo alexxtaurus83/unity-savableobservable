@@ -3,7 +3,7 @@
 namespace SavableObservable {
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(-150)]
-    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter where M : BaseObservableDataModel {
+    public abstract class BaseObservablePresenter<M> : BasePresenter<M>, IObservablePresenter, IPresenterBindingState where M : BaseObservableDataModel {
         private enum InitState {
             Uninitialized,
             Initializing,
@@ -47,6 +47,10 @@ namespace SavableObservable {
         public void EnsureInitialized() {
             if (_initState == InitState.Initialized && _isBound) return;
 
+            // Nested call during InitializePresenter() (e.g. via logic.GetModel()): the outer frame binds
+            // after initialization completes, so listeners are never attached before InitializePresenter() finishes.
+            if (_initState == InitState.Initializing) return;
+
             var model = GetModel();
             EnsurePresenterInitialized();
             if (model != null && !_isBound) {
@@ -61,6 +65,14 @@ namespace SavableObservable {
         /// and AFTER <see cref="ServiceLocator"/> has registered all scene <see cref="ISharedSingleton"/> services.
         /// </summary>
         protected virtual void InitializePresenter() { }
+
+        void IPresenterBindingState.MarkBound() {
+            _isBound = true;
+        }
+
+        void IPresenterBindingState.MarkUnbound() {
+            _isBound = false;
+        }
 
         public BaseObservableDataModel GetObservableModel() {
             return GetModel();

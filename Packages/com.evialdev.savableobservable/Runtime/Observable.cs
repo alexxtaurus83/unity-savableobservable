@@ -460,6 +460,10 @@ namespace SavableObservable {
             }
 
             SetAutoBindListenersInternal(monoBehaviour, subscriber, model, subMetadata, modelMetadata, instanceData);
+
+            if (subscriber is IPresenterBindingState bindingState) {
+                bindingState.MarkBound();
+            }
         }
 
         private static BaseObservableDataModel ResolveModel(MonoBehaviour mb, object subscriber) {
@@ -914,6 +918,10 @@ namespace SavableObservable {
                     RemoveSubscriptionsForSubscriber(dataModel, subscriber, instanceData);
                     instanceData.Subscriptions.Remove(subscriber);
                 }
+            }
+
+            if (subscriber is IPresenterBindingState bindingState) {
+                bindingState.MarkUnbound();
             }
         }
 

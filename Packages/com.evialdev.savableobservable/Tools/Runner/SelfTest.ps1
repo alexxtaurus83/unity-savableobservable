@@ -41,10 +41,20 @@ function Run-SelfTestInternal {
         if ($methodName.StartsWith("-executeMethod ")) {
             $methodName = $methodName.Substring("-executeMethod ".Length).Trim()
         }
-        $args = @("run", $TargetProjectPath, "--timeout", "150", "--", "-executeMethod", $methodName)
-        $res = Invoke-UnityCliJson -CliArgs $args -TimeoutSec 180
+        # `unity run` (1.0.0-beta.17) does not forward the Editor log to its stdout, so the "RESULT: PASS" line the
+        # self-test method prints is only visible in the Editor log. Capture it with --log-file and read it back.
+        $logDir = if (-not [string]::IsNullOrWhiteSpace($OutputDirectory) -and (Test-Path -LiteralPath $OutputDirectory)) { $OutputDirectory } else { [System.IO.Path]::GetTempPath() }
+        $selfLog = Join-Path $logDir ("selftest_" + [System.Guid]::NewGuid().ToString('N') + ".log")
+        $runArgs = @("run", $TargetProjectPath, "--timeout", "150", "--log-file", $selfLog, "--no-tail", "--", "-executeMethod", $methodName)
+        $res = Invoke-UnityCliJson -CliArgs $runArgs -TimeoutSec 180
         $selfSw.Stop()
-        $outStr = [string]$res.StdOut + "`n" + [string]$res.StdErr
+        $logText = ""
+        if (Test-Path -LiteralPath $selfLog -PathType Leaf) {
+            $logText = [string](Get-Content -LiteralPath $selfLog -Raw -ErrorAction SilentlyContinue)
+            Remove-Item -LiteralPath $selfLog -Force -ErrorAction SilentlyContinue
+        }
+        $resultLines = @(($logText -split "`r?`n") | Where-Object { $_ -match "RESULT:" })
+        $outStr = [string]$res.StdOut + "`n" + [string]$res.StdErr + "`n" + ($resultLines -join "`n")
         $passed = ($res.ExitCode -eq 0 -and $outStr -match "RESULT:\s+PASS")
         return @{
             Success = $passed

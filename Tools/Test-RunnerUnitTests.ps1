@@ -206,11 +206,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                if (-not (Test-Path -LiteralPath `$outDir)) {
-                    [System.IO.Directory]::CreateDirectory(`$outDir) | Out-Null
-                }
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="2" result="Failed" total="2" passed="1" failed="1" inconclusive="0" skipped="0" duration="0.45">
@@ -284,8 +282,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="2" result="Inconclusive" total="2" passed="1" failed="0" inconclusive="1" skipped="0" duration="0.20">
@@ -354,8 +353,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="0" result="Passed" total="0" passed="0" failed="0" inconclusive="0" skipped="0" duration="0.0">
@@ -481,8 +481,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="598" result="Skipped:Ignored" total="598" passed="557" failed="0" inconclusive="0" skipped="41" duration="42.50">
@@ -551,22 +552,25 @@ try {
                     }
                 }
             }
-            if (`$CliArgs[0] -eq 'run') {
-                if (-not (`$CliArgs -contains '-runTests')) { throw 'Missing -runTests' }
-                if (-not (`$CliArgs -contains '-testPlatform')) { throw 'Missing -testPlatform' }
-                
+            if (`$CliArgs[0] -eq 'test') {
+                # Filters are forwarded to the editor AFTER the '--' separator; 'unity run -runTests' never writes a report.
+                `$sepIdx = [array]::IndexOf(`$CliArgs, '--')
+                if (`$sepIdx -lt 0) { throw 'Missing -- separator before editor flags' }
+                if (`$CliArgs -contains '-runTests') { throw 'Raw -runTests must not be used (unity run quits before the runner starts)' }
+
                 `$catIdx = [array]::IndexOf(`$CliArgs, '-testCategory')
-                if (`$catIdx -lt 0 -or `$CliArgs[`$catIdx + 1] -ne '!^Online`$') {
-                    throw \"Expected -testCategory '!^Online`$' but got '`$(`$CliArgs[`$catIdx + 1])'\"
+                if (`$catIdx -lt `$sepIdx -or `$CliArgs[`$catIdx + 1] -ne '!^Online`$') {
+                    throw \"Expected -testCategory '!^Online`$' after -- but got '`$(`$CliArgs[`$catIdx + 1])'\"
                 }
 
                 `$asmIdx = [array]::IndexOf(`$CliArgs, '-assemblyNames')
-                if (`$asmIdx -lt 0 -or `$CliArgs[`$asmIdx + 1] -ne '!Example.Project.Scenarios') {
-                    throw \"Expected -assemblyNames '!Example.Project.Scenarios' but got '`$(`$CliArgs[`$asmIdx + 1])'\"
+                if (`$asmIdx -lt `$sepIdx -or `$CliArgs[`$asmIdx + 1] -ne '!Example.Project.Scenarios') {
+                    throw \"Expected -assemblyNames '!Example.Project.Scenarios' after -- but got '`$(`$CliArgs[`$asmIdx + 1])'\"
                 }
 
-                `$resIdx = [array]::IndexOf(`$CliArgs, '-testResults')
+                `$resIdx = [array]::IndexOf(`$CliArgs, '--output')
                 `$outXml = `$CliArgs[`$resIdx + 1]
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="10" result="Passed" total="10" passed="10" failed="0" inconclusive="0" skipped="0" duration="1.20">
@@ -640,8 +644,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="1" result="Passed" total="1" passed="1" failed="0" inconclusive="0" skipped="0" duration="0.10">
@@ -711,8 +716,9 @@ try {
             }
             if (`$CliArgs[0] -eq 'test') {
                 `$outIdx = [array]::IndexOf(`$CliArgs, '--output')
-                `$outDir = `$CliArgs[`$outIdx + 1]
-                `$outXml = Join-Path `$outDir 'report.xml'
+                `$outXml = `$CliArgs[`$outIdx + 1]
+                # unity CLI 1.0.0-beta.17: --output is a FILE path; a directory yields TEST_RESULTS_MISSING (exit 6)
+                if (Test-Path -LiteralPath `$outXml -PathType Container) { return @{ ExitCode = 6; TimedOut = `$false; StdOut = ''; StdErr = 'TEST_RESULTS_MISSING'; DurationMs = 1; Envelope = `$null } }
                 @'
 <?xml version="1.0" encoding="utf-8"?>
 <test-run id="2" testcasecount="1" result="Passed" total="1" passed="1" failed="0" inconclusive="0" skipped="0" duration="0.10">
@@ -1098,6 +1104,72 @@ if ($resTemplate['ExitCode'] -ne 0) {
     throw "Test 13 (Template Consumer Wrapper Resolution) failed with exit code $($resTemplate['ExitCode']) (expected 0)"
 }
 Write-Host "Test 13 (Template Consumer Wrapper Resolution): PASS" -ForegroundColor Green
+
+# -------------------------------------------------------------------------------------------------
+# 14. CLI argument builder: global flags go BEFORE the '--' editor-passthrough separator
+# -------------------------------------------------------------------------------------------------
+$testScriptArgs = @"
+. '$([System.IO.Path]::GetFullPath((Join-Path $frameworkToolsDir '..\Packages\com.evialdev.savableobservable\Tools\Runner\UnityCli.ps1')))'
+`$a = Build-UnityCliArgs -CliArgs @('test', 'P', '--output', 'o.xml', '--', '-testCategory', 'X')
+`$sep = [array]::IndexOf(`$a, '--')
+if (`$sep -lt 0) { throw 'separator lost' }
+if ([array]::IndexOf(`$a, '--format') -lt 0 -or [array]::IndexOf(`$a, '--format') -gt `$sep) { throw 'format flag must precede --' }
+if ([array]::IndexOf(`$a, '--no-banner') -lt 0 -or [array]::IndexOf(`$a, '--no-banner') -gt `$sep) { throw 'no-banner flag must precede --' }
+if (`$a[-2] -ne '-testCategory' -or `$a[-1] -ne 'X') { throw 'editor args must stay last and untouched' }
+`$b = Build-UnityCliArgs -CliArgs @('status', '--project-path', 'P')
+if (`$b -contains '--') { throw 'unexpected separator' }
+if (-not (`$b -contains '--format') -or -not (`$b -contains '--no-banner')) { throw 'global flags missing without separator' }
+exit 0
+"@
+
+$resArgs = Run-SubprocessTest -Code $testScriptArgs
+if ($resArgs['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resArgs['StdOut'])"
+    Write-Host "STDERR: $($resArgs['StdErr'])"
+    throw "Test 14 (CLI argument builder places global flags before --) failed with exit code $($resArgs['ExitCode'])"
+}
+Write-Host "Test 14 (CLI argument builder places global flags before --): PASS" -ForegroundColor Green
+
+# -------------------------------------------------------------------------------------------------
+# 15. Batch SelfTest reads RESULT line from the Editor log (unity run does not forward it to stdout)
+# -------------------------------------------------------------------------------------------------
+$testScriptBatchSelf = @"
+`$fixtureTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('UnityFixture_' + [System.Guid]::NewGuid().ToString('N'))
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'Assets')) | Out-Null
+[System.IO.Directory]::CreateDirectory((Join-Path `$fixtureTempDir 'ProjectSettings')) | Out-Null
+Set-Content -LiteralPath (Join-Path `$fixtureTempDir 'ProjectSettings\ProjectVersion.txt') -Value 'm_EditorVersion: 6000.0.0f1' -Encoding utf8
+try {
+    `$mockSelf = @{
+        Invoke = {
+            param(`$CliArgs, `$TimeoutSec)
+            if (`$CliArgs[0] -eq 'status') {
+                return @{ ExitCode = 0; TimedOut = `$false; StdOut = ''; StdErr = ''; DurationMs = 5; Envelope = @{ success = `$true; command = 'status'; data = @{ instances = @() } } }
+            }
+            if (`$CliArgs[0] -eq 'run') {
+                `$sep = [array]::IndexOf(`$CliArgs, '--')
+                `$logIdx = [array]::IndexOf(`$CliArgs, '--log-file')
+                if (`$logIdx -lt 0 -or `$logIdx -gt `$sep) { throw 'Expected --log-file before --' }
+                if (`$CliArgs[`$sep + 1] -ne '-executeMethod') { throw 'Expected -executeMethod after --' }
+                Set-Content -LiteralPath `$CliArgs[`$logIdx + 1] -Value 'noise', 'RESULT: PASS 3/3' -Encoding utf8
+                return @{ ExitCode = 0; TimedOut = `$false; StdOut = '{}'; StdErr = ''; DurationMs = 5; Envelope = @{ success = `$true } }
+            }
+            throw \"Unexpected call `$(`$CliArgs -join ' ')\"
+        }
+    }
+    & '$packageRunner' -ProjectPath @(`$fixtureTempDir) -Suite SelfTest -SelfTestMethod 'Ns.Cls.Method' -MockExecutor `$mockSelf
+    exit `$LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath `$fixtureTempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
+
+$resBatchSelf = Run-SubprocessTest -Code $testScriptBatchSelf
+if ($resBatchSelf['ExitCode'] -ne 0) {
+    Write-Host "STDOUT: $($resBatchSelf['StdOut'])"
+    Write-Host "STDERR: $($resBatchSelf['StdErr'])"
+    throw "Test 15 (Batch SelfTest via Editor log) failed with exit code $($resBatchSelf['ExitCode']) (expected 0)"
+}
+Write-Host "Test 15 (Batch SelfTest via Editor log): PASS" -ForegroundColor Green
 
 Write-Host "All unit tests for Universal Modular Unity Test Runner passed successfully!" -ForegroundColor Green
 exit 0

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Nested `EnsureInitialized()` during `InitializePresenter()` (e.g. via `GetLogic().GetModel()`) no longer binds listeners before initialization completes.
+- `Observable.RemoveListeners` now resets presenter binding state so `EnsureInitialized()` rebinds.
+
 ## [1.0.21-preview] - 2026-11-08 - Live UI Contracts, Fast Testing Infrastructure & Universal Test Runner Enhancements
 - **Live UI Assertions & Automated Audit (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`):**
   - Added `MmvcLiveUiAssert` in `SavableObservable.Tests.Contracts` with user-simulation drivers (`Click`, `SetToggle`, `SetSlider`, `Type`), visual readers (`Text`, `SpriteName`, `Alpha`, `IsEnabled`, `Interactable`), and subscription tracking scopes.

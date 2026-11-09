@@ -9,93 +9,65 @@ function Run-BatchTestSuite {
         [string[]]$CategoriesToInclude = @()
     )
 
+    # Stale report guard: `unity test --output` takes a FILE path (unity CLI 1.0.0-beta.17). It fails with
+    # TEST_RESULTS_MISSING when the path is a pre-created directory, so never create one here.
     if (Test-Path -LiteralPath $XmlOutputPath) {
-        Remove-Item -LiteralPath $XmlOutputPath -Force
+        Remove-Item -LiteralPath $XmlOutputPath -Recurse -Force
     }
-
-    # If any exclusion/inclusion filters are supplied, unity test does NOT support -category or -assemblyNames.
-    # We must use raw Unity runner flags via:
-    # unity run <Project> --timeout <Timeout> -- -runTests -testPlatform <Mode> -testResults <XmlOutputPath> [-testCategory '!Cat;Inc'] [-assemblyNames '!Asm'] [-testFilter '<Filter>']
-    $useRawRunner = ($AssembliesToExclude.Length -gt 0 -or $CategoriesToExclude.Length -gt 0 -or $CategoriesToInclude.Length -gt 0)
+    $xmlParentDir = Split-Path -Parent $XmlOutputPath
+    if (-not [string]::IsNullOrWhiteSpace($xmlParentDir) -and -not (Test-Path -LiteralPath $xmlParentDir)) {
+        [System.IO.Directory]::CreateDirectory($xmlParentDir) | Out-Null
+    }
 
     $suiteSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $testRes = $null
 
-    if ($useRawRunner) {
-        Write-RunnerLog "Executing raw batch tests ($ModeName) with category/assembly filters on $TargetProjectPath..." "INFO"
+    Write-RunnerLog "Executing batch CLI tests ($ModeName) on $TargetProjectPath..." "INFO"
 
-        $rawArgs = [System.Collections.Generic.List[string]]::new()
-        $rawArgs.Add("run")
-        $rawArgs.Add($TargetProjectPath)
-        $rawArgs.Add("--timeout")
-        $rawArgs.Add("$($TimeoutSeconds + 60)")
-        $rawArgs.Add("--")
-        $rawArgs.Add("-runTests")
-        $rawArgs.Add("-testPlatform")
-        $rawArgs.Add($ModeName)
-        $rawArgs.Add("-testResults")
-        $rawArgs.Add($XmlOutputPath)
+    # `unity test` is the only batch entry point that produces a report. (`unity run -- -runTests ...` quits the
+    # editor before the test runner starts and never writes XML.)
+    #   --filter                 -> test-name filter (supports ';' separated values and '!' negation)
+    #   args after the '--' mark -> forwarded verbatim to the editor: -testCategory / -assemblyNames
+    $cliArgs = [System.Collections.Generic.List[string]]::new()
+    $cliArgs.AddRange([string[]]@(
+        "test", $TargetProjectPath,
+        "--mode", $ModeName,
+        "--report-format", "nunit",
+        "--output", $XmlOutputPath,
+        "--timeout", "$TimeoutSeconds"
+    ))
+    if (-not [string]::IsNullOrWhiteSpace($TestFilter)) {
+        $cliArgs.Add("--filter")
+        $cliArgs.Add($TestFilter)
+    }
 
-        if (-not [string]::IsNullOrWhiteSpace($TestFilter)) {
-            $rawArgs.Add("-testFilter")
-            $rawArgs.Add($TestFilter)
-        }
+    $editorArgs = [System.Collections.Generic.List[string]]::new()
 
-        $catList = [System.Collections.Generic.List[string]]::new()
-        if ($CategoriesToInclude.Length -gt 0) {
-            foreach ($c in $CategoriesToInclude) {
-                if (-not [string]::IsNullOrWhiteSpace($c)) { $catList.Add($c.Trim()) }
-            }
-        }
-        if ($CategoriesToExclude.Length -gt 0) {
-            foreach ($c in $CategoriesToExclude) {
-                if (-not [string]::IsNullOrWhiteSpace($c)) {
-                    $catList.Add("!^" + [System.Text.RegularExpressions.Regex]::Escape($c.Trim()) + "`$")
-                }
-            }
-        }
-        if ($catList.Count -gt 0) {
-            $rawArgs.Add("-testCategory")
-            $rawArgs.Add(($catList -join ';'))
-        }
-
-        if ($AssembliesToExclude.Length -gt 0) {
-            $asmFlags = ($AssembliesToExclude | ForEach-Object { "!$_" }) -join ';'
-            $rawArgs.Add("-assemblyNames")
-            $rawArgs.Add($asmFlags)
-        }
-
-        $testRes = Invoke-UnityCliJson -CliArgs $rawArgs.ToArray() -TimeoutSec ($TimeoutSeconds + 60)
-    } else {
-        # unity test command: writes report.xml inside the output DIRECTORY
-        $batchScratchDir = Join-Path (Split-Path -Parent $XmlOutputPath) ("batch_" + [System.IO.Path]::GetFileNameWithoutExtension($XmlOutputPath))
-        if (Test-Path -LiteralPath $batchScratchDir) {
-            # Purge stale batch dir to prevent stale pass
-            Remove-Item -LiteralPath $batchScratchDir -Recurse -Force
-        }
-        [System.IO.Directory]::CreateDirectory($batchScratchDir) | Out-Null
-
-        Write-RunnerLog "Executing batch CLI tests ($ModeName) on $TargetProjectPath..." "INFO"
-
-        $cliArgs = @(
-            "test", $TargetProjectPath,
-            "--mode", $ModeName,
-            "--report-format", "nunit",
-            "--output", $batchScratchDir,
-            "--timeout", "$TimeoutSeconds"
-        )
-        if (-not [string]::IsNullOrWhiteSpace($TestFilter)) {
-            $cliArgs += @("--filter", $TestFilter)
-        }
-
-        $testRes = Invoke-UnityCliJson -CliArgs $cliArgs -TimeoutSec ($TimeoutSeconds + 60)
-
-        # Move produced report.xml to XmlOutputPath
-        $producedXml = Join-Path $batchScratchDir "report.xml"
-        if (Test-Path -LiteralPath $producedXml) {
-            Copy-Item -LiteralPath $producedXml -Destination $XmlOutputPath -Force
+    $catList = [System.Collections.Generic.List[string]]::new()
+    foreach ($c in $CategoriesToInclude) {
+        if (-not [string]::IsNullOrWhiteSpace($c)) { $catList.Add($c.Trim()) }
+    }
+    foreach ($c in $CategoriesToExclude) {
+        if (-not [string]::IsNullOrWhiteSpace($c)) {
+            $catList.Add("!^" + [System.Text.RegularExpressions.Regex]::Escape($c.Trim()) + "`$")
         }
     }
+    if ($catList.Count -gt 0) {
+        $editorArgs.Add("-testCategory")
+        $editorArgs.Add(($catList -join ';'))
+    }
+
+    $asmList = @($AssembliesToExclude | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { "!$($_.Trim())" })
+    if ($asmList.Count -gt 0) {
+        $editorArgs.Add("-assemblyNames")
+        $editorArgs.Add(($asmList -join ';'))
+    }
+
+    if ($editorArgs.Count -gt 0) {
+        $cliArgs.Add("--")
+        $cliArgs.AddRange($editorArgs)
+    }
+
+    $testRes = Invoke-UnityCliJson -CliArgs $cliArgs.ToArray() -TimeoutSec ($TimeoutSeconds + 60)
 
     $suiteSw.Stop()
     $wallSeconds = [Math]::Round($suiteSw.Elapsed.TotalSeconds, 3)
@@ -110,11 +82,13 @@ function Run-BatchTestSuite {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $XmlOutputPath)) {
+    if (-not (Test-Path -LiteralPath $XmlOutputPath -PathType Leaf)) {
+        $cliErr = Get-UnityCliErrorText -Result $testRes
+        $cliErrSuffix = if ([string]::IsNullOrWhiteSpace($cliErr)) { "" } else { " CLI error: $cliErr" }
         return @{
             Success = $false
             ExitCode = $EXIT_INFRASTRUCTURE
-            ErrorMessage = "Batch mode exited with code $($testRes.ExitCode) but no XML found at '$XmlOutputPath'."
+            ErrorMessage = "Batch mode exited with code $($testRes.ExitCode) but no XML found at '$XmlOutputPath'.$cliErrSuffix"
             Report = $null
             WallSeconds = $wallSeconds
         }

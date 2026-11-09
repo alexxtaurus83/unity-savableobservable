@@ -364,6 +364,13 @@ Because Pass 1 finishes before Pass 2 starts, `Services.Get<T>()` is guaranteed 
   ```
 - **Unnamed duplicates** (e.g. 49 board cell prefabs sharing default `Name = "PlayerChipLogic"`) are automatically evicted from `Services` lookup without throwing during registration, while their local Presenter and Model remain fully bound on their own GameObject. Attempting to resolve an evicted key logs a clear `Debug.LogError` instructing you to assign distinct `singletonName` values.
 
+## Architectural Guides & Technical Documentation
+
+For in-depth explanations, execution-order diagrams, and runtime patterns, see:
+* [Unity Lifecycle & Automatic SetListeners](Documentation~/UnityLifecycle.md): Comprehensive 5-stage execution pipeline, ServiceLocator dual-pass discovery, initialization hooks, and reactive binding mechanics.
+* [Runtime Objects, Prefabs & Pooling](Documentation~/RuntimeObjects.md): Best practices for active/inactive prefab instantiation, object pooling, configure-first patterns, and programmatic GameObject composition.
+* [Testing Guide & Universal Test Runner](Documentation~/Testing.md): Unattended test runner setup, live editor vs batch mode workflows, and consumer project wrappers.
+
 ## Unattended Tests & Test Runner
 
 SavableObservable includes a universal modular test runner and contract testing tools (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`).
