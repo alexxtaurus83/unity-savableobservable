@@ -246,19 +246,16 @@ foreignModel.score.OnValueChanged.Add(OnScoreChanged, this);
 
 ## 8. Limitations & Pitfalls
 
-### Limitation: Current Behavior of SetListeners Has No Initial Value Replay
-- **Current Behavior:** `Observable.SetListeners(subscriber, model)` is the only bind API. It connects `[ObservableHandler]` methods and `[AutoBind]` UI adapters to the model's observables. It does not invoke callbacks with current values upon binding. By default fields the subscriber does not handle are not reported; set `ObservableSettings.StrictBinding = true` to be warned about them.
-- **Remedy:** In `InitializePresenter()`, read current model values and set the UI controls directly:
-  ```csharp
-  protected override void InitializePresenter() {
-      base.InitializePresenter();
-      var model = GetModel();
-      if (scoreText != null && model.score != null) {
-          scoreText.text = model.score.Value.ToString();
-      }
-  }
-  ```
-  *(Do not attempt to re-assign model values like `model.score.Value = model.score.Value` in `InitializePresenter()`: assigning an equal value never notifies unless the field uses `[NotifyOnSameValue]`, and handlers are not even attached until after `InitializePresenter()` finishes!)*
+### Behavior: SetListeners Replays the Current State (SyncOnBind)
+- **Behavior:** `Observable.SetListeners(subscriber, model)` is the only bind API. It connects `[ObservableHandler]` methods and `[AutoBind]` UI adapters to the model's observables and then, when `ObservableSettings.SyncOnBind` is `true` (the default), replays the current state once, after the presenter is marked bound:
+  - every `[AutoBind]` target receives the current value (two-way controls use their "without notify" setter, so the model is not written and other subscribers are not notified);
+  - every `[ObservableHandler(..., InvokeOnBind = true)]` method is called once with the current value (a two-parameter handler gets `Value` and the unchanged `PreviousValue`).
+  Handlers without `InvokeOnBind` are never replayed, so sounds, tweens and one-shot commands stay safe. A replay is not a change: `PreviousValue` is untouched and no other subscriber is notified. A rebind replays again and never duplicates subscriptions.
+- **Ordering:** `InitializePresenter()` runs first (static setup: slider ranges, dropdown options, button listeners), then handlers attach, then the replay runs. The replay runs after the presenter is marked bound, so a replayed handler that calls `GetLogic().GetModel()` does not trigger a rebind.
+- **Consequence:** binding overwrites scene-authored text and values of `[AutoBind]` controls with the model's value. Keep the intended default in the model (Inspector value on the model component). Do not paint initial values in `InitializePresenter()` for `[AutoBind]` fields; mark pure-render handlers `InvokeOnBind = true` instead.
+- **Opt-out:** `ObservableSettings.SyncOnBind = false` restores the "bind only" behavior (and `InvokeOnBind` is ignored). It resets to `true` on every domain / subsystem start. By default fields the subscriber does not handle are not reported; set `ObservableSettings.StrictBinding = true` to be warned about them.
+- **What is still not replayed:** values written to the model after binding reach the presenter as ordinary change notifications. Activating a GameObject does not replay anything (see [Runtime Objects](RuntimeObjects.md)).
+- *(Do not re-assign model values like `model.score.Value = model.score.Value` to refresh a view: an equal assignment never notifies unless the field uses `[NotifyOnSameValue]`; use `ForceNotify()` when a refresh is really needed.)*
 
 ### Pitfall: Operations on Inactive GameObjects
 - Subscriptions persist while a component or GameObject is inactive. Modifying a model will trigger presenter callbacks even if its GameObject is inactive (provided the value actually changed).

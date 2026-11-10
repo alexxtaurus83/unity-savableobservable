@@ -27,9 +27,30 @@ namespace SavableObservable {
             set => _strictBinding = value;
         }
 
+        // Stored inverted so that the default value of the field (what [AutoStaticsCleanup] resets it to) is the default behavior: replay on.
+#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
+        [AutoStaticsCleanup]
+#endif
+        private static bool _syncOnBindDisabled;
+
+        /// <summary>
+        /// When <c>true</c> (default), <see cref="Observable.SetListeners(object, BaseObservableDataModel)"/> replays the current model
+        /// state right after binding, so a presenter does not paint initial values by hand:
+        /// every <c>[AutoBind]</c> target receives the current value (two-way controls use their "without notify" path, so nothing is
+        /// written back to the model), and every <c>[ObservableHandler(..., InvokeOnBind = true)]</c> method is called once with the
+        /// current value. Handlers without <c>InvokeOnBind</c> are never replayed (sounds, tweens and other side effects stay safe).
+        /// Set to <c>false</c> to get the pre-2.0 behavior (bind only; nothing is replayed, including <c>InvokeOnBind</c> handlers).
+        /// Resets to <c>true</c> on every domain / subsystem start; change it from a bootstrap or test.
+        /// </summary>
+        public static bool SyncOnBind {
+            get => !_syncOnBindDisabled;
+            set => _syncOnBindDisabled = !value;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetOnSubsystemRegistration() {
             _strictBinding = false;
+            _syncOnBindDisabled = false;
         }
     }
 }

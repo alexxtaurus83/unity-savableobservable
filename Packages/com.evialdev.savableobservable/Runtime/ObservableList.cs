@@ -251,6 +251,10 @@ namespace SavableObservable {
             OnChanged.Remove((Action<ObservableList<T>>)handler);
         }
 
+        void IObservableVariable.InvokeHandler(Delegate handler) {
+            ((Action<ObservableList<T>>)handler)(this);
+        }
+
         private void RecordInserted(int index, int count) {
             _previousCache = null;
             _deltaKind = PrevDelta.Inserted;

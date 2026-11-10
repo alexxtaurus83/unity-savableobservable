@@ -138,7 +138,18 @@ Because `ServiceLocator` registers all services in Pass 1 before initializing pr
 
 Calling `EnsureInitialized()` on `BaseObservablePresenter<M>` is strictly idempotent after binding: subsequent calls will not destructively re-bind or duplicate listeners. Loaders do not rebind: `LoaderWithModel.LoadDataFromModel` fills the model and the presenter observes the loaded values through its existing binding (equal values are silent unless the field uses `[NotifyOnSameValue]`). An explicit `Observable.SetListeners(subscriber, model)` replaces existing framework bindings cleanly.
 
-Override `protected virtual void InitializePresenter()` in `BaseObservablePresenter<M>` to configure static UI controls (slider min/max, dropdown options, button listeners, initial CanvasGroup state). It runs once before `Observable.SetListeners` attaches handlers.
+Override `protected virtual void InitializePresenter()` in `BaseObservablePresenter<M>` to configure static UI controls (slider min/max, dropdown options, button listeners, initial CanvasGroup state). It runs once before `Observable.SetListeners` attaches handlers. Do not paint initial values there; binding replays the current state (next section).
+
+### Initial state on bind (`SyncOnBind`, `InvokeOnBind`)
+
+After it attaches handlers, `Observable.SetListeners` replays the current model state once (after the presenter is marked bound), when `ObservableSettings.SyncOnBind` is `true` (the default):
+
+- every `[AutoBind]` target receives the current value; two-way controls (`Slider`, `Toggle`, input fields) use their "without notify" setter, so the model is not written and other subscribers are not notified;
+- every `[ObservableHandler(nameof(M.x), InvokeOnBind = true)]` method is called once with the current value (a two-parameter handler receives `Value` and the unchanged `PreviousValue`).
+
+Handlers without `InvokeOnBind` are never replayed. A replay is not a change (no `PreviousValue` update, no other subscriber notified). A rebind replays again and never duplicates subscriptions. `ObservableSettings.SyncOnBind = false` restores the old bind-only behavior and makes `InvokeOnBind` inert; it resets to `true` on every domain / subsystem start.
+
+Rules: mark a handler `InvokeOnBind = true` only when it is a pure render (set text, toggle visibility, refresh a dependent control). Never on handlers that play sounds, start tweens or send one-shot commands. Binding overwrites scene-authored text of `[AutoBind]` controls, so put the intended default into the model (Inspector value). Custom `IObservableVariable` implementations must implement `InvokeHandler`.
 
 `Observable.SetListeners(subscriber, model)` is the only bind API. The model must be on the subscriber's own GameObject; cross-GameObject binding is strictly rejected with `Debug.LogError` to prevent lifecycle leaks. Presenters normally never call it: `EnsureInitialized()` binds once and is idempotent.
 
@@ -203,7 +214,7 @@ Decorate transient `ObservableVariable<T>` or `ObservableList<T>` fields with `[
 
 Initialize target observable fields before `LoaderWithModel.LoadDataFromModel(state)`.
 
-Binding setup (`Observable.SetListeners`) does not replay current model values. Initial refresh after loading data must be performed explicitly, either by invoking presentation refresh methods or by calling `ForceNotify()` on loaded model observables.
+Binding setup (`Observable.SetListeners`) replays the current model state once (`[AutoBind]` targets and `InvokeOnBind` handlers; see "Initial state on bind"). A load applied after binding reaches the presenter as ordinary change notifications (equal values are silent), so a presenter that must redisplay an unchanged value after a load uses `ForceNotify()` on that observable or a rebind.
 
 ## Shared Services and Domain Reload (Fast Play Mode)
 

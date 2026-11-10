@@ -45,6 +45,12 @@ namespace SavableObservable
         /// <summary>Unsubscribes a handler previously added with <see cref="AddHandler"/>.</summary>
         void RemoveHandler(Delegate handler);
 
+        /// <summary>
+        /// Calls a handler created by <see cref="CreateHandler"/> / <see cref="CreateAutoBindHandler"/> once with the current state,
+        /// as a change notification would (without notifying other subscribers). Used by <c>SyncOnBind</c> / <c>InvokeOnBind</c>.
+        /// </summary>
+        void InvokeHandler(Delegate handler);
+
 #if UNITY_EDITOR
         void OnBeginGui();
         void OnValidate();

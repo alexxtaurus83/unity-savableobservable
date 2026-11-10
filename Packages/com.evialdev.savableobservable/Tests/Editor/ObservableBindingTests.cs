@@ -366,5 +366,140 @@ namespace SavableObservable.Tests {
                 UnityEngine.Object.DestroyImmediate(modalHost);
             }
         }
+
+        #region SyncOnBind / InvokeOnBind (replay of the current state on bind)
+
+        private class ReplaySubscriber : MonoBehaviour {
+            [AutoBind("playerName")] public TextMeshProUGUI nameLabel;
+            [AutoBind("energy")] public Slider energySlider;
+
+            public int RenderCalls;
+            public int RenderValue = -1;
+            public int RenderCurrent = -1;
+            public int RenderPrevious = -1;
+            public int SideEffectCalls;
+
+            // Pure render handler: replayed on bind.
+            [ObservableHandler("health", InvokeOnBind = true)]
+            public void RenderHealth(int current, int previous) {
+                RenderCalls++;
+                RenderValue = current;
+                RenderCurrent = current;
+                RenderPrevious = previous;
+            }
+
+            // Side-effect handler (sound, tween): must NOT be replayed.
+            [ObservableHandler("health")]
+            public void PlayHealthSound(int current) {
+                SideEffectCalls++;
+            }
+        }
+
+        private ReplaySubscriber AddReplaySubscriber() {
+            var sub = _host.AddComponent<ReplaySubscriber>();
+
+            var label = new GameObject("Label", typeof(TextMeshProUGUI));
+            label.transform.SetParent(_host.transform, false);
+            sub.nameLabel = label.GetComponent<TextMeshProUGUI>();
+
+            var slider = new GameObject("Slider", typeof(RectTransform), typeof(Slider));
+            slider.transform.SetParent(_host.transform, false);
+            sub.energySlider = slider.GetComponent<Slider>();
+            return sub;
+        }
+
+        [Test]
+        public void SetListeners_SyncOnBind_PushesCurrentValueToAutoBindLabel() {
+            Assert.IsTrue(ObservableSettings.SyncOnBind, "SyncOnBind defaults to true.");
+            var sub = AddReplaySubscriber();
+            Assert.IsTrue(string.IsNullOrEmpty(sub.nameLabel.text), "Precondition: nothing painted before binding.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual("Player", sub.nameLabel.text, "Binding shows the current model value without a manual first paint.");
+        }
+
+        [Test]
+        public void SetListeners_SyncOnBind_TwoWaySlider_DoesNotWriteBackToModel() {
+            var sub = AddReplaySubscriber();
+            _model.energy.Value = 0.5f;
+            _model.EnsureFieldsInitialized();
+            int energyNotifications = 0;
+            _model.energy.OnValueChanged.Add(_ => energyNotifications++, this);
+            Assert.AreEqual(0f, sub.energySlider.value, "Precondition: slider starts at its own default.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(0.5f, sub.energySlider.value, "Slider shows the model value after bind.");
+            Assert.AreEqual(0.5f, _model.energy.Value, "The replay must not write the slider value back to the model.");
+            Assert.AreEqual(0, energyNotifications, "The replay is not a change: other subscribers are not notified.");
+
+            // The two-way path still works afterwards.
+            sub.energySlider.value = 0.25f;
+            Assert.AreEqual(0.25f, _model.energy.Value, 1e-6f, "UI -> model keeps working after the replay.");
+        }
+
+        [Test]
+        public void ObservableHandler_InvokeOnBind_CalledOnceWithCurrentValue() {
+            var sub = AddReplaySubscriber();
+            Assert.AreEqual(100, _model.health.Value);
+            Assert.AreEqual(0, _model.health.PreviousValue, "Precondition: InitializeDefaults changed health from 0 to 100.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(1, sub.RenderCalls, "InvokeOnBind handler is called exactly once on bind.");
+            Assert.AreEqual(100, sub.RenderCurrent);
+            Assert.AreEqual(0, sub.RenderPrevious, "A replay is not a change: PreviousValue is untouched.");
+            Assert.AreEqual(0, _model.health.PreviousValue);
+        }
+
+        [Test]
+        public void ObservableHandler_DefaultNoInvokeOnBind() {
+            var sub = AddReplaySubscriber();
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(0, sub.SideEffectCalls, "A handler without InvokeOnBind is never replayed.");
+
+            ExpectMissingFieldWarning();
+            Observable.SetListeners(_subscriber, _model);
+            Assert.AreEqual(0, _subscriber.ZeroParamCount, "Existing handlers keep their behavior: no call on bind.");
+            Assert.AreEqual(0, _subscriber.OneParamValue);
+        }
+
+        [Test]
+        public void Rebind_DoesNotDoubleInvoke() {
+            var sub = AddReplaySubscriber();
+
+            Observable.SetListeners(sub, _model);
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(2, sub.RenderCalls, "One replay per bind, nothing more.");
+
+            _model.health.Value = 55;
+
+            Assert.AreEqual(3, sub.RenderCalls, "After a rebind a change still reaches the handler exactly once (no duplicate subscriptions).");
+            Assert.AreEqual(55, sub.RenderCurrent);
+            Assert.AreEqual(1, sub.SideEffectCalls, "The side-effect handler fires once for the real change only.");
+        }
+
+        [Test]
+        public void SyncOnBind_False_KeepsOldBehavior() {
+            var sub = AddReplaySubscriber();
+            ObservableSettings.SyncOnBind = false;
+            try {
+                Observable.SetListeners(sub, _model);
+
+                Assert.IsTrue(string.IsNullOrEmpty(sub.nameLabel.text), "AutoBind is not replayed when SyncOnBind is off.");
+                Assert.AreEqual(0, sub.RenderCalls, "InvokeOnBind is ignored when SyncOnBind is off.");
+
+                _model.health.Value = 70;
+                Assert.AreEqual(1, sub.RenderCalls, "Normal change notifications still work.");
+            } finally {
+                ObservableSettings.SyncOnBind = true;
+            }
+        }
+
+        #endregion
     }
 }

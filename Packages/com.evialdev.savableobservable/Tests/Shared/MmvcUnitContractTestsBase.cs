@@ -156,6 +156,53 @@ namespace SavableObservable.Tests.Contracts {
         }
 
         [Test]
+        public void Contract_AutoBindTextTargets_ShowTheModelValueRightAfterBind() {
+            // Every [AutoBind] text target must show the model's value as soon as the presenter binds (ObservableSettings.SyncOnBind),
+            // without a manual first paint in InitializePresenter. Text targets the unit leaves unassigned get a temporary TMP child,
+            // so the contract also covers a naked instantiation.
+            if (!ObservableSettings.SyncOnBind) {
+                Assert.Ignore("SyncOnBind is disabled: AutoBind targets are not replayed on bind.");
+                return;
+            }
+
+            Model.EnsureFieldsInitialized();
+            var targets = new List<(FieldInfo uiField, string modelFieldName)>();
+            for (var t = typeof(TPresenter); t != null && t != typeof(MonoBehaviour) && t != typeof(Component) && t != typeof(UnityEngine.Object) && t != typeof(object); t = t.BaseType) {
+                foreach (var field in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)) {
+                    var attr = (AutoBindAttribute)Attribute.GetCustomAttribute(field, typeof(AutoBindAttribute));
+                    if (attr == null || !typeof(TMP_Text).IsAssignableFrom(field.FieldType)) continue;
+                    var modelFieldName = string.IsNullOrWhiteSpace(attr.VariableName) ? field.Name : attr.VariableName;
+                    var modelField = FindFieldAcrossHierarchy(typeof(TModel), modelFieldName);
+                    if (modelField == null || FindObservableVariableBase(modelField.FieldType) == null) continue;
+                    targets.Add((field, modelFieldName));
+                }
+            }
+            if (targets.Count == 0) {
+                Assert.Ignore($"{typeof(TPresenter).Name} has no [AutoBind] TMP text target bound to an ObservableVariable.");
+                return;
+            }
+
+            foreach (var (uiField, _) in targets) {
+                if (uiField.GetValue(Presenter) != null) continue;
+                var child = new GameObject("AutoBindTarget_" + uiField.Name, typeof(RectTransform), typeof(TextMeshProUGUI));
+                child.transform.SetParent(Host.transform, false);
+                uiField.SetValue(Presenter, child.GetComponent(uiField.FieldType) ?? child.GetComponent<TextMeshProUGUI>());
+            }
+
+            Presenter.EnsureInitialized();
+
+            foreach (var (uiField, modelFieldName) in targets) {
+                var ui = (TMP_Text)uiField.GetValue(Presenter);
+                if (ui == null) continue;
+                var variable = FindFieldAcrossHierarchy(typeof(TModel), modelFieldName).GetValue(Model);
+                var value = variable.GetType().GetProperty("Value").GetValue(variable);
+                Assert.AreEqual(value?.ToString() ?? string.Empty, ui.text ?? string.Empty,
+                    $"[AutoBind(\"{modelFieldName}\")] on '{typeof(TPresenter).Name}.{uiField.Name}' must show the model value right after bind. " +
+                    "Do not overwrite it in InitializePresenter, and keep the intended default in the model, not in the scene text.");
+            }
+        }
+
+        [Test]
         public void Contract_EveryObservableHandlerMethod_HasValidSignatureAndMatchingModelField() {
             var presenterType = typeof(TPresenter);
             // Traverse presenter hierarchy (including private and protected methods across all bases)

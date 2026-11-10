@@ -192,6 +192,11 @@ namespace SavableObservable {
         void IObservableVariable.RemoveHandler(Delegate handler) {
             OnValueChanged.Remove((Action<ObservableVariable<T>>)handler);
         }
+
+        void IObservableVariable.InvokeHandler(Delegate handler) {
+            // A replay is not a change: PreviousValue is left untouched, so a (value, previous) handler sees the real previous value.
+            ((Action<ObservableVariable<T>>)handler)(this);
+        }
     }
 
 }

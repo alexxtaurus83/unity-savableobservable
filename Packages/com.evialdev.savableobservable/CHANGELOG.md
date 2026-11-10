@@ -17,6 +17,8 @@ Major release: several behaviors and public APIs changed. See **Migration** belo
 - The unbound-field warning is opt-in: `ObservableSettings.StrictBinding` (default `false`). The "`[AutoBind]` names a missing field" warning is unchanged.
 - `BaseLogic<M, P>.GetModel()` no longer keeps its own presenter-initialized flag; it calls the idempotent `EnsureInitialized()` on the paired presenter.
 
+- **`Observable.SetListeners` replays the current model state after binding (`ObservableSettings.SyncOnBind`, default `true`).** Every `[AutoBind]` target receives the current value; two-way controls use their "without notify" path, so nothing is written back to the model and other subscribers are not notified. A handler runs once with the current value only when it opts in with `[ObservableHandler(..., InvokeOnBind = true)]`; handlers without it (sounds, tweens, one-shot commands) are never replayed. A replay is not a change: `PreviousValue` is untouched. Presenters no longer need to paint initial values by hand in `InitializePresenter()`. A control whose scene text differs from the model value is overwritten on bind, so put the intended default into the model.
+
 ### Removed (breaking)
 - `BasePresenter<M>`: merged into `BaseObservablePresenter<M>`. Presenters derive from `BaseObservablePresenter<M>` (or `ObservablePresenterWithLogic<M, LO>`); a former `BasePresenter<M>` subclass now also binds `[AutoBind]` / `[ObservableHandler]` members, which is a no-op when none are declared.
 - `IObservablePresenter.EnsurePresenterInitialized()`: `EnsureInitialized()` is the single entry point. The "`InitializePresenter` runs before handlers attach" guarantee is unchanged, including for explicit `Observable.SetListeners` calls.
@@ -25,11 +27,13 @@ Major release: several behaviors and public APIs changed. See **Migration** belo
 - `ObservableList<T>.OnValueChanged` alias: use `OnChanged`. (`ObservableVariable<T>.OnValueChanged` is unchanged.)
 - `ServiceLocator.Add`, `ServiceLocator.Remove<T>` / `Remove(Type)`, `Services.Add`, `Services.Remove`: use `TryRegister` / `Unregister`.
 - The no-op `BaseLogic<M, P>.Awake` override (`BaseLogic.Awake` still registers the logic).
-- `IObservableVariable` gained `CreateHandler`, `CreateAutoBindHandler`, `AddHandler` and `RemoveHandler`. **Breaking for custom implementers:** a custom observable type must implement them (the built-in `ObservableVariable<T>` / `ObservableList<T>` do). The reflection fallback and the per-type binding bridge classes are gone.
+- `IObservableVariable` gained `CreateHandler`, `CreateAutoBindHandler`, `AddHandler`, `RemoveHandler` and `InvokeHandler`. **Breaking for custom implementers:** a custom observable type must implement them (the built-in `ObservableVariable<T>` / `ObservableList<T>` do). The reflection fallback and the per-type binding bridge classes are gone.
 
 ### Added
 - `[NotifyOnSameValue]` field attribute and public `ObservableVariable<T>.NotifyOnSameValue` property: every assignment notifies; an equal assignment yields `PreviousValue == Value`. The flag is not serialized, not saved and not copied by `LoadDataFromModel`. Applying the attribute to an `ObservableList<T>` or a non-observable field logs a one-time warning.
 - `ObservableSettings.StrictBinding` (see above).
+- `ObservableSettings.SyncOnBind` (default `true`; set `false` for the pre-2.0 "bind only" behavior) and `ObservableHandlerAttribute.InvokeOnBind` (default `false`). See "Changed (behavior)".
+- Tests in `ObservableBindingTests`: `SetListeners_SyncOnBind_PushesCurrentValueToAutoBindLabel`, `SetListeners_SyncOnBind_TwoWaySlider_DoesNotWriteBackToModel`, `ObservableHandler_InvokeOnBind_CalledOnceWithCurrentValue`, `ObservableHandler_DefaultNoInvokeOnBind`, `Rebind_DoesNotDoubleInvoke`, `SyncOnBind_False_KeepsOldBehavior`.
 - Contract test `Contract_EqualAssignment_IsSilent_UnlessNotifyOnSameValue` in `MmvcTriadContractTestsBase`, and the `ObservableAccess` test helper.
 - Sample: `SamplePlayerModel.lastRoll` (`[NotifyOnSameValue]`) with a handler that uses `previous`; the sample presenter uses `nameof(...)` in its attributes.
 - README section "Change notification semantics".
@@ -48,7 +52,9 @@ Major release: several behaviors and public APIs changed. See **Migration** belo
 - **Save/load code** that relied on the loader rebinding the presenter: the existing binding now receives the loaded values; equal values are silent.
 - **Several unnamed Logic of one type** (e.g. pooled board cells) now produce a duplicate error per extra instance: override `RegisterAsSharedSingleton => false`, or give each instance a distinct `singletonName`.
 - Rename `BasePresenter<M>` subclasses to derive from `BaseObservablePresenter<M>`; replace `GetModelToSave()` with `GetModel()`, `ObservableList.OnValueChanged` with `OnChanged`, `Services.Add` / `Remove` with `TryRegister` / `Unregister`.
-- Custom `IObservableVariable` implementations must add the four handler members.
+- Custom `IObservableVariable` implementations must add the five handler members (`CreateHandler`, `CreateAutoBindHandler`, `AddHandler`, `RemoveHandler`, `InvokeHandler`).
+- **Scene-authored `[AutoBind]` text is overwritten on bind** by the model value. Move the intended default into the model (Inspector value on the model component) instead of the scene label. To keep the old behavior for a whole project, set `ObservableSettings.SyncOnBind = false` from a bootstrap.
+- **Manual first paint** in `InitializePresenter()` (`label.text = model.x.Value`, `slider.SetValueWithoutNotify(...)`) can be deleted for `[AutoBind]` fields; for a pure-render `[ObservableHandler]` add `InvokeOnBind = true` and delete the explicit call. Keep `InvokeOnBind` off for handlers with side effects.
 
 ## [1.0.21-preview] - 2026-11-08 - Live UI Contracts, Fast Testing Infrastructure & Universal Test Runner Enhancements
 - **Live UI Assertions & Automated Audit (`MmvcLiveUiAssert`, `MmvcLiveUiAudit`):**

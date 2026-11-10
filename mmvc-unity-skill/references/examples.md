@@ -267,7 +267,7 @@ Services.Get<AudioService>()?.PlaySound("Click");
 
 ## Timer with AutoBind and a Handler
 
-Keep ticking and state transitions in logic. Use `InitializePresenter()` for initial setup:
+Keep ticking and state transitions in logic. Binding paints the initial state (`[AutoBind]` and `InvokeOnBind` handlers), so `InitializePresenter()` is only for static setup:
 
 ```csharp
 using SavableObservable;
@@ -297,21 +297,15 @@ public class TimerPresenter : ObservablePresenterWithLogic<TimerDataModel, Timer
     [SerializeField] private TMPro.TextMeshProUGUI timeText;
     [SerializeField] private GameObject timerPanel;
 
-    protected override void InitializePresenter() {
-        base.InitializePresenter();
-        if (statusText != null) statusText.text = GetModel().status.Value;
-        OnTimeChanged(GetModel().timerValue.Value);
-        OnEnabledChanged(GetModel().timerEnabled.Value);
-    }
-
+    // statusText is [AutoBind] and both handlers are pure renders marked InvokeOnBind: binding paints the initial state.
     public void OnStartClicked() => GetLogic().StartTimer();
 
-    [ObservableHandler(nameof(TimerDataModel.timerValue))]
+    [ObservableHandler(nameof(TimerDataModel.timerValue), InvokeOnBind = true)]
     private void OnTimeChanged(float value) {
         if (timeText != null) timeText.text = value.ToString("F1");
     }
 
-    [ObservableHandler(nameof(TimerDataModel.timerEnabled))]
+    [ObservableHandler(nameof(TimerDataModel.timerEnabled), InvokeOnBind = true)]
     private void OnEnabledChanged(bool enabled) {
         if (timerPanel != null) timerPanel.SetActive(enabled);
     }
@@ -339,14 +333,8 @@ public class InventoryLogic : BaseLogic<InventoryDataModel, InventoryPresenter> 
 public class InventoryPresenter : BaseObservablePresenter<InventoryDataModel> {
     [SerializeField] private TMPro.TextMeshProUGUI contents;
 
-    protected override void InitializePresenter() {
-        base.InitializePresenter();
-        if (contents != null) {
-            contents.text = string.Join(", ", GetModel().items.Value);
-        }
-    }
-
-    [ObservableHandler(nameof(InventoryDataModel.items))]
+    // Pure render: InvokeOnBind paints the initial list on bind, no manual first paint.
+    [ObservableHandler(nameof(InventoryDataModel.items), InvokeOnBind = true)]
     private void OnItemsChanged(List<string> current, IReadOnlyList<string> previous) {
         if (contents != null) {
             contents.text = string.Join(", ", current);

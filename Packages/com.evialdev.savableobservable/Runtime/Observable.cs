@@ -58,6 +58,8 @@ namespace SavableObservable {
 
         private class SubscriberMetadata {
             public readonly Dictionary<string, List<MethodInfo>> HandlerMethods = new Dictionary<string, List<MethodInfo>>();
+            /// <summary>Handler methods whose attribute sets <see cref="ObservableHandlerAttribute.InvokeOnBind"/>.</summary>
+            public readonly HashSet<MethodInfo> InvokeOnBindMethods = new HashSet<MethodInfo>();
             public readonly List<(FieldInfo field, string targetName)> AutoBindFields = new List<(FieldInfo, string)>();
             public readonly HashSet<string> AutoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
 
@@ -90,6 +92,9 @@ namespace SavableObservable {
                                 HandlerMethods[attr.VariableName] = list;
                             }
                             list.Add(method);
+                            if (attr.InvokeOnBind) {
+                                InvokeOnBindMethods.Add(method);
+                            }
                         }
                     }
 
@@ -172,20 +177,41 @@ namespace SavableObservable {
             var subMetadata = GetSubscriberMetadata(subscriber.GetType());
             var descriptor = GetModelMetadata(model.GetType());
 
+            // Handlers to call once with the current state after binding (SyncOnBind). Null when replay is off.
+            var replay = ObservableSettings.SyncOnBind ? new List<(IObservableVariable source, Delegate handler)>() : null;
+
             foreach (var field in descriptor.ObservableFields) {
                 if (subMetadata.HandlerMethods.TryGetValue(field.Name, out var handlerMethods)) {
                     foreach (var handlerMethod in handlerMethods) {
-                        SubscribeIndividualHandler(subscriber, handlerMethod, field, model);
+                        SubscribeIndividualHandler(subscriber, handlerMethod, field, model, subMetadata, replay);
                     }
                 } else if (ObservableSettings.StrictBinding && !subMetadata.AutoBindTargetNames.Contains(field.Name)) {
                     Debug.LogWarning($"[SavableObservable] ObservableVariable '{field.Name}' in {model.GetType().Name} has no corresponding [ObservableHandler] method or [AutoBind] field in {subscriber.GetType().Name}.", monoBehaviour);
                 }
             }
 
-            BindAutoBinds(monoBehaviour, subscriber, model, subMetadata, descriptor);
+            BindAutoBinds(monoBehaviour, subscriber, model, subMetadata, descriptor, replay);
 
             if (subscriber is IPresenterBindingState bindingState) {
                 bindingState.MarkBound();
+            }
+
+            // After MarkBound: a replayed handler that reaches back into the unit (logic.GetModel() -> presenter.EnsureInitialized())
+            // finds the presenter bound and does not rebind.
+            if (replay != null) {
+                ReplayCurrentState(monoBehaviour, replay);
+            }
+        }
+
+        // Pushes the current model state through the bindings created by one SetListeners call. A replay is not a change:
+        // it does not notify other subscribers and does not touch PreviousValue. One failing handler does not stop the others.
+        private static void ReplayCurrentState(MonoBehaviour monoBehaviour, List<(IObservableVariable source, Delegate handler)> replay) {
+            for (int i = 0; i < replay.Count; i++) {
+                try {
+                    replay[i].source.InvokeHandler(replay[i].handler);
+                } catch (Exception ex) {
+                    Debug.LogError($"[SavableObservable] Replay of the current value on bind failed on {monoBehaviour.GetType().Name}: {ex.Message}", monoBehaviour);
+                }
             }
         }
 
@@ -227,7 +253,9 @@ namespace SavableObservable {
             object subscriber,
             MethodInfo handlerMethod,
             FieldInfo field,
-            BaseObservableDataModel dataModel)
+            BaseObservableDataModel dataModel,
+            SubscriberMetadata subMetadata,
+            List<(IObservableVariable source, Delegate handler)> replay)
         {
             if (!(field.GetValue(dataModel) is IObservableVariable observableVar)) return;
 
@@ -252,6 +280,10 @@ namespace SavableObservable {
 
             // The observable records the subscription (managed) in the model's registry.
             observableVar.AddHandler(handler, subscriber);
+
+            if (replay != null && subMetadata.InvokeOnBindMethods.Contains(handlerMethod)) {
+                replay.Add((observableVar, handler));
+            }
         }
 
         private static void BindAutoBinds(
@@ -259,7 +291,8 @@ namespace SavableObservable {
             object obj,
             BaseObservableDataModel dataModel,
             SubscriberMetadata subMetadata,
-            ModelDescriptor descriptor)
+            ModelDescriptor descriptor,
+            List<(IObservableVariable source, Delegate handler)> replay)
         {
             if (subMetadata.AutoBindFields.Count == 0) return;
 
@@ -276,7 +309,7 @@ namespace SavableObservable {
                         continue;
                     }
 
-                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter);
+                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter, replay);
                 } catch (Exception ex) {
                     Debug.LogError($"[SavableObservable] Failed to wire [AutoBind] for field '{uiField.Name}' on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
                 }
@@ -288,7 +321,8 @@ namespace SavableObservable {
             FieldInfo uiField,
             FieldInfo observableField,
             BaseObservableDataModel dataModel,
-            IUIAdapter adapter)
+            IUIAdapter adapter,
+            List<(IObservableVariable source, Delegate handler)> replay)
         {
             if (!(observableField.GetValue(dataModel) is IObservableVariable observableVar)) return;
 
@@ -311,6 +345,8 @@ namespace SavableObservable {
             var wrappedHandler = observableVar.CreateAutoBindHandler(modelToUiHandler);
             if (wrappedHandler != null) {
                 observableVar.AddHandler(wrappedHandler, obj);
+                // Model -> UI only: the adapters' SetValue use the control's "without notify" path, so the replay never writes back to the model.
+                replay?.Add((observableVar, wrappedHandler));
             }
 
             // 2) Subscribe UI -> Model (Two-way binding, if supported)

@@ -68,6 +68,29 @@ void OnRoll(int value, int previous) {
   * Inspector edits fire only on a real change.
   * Loading values equal to the current ones is silent.
 
+### Initial state on bind
+
+`Observable.SetListeners` (called by the presenter's `EnsureInitialized()`) replays the current model state right after it binds, so a presenter does not paint initial values by hand. This is on by default (`ObservableSettings.SyncOnBind = true`).
+
+* **`[AutoBind]` targets** receive the current value. Two-way controls (`Slider`, `Toggle`, input fields) are set through their "without notify" path, so nothing is written back to the model and other subscribers are not notified.
+* **`[ObservableHandler]` methods** are called once with the current value **only** when they opt in: `[ObservableHandler(nameof(M.x), InvokeOnBind = true)]`. A two-parameter handler receives `Value` and the unchanged `PreviousValue`. Use it for pure renders (set a label, toggle a button, refresh a dependent control). Leave it off for handlers with side effects (sounds, tweens, one-shot commands): they are never replayed.
+* A replay is not a change: it does not touch `PreviousValue`, does not fire other subscribers, and happens once per bind (a rebind replays again; it never duplicates subscriptions).
+* Binding overwrites whatever text or value the control had in the scene. Put the intended default into the model (an Inspector value on the model component), not into the scene label.
+* Set `ObservableSettings.SyncOnBind = false` for the old "bind only" behavior; `InvokeOnBind` is then ignored. The setting resets to `true` on every domain / subsystem start.
+
+```csharp
+public class PlayerPresenter : ObservablePresenterWithLogic<PlayerDataModel, PlayerLogic> {
+    [AutoBind(nameof(PlayerDataModel.score))] [SerializeField] private TextMeshProUGUI scoreText;   // painted on bind
+    [SerializeField] private Button reviveButton;
+
+    [ObservableHandler(nameof(PlayerDataModel.isAlive), InvokeOnBind = true)]                       // pure render: painted on bind
+    private void OnAliveChanged(bool alive) => reviveButton.gameObject.SetActive(!alive);
+
+    [ObservableHandler(nameof(PlayerDataModel.health))]                                              // side effect: never replayed
+    private void OnHealthChanged(int health) => Sfx.Play(HitSound);
+}
+```
+
 ### ObservableList<T>
 
 For collections, the framework provides `ObservableList<T>`, a fully reactive list implementation.
@@ -213,7 +236,7 @@ This is the presenter base class. It binds the unit's `ObservableVariable` / `Ob
 *   It provides two powerful, declarative ways to handle model changes:
     * `[AutoBind]` attribute for simple UI bindings
     * `[ObservableHandler]` attribute for custom handler methods
-*   **`InitializePresenter()` Hook**: Override `protected virtual void InitializePresenter()` to configure UI controls (slider min/max, dropdown options, button click listeners, initial CanvasGroup state). It is guaranteed to run once **after** `ServiceLocator` (`-200`) has registered all scene services and **before** `Observable.SetListeners` attaches handlers (even on inactive scene GameObjects or disabled runtime prefabs).
+*   **`InitializePresenter()` Hook**: Override `protected virtual void InitializePresenter()` to configure UI controls (slider min/max, dropdown options, button click listeners, initial CanvasGroup state). It is guaranteed to run once **after** `ServiceLocator` (`-200`) has registered all scene services and **before** `Observable.SetListeners` attaches handlers (even on inactive scene GameObjects or disabled runtime prefabs). Do not paint initial values here: binding does it (see "Initial state on bind").
 *   **Idempotent Initialization**: Calling `EnsureInitialized()` repeatedly after initial binding is an idempotent no-op that avoids repeated destructive rebinds. Loaders do not rebind: loading data into the model reaches the presenter through its existing binding as ordinary change notifications.
 *   **Setup Validation**: Logs descriptive errors if duplicate MMVC components or cross-GameObject bindings are detected.
 

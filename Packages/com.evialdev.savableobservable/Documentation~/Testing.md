@@ -78,6 +78,10 @@ Usage:
 
 `ObservableAccess` (same namespace) resolves a field's tracked change event by its type (`OnValueChanged` for variables, `OnChanged` for lists) for custom contract code.
 
+### Contract: AutoBind text targets show the model value right after bind
+
+The same base includes `Contract_AutoBindTextTargets_ShowTheModelValueRightAfterBind`. For every `[AutoBind]` field of a `TMP_Text` type bound to an `ObservableVariable<T>`, it binds the presenter (`EnsureInitialized()`) and asserts that the text equals the model value (`ToString()`), without any manual first paint (`ObservableSettings.SyncOnBind`, default on). A target the unit leaves unassigned gets a temporary TMP child, so a naked instantiation is covered. A presenter that overwrites an AutoBind target in `InitializePresenter()`, or a model whose default differs from the text the scene shows, fails here. The contract is ignored when `SyncOnBind` is off or the presenter has no such target. Consumer projects that derive a contract class from `MmvcTriadContractTestsBase` pick it up automatically.
+
 ---
 
 ## 4. Live UI Assertions & Audit (`MmvcLiveUiAssert`)
