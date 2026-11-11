@@ -16,10 +16,37 @@ namespace SavableObservable.Editor {
         /// <param name="property">The serialized property to resolve</param>
         /// <returns>The object instance, or null if resolution fails</returns>
         public static object GetTargetObjectOfProperty(SerializedProperty property) {
-            if (property == null) return null;
+            if (property == null || property.serializedObject == null) return null;
+            return ResolvePathOnObject(property.serializedObject.targetObject, property.propertyPath);
+        }
 
-            var path = property.propertyPath.Replace(".Array.data[", "[");
-            object obj = property.serializedObject.targetObject;
+        /// <summary>
+        /// Gets the object instances that the SerializedProperty points to across all target objects.
+        /// Used for multi-object editing in property drawers.
+        /// </summary>
+        /// <param name="property">The serialized property to resolve</param>
+        /// <returns>Array of resolved objects</returns>
+        public static object[] GetTargetObjectsOfProperty(SerializedProperty property) {
+            if (property == null || property.serializedObject == null) return Array.Empty<object>();
+            var targets = property.serializedObject.targetObjects;
+            if (targets == null || targets.Length == 0) {
+                var single = property.serializedObject.targetObject;
+                if (single == null) return Array.Empty<object>();
+                var resolved = ResolvePathOnObject(single, property.propertyPath);
+                return resolved != null ? new[] { resolved } : Array.Empty<object>();
+            }
+
+            var result = new object[targets.Length];
+            for (int i = 0; i < targets.Length; i++) {
+                result[i] = ResolvePathOnObject(targets[i], property.propertyPath);
+            }
+            return result;
+        }
+
+        private static object ResolvePathOnObject(object target, string propertyPath) {
+            if (target == null) return null;
+            var path = propertyPath.Replace(".Array.data[", "[");
+            object obj = target;
             var elements = path.Split('.');
 
             foreach (var element in elements) {
@@ -30,6 +57,7 @@ namespace SavableObservable.Editor {
                 } else {
                     obj = GetValueByPathSegment(obj, element);
                 }
+                if (obj == null) return null;
             }
 
             return obj;
@@ -46,15 +74,20 @@ namespace SavableObservable.Editor {
             if (source == null) return null;
             var type = source.GetType();
 
-            while (type != null) {
-                var f = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+            var current = type;
+            while (current != null) {
+                var f = current.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
                 if (f != null) return f.GetValue(source);
-
-                var p = type.GetProperty(name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                if (p != null) return p.GetValue(source, null);
-
-                type = type.BaseType;
+                current = current.BaseType;
             }
+
+            current = type;
+            while (current != null) {
+                var p = current.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                if (p != null && p.GetIndexParameters().Length == 0) return p.GetValue(source, null);
+                current = current.BaseType;
+            }
+
             return null;
         }
 
@@ -71,10 +104,14 @@ namespace SavableObservable.Editor {
             if (enumerable == null) return null;
 
             var enm = enumerable.GetEnumerator();
-            for (int i = 0; i <= index; i++) {
-                if (!enm.MoveNext()) return null;
+            try {
+                for (int i = 0; i <= index; i++) {
+                    if (!enm.MoveNext()) return null;
+                }
+                return enm.Current;
+            } finally {
+                (enm as IDisposable)?.Dispose();
             }
-            return enm.Current;
         }
     }
 }

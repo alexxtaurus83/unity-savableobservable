@@ -59,36 +59,51 @@ namespace SavableObservable {
         [NonSerialized] private bool _hasLastValidatedSnapshot;
 #endif
 
+        private List<T> Items => _items ??= new List<T>();
+
         /// <summary>
         /// Compatibility value property used by existing load/save reflection logic.
         /// </summary>
         public List<T> Value {
-            get => _items;
+            get => Items;
             set {
-                var snapshot = _items == null || _items.Count == 0 ? Array.Empty<T>() : _items.ToArray();
-                _items = value ?? new List<T>();
+                var next = value ?? new List<T>();
+                if (AreListsEqual(Items, next)) {
+                    _items = next;
+                    _itemsAtDelta = _items;
+                    _countAtDelta = _items.Count;
+#if UNITY_EDITOR
+                    _lastValidatedSnapshot = _items.ToArray();
+                    _hasLastValidatedSnapshot = true;
+                    _hasEditorGuiSnapshot = false;
+#endif
+                    return;
+                }
+
+                var snapshot = Items.Count == 0 ? Array.Empty<T>() : Items.ToArray();
+                _items = next;
                 RecordSnapshot(snapshot);
                 NotifyChanged();
             }
         }
 
-        public int Count => _items.Count;
+        public int Count => Items.Count;
 
         public bool IsReadOnly => false;
 
         public T this[int index] {
-            get => _items[index];
+            get => Items[index];
             set {
-                T oldItem = _items[index];
-                _items[index] = value;
+                T oldItem = Items[index];
+                Items[index] = value;
                 RecordReplaced(index, oldItem);
                 NotifyChanged();
             }
         }
 
         public void Add(T item) {
-            int oldCount = _items.Count;
-            _items.Add(item);
+            int oldCount = Items.Count;
+            Items.Add(item);
             RecordInserted(oldCount, 1);
             NotifyChanged();
         }
@@ -96,52 +111,52 @@ namespace SavableObservable {
         public void AddRange(IEnumerable<T> items) {
             if (items == null) return;
             if (items is ICollection<T> col && col.Count == 0) return;
-            int oldCount = _items.Count;
-            _items.AddRange(items);
-            int addedCount = _items.Count - oldCount;
+            int oldCount = Items.Count;
+            Items.AddRange(items);
+            int addedCount = Items.Count - oldCount;
             if (addedCount == 0) return;
             RecordInserted(oldCount, addedCount);
             NotifyChanged();
         }
 
         public void Clear() {
-            if (_items.Count == 0) return;
-            var snapshot = _items.ToArray();
-            _items.Clear();
+            if (Items.Count == 0) return;
+            var snapshot = Items.ToArray();
+            Items.Clear();
             RecordSnapshot(snapshot);
             NotifyChanged();
         }
 
-        public bool Contains(T item) => _items.Contains(item);
+        public bool Contains(T item) => Items.Contains(item);
 
-        public void CopyTo(T[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+        public void CopyTo(T[] array, int arrayIndex) => Items.CopyTo(array, arrayIndex);
 
-        public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+        public IEnumerator<T> GetEnumerator() => Items.GetEnumerator();
 
-        IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => Items.GetEnumerator();
 
-        public int IndexOf(T item) => _items.IndexOf(item);
+        public int IndexOf(T item) => Items.IndexOf(item);
 
         public void Insert(int index, T item) {
-            _items.Insert(index, item);
+            Items.Insert(index, item);
             RecordInserted(index, 1);
             NotifyChanged();
         }
 
         public bool Remove(T item) {
-            var index = _items.IndexOf(item);
+            var index = Items.IndexOf(item);
             if (index < 0) return false;
 
-            T removedItem = _items[index];
-            _items.RemoveAt(index);
+            T removedItem = Items[index];
+            Items.RemoveAt(index);
             RecordRemoved(index, removedItem);
             NotifyChanged();
             return true;
         }
 
         public void RemoveAt(int index) {
-            T removedItem = _items[index];
-            _items.RemoveAt(index);
+            T removedItem = Items[index];
+            Items.RemoveAt(index);
             RecordRemoved(index, removedItem);
             NotifyChanged();
         }
@@ -167,6 +182,13 @@ namespace SavableObservable {
         }
 
         /// <summary>
+        /// Clears the active GUI snapshot when a change check completes without modifications.
+        /// </summary>
+        public void ClearEditorGuiSnapshot() {
+            _hasEditorGuiSnapshot = false;
+        }
+
+        /// <summary>
         /// Handles editor validation (including undo/redo) and emits change notifications with accurate previous snapshots.
         /// </summary>
         public void OnValidate() {
@@ -187,7 +209,7 @@ namespace SavableObservable {
         }
 #endif
 
-        public override string ToString() => $"Count = {_items.Count}";
+        public override string ToString() => $"Count = {Items.Count}";
 
         public void SetParentDataModel(BaseObservableDataModel dataModel) {
             OnChanged.ParentDataModel = dataModel;
@@ -262,8 +284,8 @@ namespace SavableObservable {
             _deltaCount = count;
             _deltaSnapshot = null;
             _deltaItem = default;
-            _itemsAtDelta = _items;
-            _countAtDelta = _items.Count;
+            _itemsAtDelta = Items;
+            _countAtDelta = Items.Count;
         }
 
         private void RecordRemoved(int index, T item) {
@@ -273,8 +295,8 @@ namespace SavableObservable {
             _deltaCount = 1;
             _deltaItem = item;
             _deltaSnapshot = null;
-            _itemsAtDelta = _items;
-            _countAtDelta = _items.Count;
+            _itemsAtDelta = Items;
+            _countAtDelta = Items.Count;
         }
 
         private void RecordReplaced(int index, T oldItem) {
@@ -284,8 +306,8 @@ namespace SavableObservable {
             _deltaCount = 1;
             _deltaItem = oldItem;
             _deltaSnapshot = null;
-            _itemsAtDelta = _items;
-            _countAtDelta = _items.Count;
+            _itemsAtDelta = Items;
+            _countAtDelta = Items.Count;
         }
 
         private void RecordUnchanged() {
@@ -293,8 +315,8 @@ namespace SavableObservable {
             _deltaKind = PrevDelta.Unchanged;
             _deltaSnapshot = null;
             _deltaItem = default;
-            _itemsAtDelta = _items;
-            _countAtDelta = _items.Count;
+            _itemsAtDelta = Items;
+            _countAtDelta = Items.Count;
         }
 
         private void RecordSnapshot(T[] snapshot) {
@@ -302,8 +324,8 @@ namespace SavableObservable {
             _deltaKind = PrevDelta.Snapshot;
             _deltaSnapshot = snapshot ?? Array.Empty<T>();
             _deltaItem = default;
-            _itemsAtDelta = _items;
-            _countAtDelta = _items.Count;
+            _itemsAtDelta = Items;
+            _countAtDelta = Items.Count;
         }
 
         private IReadOnlyList<T> MaterializePrevious() {
@@ -388,6 +410,11 @@ namespace SavableObservable {
         }
 
         private void NotifyChanged() {
+#if UNITY_EDITOR
+            _lastValidatedSnapshot = (_items == null || _items.Count == 0) ? Array.Empty<T>() : _items.ToArray();
+            _hasLastValidatedSnapshot = true;
+            _hasEditorGuiSnapshot = false;
+#endif
             OnChanged?.Invoke(this);
         }
 

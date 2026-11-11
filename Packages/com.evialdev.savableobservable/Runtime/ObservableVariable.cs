@@ -72,6 +72,8 @@ namespace SavableObservable {
             _notifyOnSameValue = true;
         }
 
+        [NonSerialized] private Queue<(T value, bool isForce)> _pendingTransitions;
+
         /// <summary>
         /// Main access point for getting and setting the variable.
         /// Triggers change events when the value changes (compared with <see cref="EqualityComparer{T}.Default"/>),
@@ -80,10 +82,14 @@ namespace SavableObservable {
         public T Value {
             get => _value;
             set {
+                if (_onValueChanged != null && _onValueChanged.IsInvoking) {
+                    if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
+                    _pendingTransitions.Enqueue((value, false));
+                    return;
+                }
+
                 if (!_notifyOnSameValue && EqualityComparer<T>.Default.Equals(_value, value)) return;
-                PreviousValue = _value;
-                _value = value;
-                OnValueChanged?.Invoke(this);
+                ApplyAndNotify(value, force: false);
             }
         }
 
@@ -91,8 +97,55 @@ namespace SavableObservable {
         /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
         /// </summary>
         public void ForceNotify() {
+            if (_onValueChanged != null && _onValueChanged.IsInvoking) {
+                if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
+                _pendingTransitions.Enqueue((_value, true));
+                return;
+            }
+
+            ApplyAndNotify(_value, force: true);
+        }
+
+        private void ApplyAndNotify(T newValue, bool force) {
             PreviousValue = _value;
+            if (!force) {
+                _value = newValue;
+            }
+#if UNITY_EDITOR
+            _lastValidatedValue = _value;
+            _hasLastValidatedValue = true;
+            _hasEditorGuiSnapshot = false;
+#endif
             OnValueChanged?.Invoke(this);
+
+            if (_pendingTransitions != null && _pendingTransitions.Count > 0) {
+                const int maxIterations = 32;
+                int iterations = 0;
+                while (_pendingTransitions.Count > 0) {
+                    var (nextVal, isForce) = _pendingTransitions.Dequeue();
+                    if (!isForce && !_notifyOnSameValue && EqualityComparer<T>.Default.Equals(_value, nextVal)) {
+                        continue;
+                    }
+
+                    PreviousValue = _value;
+                    if (!isForce) {
+                        _value = nextVal;
+                    }
+#if UNITY_EDITOR
+                    _lastValidatedValue = _value;
+                    _hasLastValidatedValue = true;
+                    _hasEditorGuiSnapshot = false;
+#endif
+                    OnValueChanged?.Invoke(this);
+
+                    iterations++;
+                    if (iterations >= maxIterations) {
+                        _pendingTransitions.Clear();
+                        Debug.LogError($"ObservableTrackedAction.Invoke exceeded maxIterations ({maxIterations}); stopping to prevent infinite loop.");
+                        break;
+                    }
+                }
+            }
         }
 
         public override string ToString() => _value?.ToString();
@@ -109,6 +162,13 @@ namespace SavableObservable {
                 _lastValidatedValue = _value;
                 _hasLastValidatedValue = true;
             }
+        }
+
+        /// <summary>
+        /// Clears the active GUI snapshot when a change check completes without modifications.
+        /// </summary>
+        public void ClearEditorGuiSnapshot() {
+            _hasEditorGuiSnapshot = false;
         }
 
         /// <summary>

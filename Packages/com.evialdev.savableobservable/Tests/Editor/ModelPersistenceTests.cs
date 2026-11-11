@@ -130,10 +130,12 @@ namespace SavableObservable.Tests {
             model.InitializeDefaults();
             presenter.InitializeBinding();
             var eventsBefore = presenter.HealthChangeEventsCount;
+            var inventoryEventsBefore = presenter.InventoryChangeEventsCount;
 
             loader.LoadDataFromModel(sourceModel); // every observable value already equals the current one
 
             Assert.AreEqual(eventsBefore, presenter.HealthChangeEventsCount, "Loading equal values must not notify.");
+            Assert.AreEqual(inventoryEventsBefore, presenter.InventoryChangeEventsCount, "Loading equal ObservableList values must not notify.");
         }
 
         [Test]
@@ -222,6 +224,8 @@ namespace SavableObservable.Tests {
 
             public string PropertyBacked { get; set; }
             public int ReadOnlyProperty => 5;
+            public int AutoReadOnly { get; } = 42;
+            [NonSaved] public string TransientProperty { get; set; }
         }
 
         [Test]
@@ -240,14 +244,18 @@ namespace SavableObservable.Tests {
             source.plainArray = new[] { 1, 2, 3 };
             source.plainList.Add("p");
             source.PropertyBacked = "prop";
+            source.TransientProperty = "should-not-copy";
 
             target.transientVar.Value = -1;
             target.plainTransient = -2;
+            target.TransientProperty = "original";
 
             var targetSavedWrapper = target.saved;
             target.LoadDataFromModel(source);
 
             Assert.AreEqual("prop", target.PropertyBacked, "Writable properties are copied.");
+            Assert.AreEqual(42, target.AutoReadOnly, "Read-only auto-properties must not be overwritten.");
+            Assert.AreEqual("original", target.TransientProperty, "[NonSaved] property must be skipped.");
             Assert.AreEqual(11, target.saved.Value, "Observable fields are copied.");
             Assert.AreSame(targetSavedWrapper, target.saved, "Observable wrappers are preserved.");
             CollectionAssert.AreEqual(new[] { "kept" }, target.savedList, "Observable lists are copied.");
@@ -316,6 +324,85 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(3, source.numbers.Count);
             Assert.AreEqual(3, target.items.Count, "Mutating source ObservableList must not affect target model");
             Assert.AreEqual(3, target.numbers.Count, "Mutating source List must not affect target model");
+        }
+
+        [Test]
+        public void LoadDataFromModel_FromPlainDtoObject_CopiesMatchingFieldsAndObservablesWithoutTargetException() {
+            var model = _unitA.AddComponent<SamplePlayerModel>();
+            model.InitializeDefaults();
+
+            var dto = new SampleSaveDto {
+                playerName = "Gandalf",
+                health = 150,
+                energy = 0.9f,
+                isShieldActive = true,
+                inventory = new System.Collections.Generic.List<string> { "Staff", "Ring" },
+                score = 12345
+            };
+
+            model.LoadDataFromModel(dto);
+
+            Assert.AreEqual("Gandalf", model.playerName.Value);
+            Assert.AreEqual(150, model.health.Value);
+            Assert.AreEqual(0.9f, model.energy.Value, 1e-5f);
+            Assert.IsTrue(model.isShieldActive.Value);
+            CollectionAssert.AreEqual(new[] { "Staff", "Ring" }, model.inventory.Value);
+            Assert.AreEqual(12345, model.score);
+        }
+
+        private class BaseShadowModel : BaseObservableDataModel {
+            [SerializeField] private ObservableVariable<int> _secret = new ObservableVariable<int>();
+            [SerializeField] private int _plain;
+
+            public int BaseSecret {
+                get => _secret.Value;
+                set => _secret.Value = value;
+            }
+            public int BasePlain {
+                get => _plain;
+                set => _plain = value;
+            }
+            public ObservableVariable<int> BaseSecretVar => _secret;
+        }
+
+        private class DerivedShadowModel : BaseShadowModel {
+            [SerializeField] private ObservableVariable<int> _secret = new ObservableVariable<int>();
+            [SerializeField] private int _plain;
+
+            public int DerivedSecret {
+                get => _secret.Value;
+                set => _secret.Value = value;
+            }
+            public int DerivedPlain {
+                get => _plain;
+                set => _plain = value;
+            }
+            public ObservableVariable<int> DerivedSecretVar => _secret;
+        }
+
+        [Test]
+        public void ModelDescriptor_PreservesShadowedBaseClassPrivateFields() {
+            var target = _unitA.AddComponent<DerivedShadowModel>();
+            var source = _unitB.AddComponent<DerivedShadowModel>();
+
+            target.EnsureFieldsInitialized();
+            source.EnsureFieldsInitialized();
+
+            Assert.IsNotNull(target.BaseSecretVar, "Base private observable must be initialized");
+            Assert.IsNotNull(target.DerivedSecretVar, "Derived private observable must be initialized");
+            Assert.AreNotSame(target.BaseSecretVar, target.DerivedSecretVar, "Base and derived observables must be distinct instances");
+
+            source.BaseSecret = 100;
+            source.DerivedSecret = 200;
+            source.BasePlain = 10;
+            source.DerivedPlain = 20;
+
+            target.LoadDataFromModel(source);
+
+            Assert.AreEqual(100, target.BaseSecret, "Base private observable must be copied independently");
+            Assert.AreEqual(200, target.DerivedSecret, "Derived private observable must be copied independently");
+            Assert.AreEqual(10, target.BasePlain, "Base private plain field must be copied independently");
+            Assert.AreEqual(20, target.DerivedPlain, "Derived private plain field must be copied independently");
         }
     }
 }

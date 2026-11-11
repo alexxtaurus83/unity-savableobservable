@@ -6,6 +6,11 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using UnityEngine.TestTools.Constraints;
 using SavableObservable;
+using SavableObservable.Editor;
+using SavableObservable.Samples;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 using Is = UnityEngine.TestTools.Constraints.Is;
 
 namespace SavableObservable.Tests {
@@ -316,6 +321,92 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(250, receivedNewValue);
             Assert.AreEqual(1, changeCount);
         }
+
+        [Test]
+        public void BaseObservableDataModel_OnValidate_ForwardsToObservableFields_WhenSerializedObjectChangesApplied() {
+            var host = new GameObject("TestModelHost");
+            try {
+                var model = host.AddComponent<SamplePlayerModel>();
+                model.InitializeDefaults();
+                int healthChanges = 0;
+                model.health.OnValueChanged.Add(_ => healthChanges++, null);
+                int inventoryChanges = 0;
+                model.inventory.OnChanged.Add(_ => inventoryChanges++, null);
+
+                var so = new SerializedObject(model);
+                var healthProp = so.FindProperty("health._value");
+                healthProp.intValue = 75;
+                var inventoryProp = so.FindProperty("inventory._items");
+                inventoryProp.arraySize = 3;
+                inventoryProp.GetArrayElementAtIndex(2).stringValue = "Shield";
+                so.ApplyModifiedProperties();
+
+                // Invoke BaseObservableDataModel.OnValidate
+                var onValidateMethod = typeof(BaseObservableDataModel).GetMethod("OnValidate", BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.IsNotNull(onValidateMethod, "BaseObservableDataModel must declare protected virtual OnValidate()");
+                onValidateMethod.Invoke(model, null);
+
+                Assert.AreEqual(75, model.health.Value);
+                Assert.AreEqual(100, model.health.PreviousValue);
+                Assert.AreEqual(1, healthChanges);
+
+                Assert.AreEqual(3, model.inventory.Count);
+                CollectionAssert.AreEqual(new[] { "Sword", "Potion", "Shield" }, model.inventory.Value);
+                CollectionAssert.AreEqual(new[] { "Sword", "Potion" }, model.inventory.PreviousValue);
+                Assert.AreEqual(1, inventoryChanges);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(host);
+            }
+        }
+
+        [Test]
+        public void PropertyResolver_GetTargetObjectsOfProperty_ResolvesAcrossMultiObjectSelection() {
+            var hostA = new GameObject("HostA");
+            var hostB = new GameObject("HostB");
+            try {
+                var modelA = hostA.AddComponent<SamplePlayerModel>();
+                var modelB = hostB.AddComponent<SamplePlayerModel>();
+                modelA.InitializeDefaults();
+                modelB.InitializeDefaults();
+
+                var so = new SerializedObject(new UnityEngine.Object[] { modelA, modelB });
+                var prop = so.FindProperty("health");
+                var targets = PropertyResolver.GetTargetObjectsOfProperty(prop);
+
+                Assert.IsNotNull(targets);
+                Assert.AreEqual(2, targets.Length);
+                Assert.AreSame(modelA.health, targets[0]);
+                Assert.AreSame(modelB.health, targets[1]);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(hostA);
+                UnityEngine.Object.DestroyImmediate(hostB);
+            }
+        }
+
+        private class BaseHierarchyModel : MonoBehaviour {
+            [SerializeField] private ObservableVariable<int> _score = new ObservableVariable<int> { Value = 42 };
+            public ObservableVariable<int> ScoreField => _score;
+        }
+
+        private class DerivedHierarchyModel : BaseHierarchyModel {
+            public int Score => 999;
+        }
+
+        [Test]
+        public void PropertyResolver_FieldFirstHierarchyLookup_PrefersFieldOverProperty() {
+            var host = new GameObject("HierarchyTestHost");
+            try {
+                var derived = host.AddComponent<DerivedHierarchyModel>();
+                var so = new SerializedObject(derived);
+                var prop = so.FindProperty("_score");
+                var target = PropertyResolver.GetTargetObjectOfProperty(prop);
+
+                Assert.IsNotNull(target);
+                Assert.AreSame(derived.ScoreField, target);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(host);
+            }
+        }
 #endif
 
         #endregion
@@ -344,6 +435,26 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(2, changes);
             list.OnValidate();
             Assert.AreEqual(2, changes, "An unchanged validation must not notify again.");
+        }
+
+        [Test]
+        public void ObservableList_NullItemsDeserializationGuard_SucceedsWithoutException() {
+            var list = new ObservableList<int>();
+            // Force _items to null via reflection (simulating deserialization)
+            var itemsField = typeof(ObservableList<int>).GetField("_items", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(itemsField);
+            itemsField.SetValue(list, null);
+
+            Assert.AreEqual(0, list.Count);
+            Assert.AreEqual("Count = 0", list.ToString());
+            Assert.DoesNotThrow(() => {
+                foreach (var item in list) { }
+            });
+            Assert.DoesNotThrow(() => list.Add(42));
+            Assert.AreEqual(1, list.Count);
+            Assert.AreEqual(42, list[0]);
+            Assert.DoesNotThrow(() => list.Clear());
+            Assert.AreEqual(0, list.Count);
         }
 
         [Test]

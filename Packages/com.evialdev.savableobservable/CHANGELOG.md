@@ -1,5 +1,49 @@
 # Changelog
 
+## [2.1.0] - 2026-11-11 - Unity 6000.5+ baseline & engine bug-fixes
+
+### Changed (engine & compatibility)
+- **Minimum Unity Version Bumped to 6000.5:**
+  - Updated `package.json` minimum Unity version to `6000.5`.
+  - Removed `< 6000.5` preprocessor `#if` shims and deleted `Runtime/LifecycleManagementCompatibility.cs`.
+  - Native `Unity.Scripting.LifecycleManagement` attributes (`[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`) are unconditionally active across runtime and editor assemblies.
+  - Removed `UNITY_HAS_LIFECYCLE_MANAGEMENT` from versionDefines in all `.asmdef` files.
+
+### Fixed (runtime & editor bugs)
+- **`ServiceLocator` Scene Discovery in `Awake()`:**
+  - `InitializeSharedSingletons()` attempts `scene.GetRootGameObjects()` during `Awake()` whenever `scene.IsValid() && (Application.isPlaying || scene.isLoaded)` and filters any fallback scan so objects from other scenes or `DontDestroyOnLoad` are never pulled into this scene's `ServiceLocator`.
+- **`[AutoBind]` Fake-Null Guards:**
+  - Guarded UI component references in `Observable.SubscribeAutoBindHandler` with `IsTargetAlive(currentUiComponent)` to safely handle unassigned `[SerializeField]` fields and destroyed `UnityEngine.Object` components without logging errors.
+- **Editor Validation & Multi-Object Editing:**
+  - Added `BaseObservableDataModel.OnValidate()` to forward editor validation and undo/redo to observable fields.
+  - Synchronized `_lastValidatedValue` and `_lastValidatedSnapshot` on runtime and editor mutations.
+  - Cleared `_hasEditorGuiSnapshot` cleanly when change checks complete without modifications so `Layout`/`Repaint` passes do not clobber pre-undo baselines.
+  - Added `PropertyResolver.GetTargetObjectsOfProperty` and updated drawers to support multi-object editing across all selected targets.
+- **Execution Order Synchronizer Batching:**
+  - Confirmed explicit `[DefaultExecutionOrder(-200)]` on `ServiceLocator`.
+  - Batched `MonoImporter.SetExecutionOrder` calls in `MMVCExecutionOrderSynchronizer.SyncAll()` inside `AssetDatabase.StartAssetEditing()` and `AssetDatabase.StopAssetEditing()`.
+- **Custom UIAdapter Deduplication in Fast Play Mode:**
+  - `UIAdapterRegistry.RegisterAdapter` now replaces existing custom adapters of the same concrete `Type` rather than accumulating duplicate instances across Fast Play Mode sessions.
+- **`BaseObservableDataModel.LoadDataFromModel` Fixes:**
+  - `ObservableList<T>.Value` setter now suppresses notifications when assigned a list element-wise equal to the current one (preserving the silent-on-equal load contract).
+  - Broadened `[NonSaved]` attribute to `AttributeTargets.Field | AttributeTargets.Property` and skipped `[NonSaved]` properties in `ModelDescriptor`.
+  - Excluded compiler-generated backing fields from `LoadPlainFields`, ensuring read-only auto-properties are not overwritten during load.
+  - Added cross-type / DTO support in `LoadDataFromModel(object model)` by resolving matching readable properties/fields on `model.GetType()` without throwing `TargetException`.
+- **FIFO Re-Entrant Transitions in `ObservableVariable<T>`:**
+  - When a subscriber mutates `Value` or calls `ForceNotify()` during `OnValueChanged.Invoke`, the transition is enqueued in a FIFO queue and processed pass-by-pass, guaranteeing every subscriber observes each transition in order without missing transitions or receiving duplicate callbacks.
+- **Shadowed Base-Class Private Fields:**
+  - `ModelDescriptor` includes all declared observable fields across the hierarchy in `ObservableFields` and `LoadObservableFields`, and preserves base-class private plain fields in `LoadPlainFields`.
+- **Enum and `Nullable<T>` UI Adapter Support:**
+  - Added `UIAdapterRegistry.TryConvertValue` supporting `enum`, `Nullable<T>`, primitives, and strings in `StringInputAdapterBase` and `SliderAdapter`.
+  - `SliderAdapter.SetValue` converts enums to float values.
+- **Per-Control UI Re-Entrancy Tracking:**
+  - Replaced thread-static `_isSettingValue` with per-control `_activeSetValueTargets` in `UIAdapterRegistry`, preventing callbacks on one control from suppressing two-way binding on another control of the same type.
+- **`PropertyResolver` Hierarchy & Enumerator Fixes:**
+  - `PropertyResolver.GetValueByPathSegment` performs exact case-sensitive field lookup across the entire hierarchy before checking parameterless properties.
+  - Disposes `IEnumerator` in a `try / finally` block when resolving indexed path segments.
+- **`ObservableList<T>` Null-Items Deserialization Guard:**
+  - Guarded `_items` with an internal lazy accessor (`Items => _items ??= new List<T>();`), ensuring operations succeed cleanly even if deserialized with a null items field.
+
 ## [2.0.0] - 2026-11-09 - MMVC simplification & opt-in same-value notification
 
 Major release: several behaviors and public APIs changed. See **Migration** below.

@@ -11,18 +11,17 @@ namespace SavableObservable.Editor {
             var valueProperty = property.FindPropertyRelative("_value");
 
             if (valueProperty != null) {
-                IObservableVariable targetObject = null;
-                // Only resolve target object if we are in a context where we might need it (optimization)
-                // or simply do it once. Resolving every frame in OnGUI can be heavy if deep in hierarchy.
-                // We'll resolve it since we need to call OnBeginGui().
+                object[] targetObjects = null;
                 try {
-                    targetObject = PropertyResolver.GetTargetObjectOfProperty(property) as IObservableVariable;
+                    targetObjects = PropertyResolver.GetTargetObjectsOfProperty(property);
                 } catch {
                     // Ignore resolution errors to prevent UI freeze
                 }
 
-                if (targetObject != null) {
-                    targetObject.OnBeginGui();
+                if (targetObjects != null) {
+                    for (int i = 0; i < targetObjects.Length; i++) {
+                        (targetObjects[i] as IObservableVariable)?.OnBeginGui();
+                    }
                 }
 
                 // Begin change check before drawing
@@ -35,8 +34,16 @@ namespace SavableObservable.Editor {
                     // Apply the changes to ensure the serialized data is updated
                     property.serializedObject.ApplyModifiedProperties();
 
-                    if (targetObject != null) {
-                        targetObject.OnValidate();
+                    if (targetObjects != null) {
+                        for (int i = 0; i < targetObjects.Length; i++) {
+                            (targetObjects[i] as IObservableVariable)?.OnValidate();
+                        }
+                    }
+                } else {
+                    if (targetObjects != null) {
+                        for (int i = 0; i < targetObjects.Length; i++) {
+                            (targetObjects[i] as IObservableVariable)?.ClearEditorGuiSnapshot();
+                        }
                     }
                 }
             } else {

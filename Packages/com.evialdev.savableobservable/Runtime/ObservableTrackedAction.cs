@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
     /// <summary>
@@ -11,9 +9,7 @@ namespace SavableObservable {
     /// main-thread capture at subsystem registration and domain load.
     /// </summary>
     public static class ObservableTrackedAction {
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static int _mainThreadId = -1;
 
         static ObservableTrackedAction() {
@@ -54,6 +50,8 @@ namespace SavableObservable {
         private Action<T>[] _handlersArray = Array.Empty<Action<T>>();
         private bool _isInvoking;
         private bool _pending;
+
+        public bool IsInvoking => _isInvoking;
 
         public static ObservableTrackedAction<T> operator +(ObservableTrackedAction<T> trackedAction, Action<T> handler) {
             if (trackedAction == null) {

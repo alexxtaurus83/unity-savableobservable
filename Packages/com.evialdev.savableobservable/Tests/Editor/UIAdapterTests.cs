@@ -478,5 +478,92 @@ namespace SavableObservable.Tests {
 
             Assert.IsNull(UIAdapterRegistry.GetAdapter(typeof(DynamicTestComponent)), "Custom adapter should be cleared after ClearCustomAdapters");
         }
+
+        public enum SampleAdapterEnum {
+            First = 0,
+            Second = 1,
+            Third = 2
+        }
+
+        [Test]
+        public void SliderAdapter_SupportsEnumAndNullableTwoWayBinding() {
+            var slider = _host.AddComponent<Slider>();
+            var adapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
+            Assert.IsNotNull(adapter);
+
+            // 1. Enum binding
+            adapter.SetValue(slider, SampleAdapterEnum.Second, typeof(SampleAdapterEnum));
+            Assert.AreEqual(1f, slider.value);
+
+            SampleAdapterEnum receivedEnum = SampleAdapterEnum.First;
+            adapter.AddListener(slider, v => receivedEnum = (SampleAdapterEnum)v, typeof(SampleAdapterEnum));
+            slider.value = 2f;
+            Assert.AreEqual(SampleAdapterEnum.Third, receivedEnum);
+
+            // 2. Nullable binding
+            int? receivedNullable = null;
+            adapter.AddListener(slider, v => receivedNullable = (int?)v, typeof(int?));
+            adapter.SetValue(slider, (int?)8, typeof(int?));
+            Assert.AreEqual(8f, slider.value);
+            slider.value = 5f;
+            Assert.AreEqual((int?)5, receivedNullable);
+        }
+
+        [Test]
+        public void StringInputAdapter_SupportsEnumAndNullableTwoWayBinding() {
+            var tmpInput = _host.AddComponent<TMP_InputField>();
+            var adapter = UIAdapterRegistry.GetAdapter(typeof(TMP_InputField)) as IUIListenerAdapter;
+            Assert.IsNotNull(adapter);
+
+            // 1. Enum binding
+            adapter.SetValue(tmpInput, SampleAdapterEnum.Second, typeof(SampleAdapterEnum));
+            Assert.AreEqual("Second", tmpInput.text);
+
+            SampleAdapterEnum receivedEnum = SampleAdapterEnum.First;
+            adapter.AddListener(tmpInput, v => receivedEnum = (SampleAdapterEnum)v, typeof(SampleAdapterEnum));
+            tmpInput.text = "Third";
+            Assert.AreEqual(SampleAdapterEnum.Third, receivedEnum);
+
+            // 2. Nullable binding
+            int? receivedNullable = 100;
+            adapter.AddListener(tmpInput, v => receivedNullable = (int?)v, typeof(int?));
+            adapter.SetValue(tmpInput, (int?)42, typeof(int?));
+            Assert.AreEqual("42", tmpInput.text);
+
+            tmpInput.text = "";
+            Assert.IsNull(receivedNullable, "Empty input string must convert to null for Nullable<T> valueType.");
+
+            tmpInput.text = "99";
+            Assert.AreEqual((int?)99, receivedNullable);
+        }
+
+        [Test]
+        public void UIAdapters_PerControlReentrancy_DoesNotSuppressOtherControlCallbacks() {
+            var goA = new GameObject("SliderA", typeof(RectTransform), typeof(Slider));
+            var goB = new GameObject("SliderB", typeof(RectTransform), typeof(Slider));
+            goA.transform.SetParent(_host.transform, false);
+            goB.transform.SetParent(_host.transform, false);
+
+            var sliderA = goA.GetComponent<Slider>();
+            var sliderB = goB.GetComponent<Slider>();
+            var adapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
+            Assert.IsNotNull(adapter);
+
+            float sliderBReceived = 0f;
+            adapter.AddListener(sliderB, v => sliderBReceived = (float)v, typeof(float));
+
+            // When sliderA's value changes, callback modifies sliderB.value
+            sliderA.onValueChanged.AddListener(v => {
+                sliderB.value = v * 2f;
+            });
+
+            // SetValue on sliderA triggers its onValueChanged callback, which sets sliderB.value
+            sliderA.value = 1f;
+            adapter.SetValue(sliderA, 5f, typeof(float));
+
+            // If re-entrancy tracking was static, sliderB's listener would have been suppressed.
+            // With per-control tracking, sliderB's listener runs and captures 10f.
+            Assert.AreEqual(10f, sliderBReceived, "Control B's listener must not be suppressed during Control A's SetValue callback.");
+        }
     }
 }

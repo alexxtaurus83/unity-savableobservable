@@ -20,6 +20,8 @@ namespace SavableObservable.Editor {
 
         public static void SyncAll() {
             var monoScripts = MonoImporter.GetAllRuntimeMonoScripts();
+            var toUpdate = new System.Collections.Generic.List<(MonoScript script, int targetOrder)>();
+
             for (int i = 0; i < monoScripts.Length; i++) {
                 var script = monoScripts[i];
                 if (script == null) continue;
@@ -37,8 +39,19 @@ namespace SavableObservable.Editor {
                 if (targetOrder != int.MinValue) {
                     int currentOrder = MonoImporter.GetExecutionOrder(script);
                     if (currentOrder != targetOrder) {
-                        MonoImporter.SetExecutionOrder(script, targetOrder);
+                        toUpdate.Add((script, targetOrder));
                     }
+                }
+            }
+
+            if (toUpdate.Count > 0) {
+                AssetDatabase.StartAssetEditing();
+                try {
+                    for (int i = 0; i < toUpdate.Count; i++) {
+                        MonoImporter.SetExecutionOrder(toUpdate[i].script, toUpdate[i].targetOrder);
+                    }
+                } finally {
+                    AssetDatabase.StopAssetEditing();
                 }
             }
         }

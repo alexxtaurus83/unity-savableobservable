@@ -1,7 +1,5 @@
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
 
@@ -10,9 +8,7 @@ namespace SavableObservable {
     /// </summary>
     public static partial class ObservableSettings {
 
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static bool _strictBinding;
 
         /// <summary>
@@ -28,9 +24,7 @@ namespace SavableObservable {
         }
 
         // Stored inverted so that the default value of the field (what [AutoStaticsCleanup] resets it to) is the default behavior: replay on.
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static bool _syncOnBindDisabled;
 
         /// <summary>

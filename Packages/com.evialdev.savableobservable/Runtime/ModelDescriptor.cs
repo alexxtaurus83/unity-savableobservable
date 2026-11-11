@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
 
@@ -50,6 +48,7 @@ namespace SavableObservable {
                 foreach (var prop in t.GetProperties(Declared)) {
                     if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
                     if (IsUnityComponentProperty(prop)) continue;
+                    if (prop.IsDefined(typeof(NonSavedAttribute), true)) continue;
                     if (seenPropNames.Add(prop.Name)) {
                         props.Add(prop);
                     }
@@ -58,9 +57,11 @@ namespace SavableObservable {
                 foreach (var field in t.GetFields(Declared)) {
                     var isObservable = Observable.IsSupportedFieldType(field);
 
-                    if (isObservable && !byName.ContainsKey(field.Name)) {
+                    if (isObservable) {
                         supported.Add(field);
-                        byName[field.Name] = field;
+                        if (!byName.ContainsKey(field.Name)) {
+                            byName[field.Name] = field;
+                        }
                     }
 
                     if (field.IsDefined(typeof(NotifyOnSameValueAttribute), true)) {
@@ -73,7 +74,7 @@ namespace SavableObservable {
                     }
 
                     if (field.IsDefined(typeof(NonSavedAttribute), true)) continue;
-                    if (!seenFieldNames.Add(field.Name)) continue;
+                    if (field.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute), false)) continue;
 
                     if (isObservable) {
                         var valueProp = field.FieldType.GetProperty("Value");
@@ -81,7 +82,9 @@ namespace SavableObservable {
                             loadObs.Add((field, valueProp, valueProp.PropertyType));
                         }
                     } else {
-                        loadPlain.Add(field);
+                        if (field.IsPrivate || seenFieldNames.Add(field.Name)) {
+                            loadPlain.Add(field);
+                        }
                     }
                 }
             }
@@ -94,13 +97,9 @@ namespace SavableObservable {
             LoadPlainFields = loadPlain.ToArray();
         }
 
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly Dictionary<Type, ModelDescriptor> _cache = new Dictionary<Type, ModelDescriptor>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly object _cacheLock = new object();
 
         /// <summary>Returns the cached descriptor for <paramref name="modelType"/>, building it on first use.</summary>

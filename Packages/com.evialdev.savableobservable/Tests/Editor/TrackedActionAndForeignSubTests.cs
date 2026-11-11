@@ -227,6 +227,30 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
+        public void ReentrantValueChange_MultipleSubscribers_DeliversEveryTransitionInFifoOrderWithoutDuplicateCalls() {
+            var variable = new ObservableVariable<int> { Value = 0 };
+            var transitions = new List<(int value, int prev)>();
+
+            // H1: mutates Value to 2 when it sees Value == 1
+            variable.OnValueChanged.Add(v => {
+                if (v.Value == 1) {
+                    v.Value = 2;
+                }
+            }, null);
+
+            // H2: records every transition seen
+            variable.OnValueChanged.Add(v => {
+                transitions.Add((v.Value, v.PreviousValue));
+            }, null);
+
+            variable.Value = 1;
+
+            Assert.AreEqual(2, transitions.Count, "H2 must receive exactly 2 transitions.");
+            Assert.AreEqual((1, 0), transitions[0], "First transition must be (1, 0).");
+            Assert.AreEqual((2, 1), transitions[1], "Second transition must be (2, 1).");
+        }
+
+        [Test]
         public void ExceptionIsolation_OneThrowingHandler_DoesNotPreventSubsequentHandlers() {
             var action = new ObservableTrackedAction<ObservableVariable<int>>();
             var modelVar = new ObservableVariable<int> { Value = 1 };

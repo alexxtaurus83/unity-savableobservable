@@ -262,7 +262,7 @@ namespace SavableObservable.Tests.Contracts {
                     if (mb is IObservablePresenter) presenters.Add(mb);
                 }
             } else {
-                foreach (var mb in UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None)) {
+                foreach (var mb in UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include)) {
                     if (mb is IObservablePresenter) presenters.Add(mb);
                 }
             }

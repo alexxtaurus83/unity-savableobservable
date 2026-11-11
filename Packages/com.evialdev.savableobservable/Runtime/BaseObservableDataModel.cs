@@ -15,6 +15,17 @@ namespace SavableObservable {
             EnsureFieldsInitialized();
         }
 
+#if UNITY_EDITOR
+        protected virtual void OnValidate() {
+            EnsureFieldsInitialized();
+            foreach (var field in GetCachedObservableFields()) {
+                if (field.GetValue(this) is IObservableVariable observableVar) {
+                    observableVar.OnValidate();
+                }
+            }
+        }
+#endif
+
         /// <summary>
         /// Gets the cached observable fields for this data model.
         /// </summary>
@@ -87,6 +98,42 @@ namespace SavableObservable {
             return value;
         }
 
+        private static bool TryGetMemberValue(object source, Type sourceType, string name, Type expectedType, out object value) {
+            value = null;
+            if (source == null || sourceType == null) return false;
+
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+
+            var prop = sourceType.GetProperty(name, flags);
+            if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
+                try {
+                    var raw = prop.GetValue(source);
+                    if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                        value = raw;
+                        return true;
+                    }
+                } catch { }
+            }
+
+            var field = sourceType.GetField(name, flags);
+            if (field != null) {
+                try {
+                    var raw = field.GetValue(source);
+                    if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                        value = raw;
+                        return true;
+                    }
+                } catch { }
+            }
+
+            if (name.StartsWith("_") && name.Length > 1) {
+                var stripped = name.Substring(1);
+                return TryGetMemberValue(source, sourceType, stripped, expectedType, out value);
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// Loads the data from saved model of <see cref="BaseObservableDataModel" /> to the <see cref="ObservableVariable" /> types at current <see cref="BaseObservableDataModel" /> model.
         /// </summary>
@@ -99,10 +146,19 @@ namespace SavableObservable {
             }
 
             var descriptor = ModelDescriptor.Get(GetType());
+            bool isDirectModel = GetType().IsAssignableFrom(model.GetType());
 
             foreach (var prop in descriptor.LoadProperties) {
                 try {
-                    var modelValue = prop.GetValue(model);
+                    object modelValue = null;
+                    if (isDirectModel) {
+                        modelValue = prop.GetValue(model);
+                    } else if (TryGetMemberValue(model, model.GetType(), prop.Name, prop.PropertyType, out var val)) {
+                        modelValue = val;
+                    } else {
+                        continue;
+                    }
+
                     modelValue = CloneIfListOrArray(modelValue, prop.PropertyType);
                     prop.SetValue(this, modelValue);
                 }
@@ -113,24 +169,41 @@ namespace SavableObservable {
 
             foreach (var (field, valueProp, destType) in descriptor.LoadObservableFields) {
                 try {
-                    var sourceFieldObj = field.GetValue(model);
-                    if (sourceFieldObj == null) {
-                        Debug.LogWarning($"[BaseObservableDataModel] LoadDataFromModel: Field '{field.Name}' on {GetType().Name} has null value in source model. Skipping Value copy for this field.");
-                        continue;
-                    }
-
                     var thisValue = field.GetValue(this);
                     if (thisValue == null) {
                         Debug.LogError($"[BaseObservableDataModel] LoadDataFromModel: Field '{field.Name}' on {GetType().Name} is null. EnsureFieldsInitialized() was not called or field initialization failed. Skipping this field.");
                         continue;
                     }
 
-                    var sourceValue = valueProp.GetValue(sourceFieldObj);
-                    var sourceType = sourceValue?.GetType() ?? typeof(object);
-                    
-                    // Check for type mismatch
-                    if (sourceValue != null && !destType.IsAssignableFrom(sourceType)) {
-                        Debug.LogError($"[BaseObservableDataModel] LoadDataFromModel: Type mismatch for field '{field.Name}'. Destination type: {destType.Name}, Source type: {sourceType.Name}. Skipping this field.");
+                    object sourceValue = null;
+                    if (isDirectModel) {
+                        var sourceFieldObj = field.GetValue(model);
+                        if (sourceFieldObj == null) {
+                            Debug.LogWarning($"[BaseObservableDataModel] LoadDataFromModel: Field '{field.Name}' on {GetType().Name} has null value in source model. Skipping Value copy for this field.");
+                            continue;
+                        }
+                        sourceValue = valueProp.GetValue(sourceFieldObj);
+                    } else {
+                        var sourceType = model.GetType();
+                        if (TryGetMemberValue(model, sourceType, field.Name, typeof(object), out var memberObj) && memberObj != null) {
+                            var srcValProp = memberObj.GetType().GetProperty("Value");
+                            if (srcValProp != null && srcValProp.CanRead) {
+                                sourceValue = srcValProp.GetValue(memberObj);
+                            } else if (destType.IsAssignableFrom(memberObj.GetType())) {
+                                sourceValue = memberObj;
+                            } else {
+                                continue;
+                            }
+                        } else if (TryGetMemberValue(model, sourceType, field.Name, destType, out var rawVal)) {
+                            sourceValue = rawVal;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    var sourceTypeActual = sourceValue?.GetType() ?? typeof(object);
+                    if (sourceValue != null && !destType.IsAssignableFrom(sourceTypeActual)) {
+                        Debug.LogError($"[BaseObservableDataModel] LoadDataFromModel: Type mismatch for field '{field.Name}'. Destination type: {destType.Name}, Source type: {sourceTypeActual.Name}. Skipping this field.");
                         continue;
                     }
 
@@ -144,7 +217,15 @@ namespace SavableObservable {
 
             foreach (var field in descriptor.LoadPlainFields) {
                 try {
-                    var modelValue = field.GetValue(model);
+                    object modelValue = null;
+                    if (isDirectModel) {
+                        modelValue = field.GetValue(model);
+                    } else if (TryGetMemberValue(model, model.GetType(), field.Name, field.FieldType, out var val)) {
+                        modelValue = val;
+                    } else {
+                        continue;
+                    }
+
                     modelValue = CloneIfListOrArray(modelValue, field.FieldType);
                     field.SetValue(this, modelValue);
                 }

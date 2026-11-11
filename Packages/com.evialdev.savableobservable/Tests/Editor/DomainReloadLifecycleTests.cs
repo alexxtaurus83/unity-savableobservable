@@ -39,7 +39,6 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(60, presenter.LastObservedHealth, "Handler should be detached after CleanupSubscriptions");
         }
 
-#if UNITY_6000_0_OR_NEWER || UNITY_6_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [Test]
         public void DomainReload_SubsystemRegistration_ResetInstanceData_ExecutesCleanly() {
             var method = typeof(Observable).GetMethod("ResetInstanceData", BindingFlags.NonPublic | BindingFlags.Static);
@@ -202,7 +201,35 @@ namespace SavableObservable.Tests {
                 UIAdapterRegistry.ClearCustomAdapters();
             }
         }
-#endif
+
+        [Test]
+        public void CustomAdapterRegistration_ReplacesPreviousInstanceAcrossFastPlayModeRuns() {
+            UIAdapterRegistry.ClearCustomAdapters();
+            try {
+                var resetRegistry = typeof(UIAdapterRegistry).GetMethod("ResetRegistry", BindingFlags.NonPublic | BindingFlags.Static);
+
+                var adapterRun1 = new DummyCustomAdapter();
+                UIAdapterRegistry.RegisterAdapter(adapterRun1);
+                Assert.AreSame(adapterRun1, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
+
+                // Simulate Play Mode exit / reload
+                resetRegistry?.Invoke(null, null);
+
+                // Simulate Play Mode start: bootstrap registers a new instance of DummyCustomAdapter
+                var adapterRun2 = new DummyCustomAdapter();
+                UIAdapterRegistry.RegisterAdapter(adapterRun2);
+
+                Assert.AreSame(adapterRun2, UIAdapterRegistry.GetAdapter(typeof(DummyCustomComponent)));
+
+                // Inspect internal _customAdapters list to verify count is exactly 1 (no accumulation)
+                var customAdaptersField = typeof(UIAdapterRegistry).GetField("_customAdapters", BindingFlags.NonPublic | BindingFlags.Static);
+                var customList = customAdaptersField?.GetValue(null) as System.Collections.IList;
+                Assert.IsNotNull(customList);
+                Assert.AreEqual(1, customList.Count, "Repeated registration of the same adapter type must replace, not accumulate.");
+            } finally {
+                UIAdapterRegistry.ClearCustomAdapters();
+            }
+        }
 
         [Test]
         public void DestroyedPresenter_BeforeModel_DoesNotThrowOnModelMutation() {

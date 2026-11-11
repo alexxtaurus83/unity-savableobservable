@@ -3,18 +3,14 @@ using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 using System.Runtime.CompilerServices;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable {
 
     public partial class Observable {
 
         // Storage for per-instance data using ConditionalWeakTable to avoid memory leaks
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static ConditionalWeakTable<BaseObservableDataModel, InstanceData> _instanceData =
             new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
 
@@ -113,13 +109,9 @@ namespace SavableObservable {
             }
         }
 
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly Dictionary<Type, SubscriberMetadata> _subscriberMetadataCache = new Dictionary<Type, SubscriberMetadata>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly object _subscriberMetadataLock = new object();
 
         private static SubscriberMetadata GetSubscriberMetadata(Type type) {
@@ -316,6 +308,8 @@ namespace SavableObservable {
             }
         }
 
+        private static bool IsTargetAlive(object obj) => obj != null && !(obj is UnityEngine.Object uo && uo == null);
+
         private static void SubscribeAutoBindHandler(
             object obj,
             FieldInfo uiField,
@@ -334,7 +328,7 @@ namespace SavableObservable {
             Action<object> modelToUiHandler = value => {
                 try {
                     var currentUiComponent = uiField.GetValue(obj);
-                    if (currentUiComponent != null) {
+                    if (IsTargetAlive(currentUiComponent)) {
                         adapter.SetValue(currentUiComponent, value, valueType);
                     }
                 } catch (Exception ex) {
@@ -353,7 +347,7 @@ namespace SavableObservable {
             // ----------------------------------------------------------------
             try {
                 var currentUiComponent = uiField.GetValue(obj);
-                if (currentUiComponent != null) {
+                if (IsTargetAlive(currentUiComponent)) {
                     if (UIAdapterRegistry.TryGetListenerAdapter(currentUiComponent.GetType(), out var listenerAdapter)) {
                         var valueProp = observableField.FieldType.GetProperty("Value");
                         Action<object> uiToModelHandler = newValue => {

@@ -3,6 +3,11 @@
 ## Goal
 Update `com.evialdev.savableobservable` to require **Unity 6000.5+**, remove legacy `< 6000.5` conditional compilation shims, and fix all 12 verified Unity-specific and .NET bugs across Runtime and Editor assemblies. Every task includes explicit **Code Changes**, **Test Updates / New Regression Tests**, and **Documentation & Skill Updates** (including syncing `mmvc-unity-skill/` to the user profile at `C:\Users\alexx\.skills\mmvc-unity\`).
 
+### Execution Sequence With Companion Feature Plan
+1. **Phase 1 (This Plan — `.kilo/plans/1794258080625-mmvc-unity-and-dotnet-bugfixes.md`):** Execute **FIRST** in `unity-savableobservable`. Establishes the `Unity 6000.5` baseline, removes `< 6000.5` `#if` shims, and fixes the core runtime/editor bugs (including `Observable.IsTargetAlive` fake-null guards, `UIAdapters.TryConvertValue` for `enum`/`Nullable<T>`, `UIAdapterRegistry` per-control `_activeSetValueTargets` re-entrancy guards, and FIFO `ObservableVariable<T>` re-entrant transition queuing).
+2. **Phase 2 (`.kilo/plans/1794369600000-command-aware-autobind-and-listener-set.md`):** Execute **SECOND** in `unity-savableobservable`, building directly on Phase 1's `Observable.cs` and `UIAdapters.cs` foundations (including `TMP_DropdownAdapter` / `DropdownAdapter`, `[ClickCommand]` for zero-argument sync Button actions, and the framework `ListenerSet` that supersedes AttaxUnity's `UiListeners.cs`).
+3. **Phase 3 (`.kilo/plans/1794370000000-attax-command-autobind-and-listeners-adoption.md`):** Execute **THIRD** in `F:\Unity_projects\AttaxUnity` to adopt Command-Aware `AutoBind` (`PlayerSettings`, `BaseAISettings`, `PrivateRoom`, `OnlineLobby`), display `[AutoBind]` (`ByteCodePresenter`), `[ClickCommand]` on 20 sync action buttons, and framework `BaseObservablePresenter<M>.Listeners` across all modals and presenters, retiring `Assets/Scripts/Base/UiListeners.cs`.
+
 ---
 
 ## Consumer Impact & Contract Compatibility Summary

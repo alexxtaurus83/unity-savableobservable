@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -38,9 +36,7 @@ namespace SavableObservable {
 
         [SerializeField] private bool enableLogging = true;
 
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         public static ServiceLocator instance;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -318,19 +314,31 @@ namespace SavableObservable {
 
             var allMonoBehaviours = new List<MonoBehaviour>();
             var scene = gameObject.scene;
-            if (scene.IsValid() && scene.isLoaded) {
-                var roots = scene.GetRootGameObjects();
-                for (int r = 0; r < roots.Length; r++) {
-                    if (roots[r] != null) {
-                        allMonoBehaviours.AddRange(roots[r].GetComponentsInChildren<MonoBehaviour>(true));
+            bool rootsAcquired = false;
+            if (scene.IsValid() && (Application.isPlaying || scene.isLoaded)) {
+                try {
+                    var roots = scene.GetRootGameObjects();
+                    if (roots != null) {
+                        for (int r = 0; r < roots.Length; r++) {
+                            if (roots[r] != null) {
+                                allMonoBehaviours.AddRange(roots[r].GetComponentsInChildren<MonoBehaviour>(true));
+                            }
+                        }
+                        rootsAcquired = true;
                     }
+                } catch (ArgumentException) {
+                    rootsAcquired = false;
                 }
-            } else {
+            }
+
+            if (!rootsAcquired) {
                 var found = FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include);
                 if (found != null) {
                     for (int f = 0; f < found.Length; f++) {
                         var item = found[f];
-                        if (item != null) allMonoBehaviours.Add(item);
+                        if (item != null && (!scene.IsValid() || item.gameObject.scene == scene)) {
+                            allMonoBehaviours.Add(item);
+                        }
                     }
                 }
             }

@@ -183,7 +183,7 @@ Use `ObservableList<T>.Add`, `Remove`, `Clear`, indexer assignment, and similar 
 
 ## Inspector Editing and Undo/Redo
 
-Use the framework's `ObservableList<T>` property drawer for Inspector editing. It draws the serialized backing list, captures a pre-edit snapshot through `OnBeginGui()`, applies serialized changes, and calls the observable's editor-only `OnValidate()`. Validation compares the list with its captured or last validated snapshot and updates `PreviousValue` before notifying when contents differ.
+Use the framework's `ObservableList<T>` and `ObservableVariable<T>` property drawers for Inspector editing. They draw the serialized backing properties, capture a pre-edit snapshot through `OnBeginGui()`, apply serialized changes, and call the observable's editor-only `OnValidate()`. Validation compares the values/list with captured or last validated snapshots and updates `PreviousValue` before notifying when contents differ. `BaseObservableDataModel.OnValidate()` in `UNITY_EDITOR` automatically forwards editor validation to all observable fields on the model, so custom models overriding `OnValidate()` must call `base.OnValidate()`.
 
 ## UI Adapters
 
@@ -192,15 +192,15 @@ Use the framework's `ObservableList<T>` property drawer for Inspector editing. I
 | `TMPro.TMP_Text` / `TextMeshProUGUI` | Display value as text |
 | `UnityEngine.UI.Text` | Display value as text |
 | `UnityEngine.UI.Toggle` | Two-way boolean binding |
-| `UnityEngine.UI.Slider` | Two-way numeric binding |
-| `TMPro.TMP_InputField`, `UnityEngine.UI.InputField` | Two-way text with basic type conversion |
+| `UnityEngine.UI.Slider` | Two-way numeric binding (also supports `enum` and `Nullable<T>`) |
+| `TMPro.TMP_InputField`, `UnityEngine.UI.InputField` | Two-way text with type conversion (supports primitives, `enum`, and `Nullable<T>`) |
 | `UnityEngine.UI.Image` | Set sprite |
 
-Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter`.
+Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter` (custom adapters deduplicate by concrete adapter type across Fast Play Mode runs). Two-way adapters use per-control re-entrancy tracking so modifying one control in a callback does not suppress callbacks on another control of the same type.
 
 ## Lifetime and Cleanup
 
-Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity.
+Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity. Re-entrant assignments to `ObservableVariable<T>.Value` during handlers are queued FIFO so each transition is delivered in order to every subscriber.
 
 Use `.Add(handler, subscriber)` after parent initialization. Tracking requires both a non-null subscriber and a parent model; subscriptions made before parent linkage are not retroactively tracked.
 
@@ -210,7 +210,7 @@ Call `Observable.RemoveListeners(model, subscriber)` to remove tracked model cal
 
 ## Persistence
 
-Decorate transient `ObservableVariable<T>` or `ObservableList<T>` fields with `[NonSaved]`. `BaseObservableDataModel.LoadDataFromModel` automatically skips these fields when applying saved state.
+Decorate transient `ObservableVariable<T>`, `ObservableList<T>`, or plain fields and properties with `[NonSaved]`. `BaseObservableDataModel.LoadDataFromModel` automatically skips these members when applying saved state, respects read-only properties, and supports plain DTO objects as source. Setting `ObservableList<T>.Value` (such as during `LoadDataFromModel`) is silent when the new list is element-wise equal to the current list.
 
 Initialize target observable fields before `LoaderWithModel.LoadDataFromModel(state)`.
 

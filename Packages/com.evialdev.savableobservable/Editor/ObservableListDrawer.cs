@@ -9,15 +9,17 @@ namespace SavableObservable.Editor {
 
             var itemsProperty = property.FindPropertyRelative("_items");
             if (itemsProperty != null) {
-                IObservableVariable targetObject = null;
+                object[] targetObjects = null;
                 try {
-                    targetObject = PropertyResolver.GetTargetObjectOfProperty(property) as IObservableVariable;
+                    targetObjects = PropertyResolver.GetTargetObjectsOfProperty(property);
                 } catch {
                     // Ignore resolution errors
                 }
 
-                if (targetObject != null) {
-                    targetObject.OnBeginGui();
+                if (targetObjects != null) {
+                    for (int i = 0; i < targetObjects.Length; i++) {
+                        (targetObjects[i] as IObservableVariable)?.OnBeginGui();
+                    }
                 }
 
                 EditorGUI.BeginChangeCheck();
@@ -26,8 +28,16 @@ namespace SavableObservable.Editor {
                 if (EditorGUI.EndChangeCheck()) {
                     property.serializedObject.ApplyModifiedProperties();
 
-                    if (targetObject != null) {
-                        targetObject.OnValidate();
+                    if (targetObjects != null) {
+                        for (int i = 0; i < targetObjects.Length; i++) {
+                            (targetObjects[i] as IObservableVariable)?.OnValidate();
+                        }
+                    }
+                } else {
+                    if (targetObjects != null) {
+                        for (int i = 0; i < targetObjects.Length; i++) {
+                            (targetObjects[i] as IObservableVariable)?.ClearEditorGuiSnapshot();
+                        }
                     }
                 }
             } else {

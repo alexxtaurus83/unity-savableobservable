@@ -13,7 +13,7 @@ At its core, the framework is built on these key principles:
 * **Attribute-Based Binding**: Use `[ObservableHandler]` and `[AutoBind]` attributes to declaratively connect observables to handlers and UI elements.
 * **Primary Component & Automatic Component Requirements**: In the Unity Editor, adding `BaseLogic<M, P>` to a GameObject automatically provisions its paired `Model` and `Presenter` components on the same GameObject (no `[RequireComponent]` attributes required on concrete classes).
 * **Built-in Service Locator & Logic Singletons**: `ServiceLocator`, `Services.Get<TLogic>()`, and `Services.GetModel<TModel>()` provide automatic scene discovery, a clear duplicate-key rule (duplicate = error, first registration wins), and zero-boilerplate access to MMVC Logic and Model instances.
-* **Two-Stage Execution Order**: `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`); models, loaders and logic run at the default order because they initialize lazily through `GetModel()`. Synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer`.
+* **Two-Stage Execution Order**: `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`); models, loaders and logic run at the default order because they initialize lazily through `GetModel()`. Synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer` (with `ServiceLocator` carrying explicit `[DefaultExecutionOrder(-200)]` and `BaseObservablePresenter<M>` carrying `[DefaultExecutionOrder(-150)]` attributes in code).
 
 ## Core Components
 
@@ -27,7 +27,8 @@ The `Model` is the data layer of your application. It holds the state and is res
 
 * It uses `ObservableVariable<T>` fields to store data, which automatically notify any listeners when their value changes.
 * `BaseObservableDataModel.Awake()` and `GetModel()` automatically call `EnsureFieldsInitialized()` to initialize any null `ObservableVariable` fields and set up parent references for cleanup. Because `GetModel()` initializes lazily, nothing depends on the model's `Awake()` order.
-* **Transient Fields (`[NonSaved]`)**: Decorate transient session or runtime UI tokens (`ObservableVariable<T>` or `ObservableList<T>`) with `[NonSaved]`. These fields are automatically skipped by `BaseObservableDataModel.LoadDataFromModel` and persistence loaders.
+* **Transient Fields & Properties (`[NonSaved]`)**: Decorate transient session or runtime UI tokens (fields or properties of type `ObservableVariable<T>`, `ObservableList<T>`, or plain values) with `[NonSaved]`. These members are automatically skipped by `BaseObservableDataModel.LoadDataFromModel` and persistence loaders.
+* **Editor Validation (`OnValidate`)**: `BaseObservableDataModel.OnValidate()` automatically forwards Inspector edits and Undo/Redo changes to its `ObservableVariable<T>` and `ObservableList<T>` fields. Custom models overriding `OnValidate()` should call `base.OnValidate()`.
 * **Mixed Data Types**: You can include regular, non-observable fields (like `int`, `string`, `List<T>`) alongside `ObservableVariable` fields in your model. The save/load system will correctly handle both.
 
 ```csharp
@@ -50,6 +51,7 @@ public class PlayerDataModel : BaseObservableDataModel {
 
 * **Default:** assigning a value equal to the current one (`EqualityComparer<T>.Default`) does **not** notify; `Value` and `PreviousValue` stay unchanged.
 * **Opt-in:** mark the field with `[NotifyOnSameValue]`, or set `model.field.NotifyOnSameValue = true` at runtime. Every assignment then notifies, and an equal assignment gives `PreviousValue == Value`.
+* **ObservableList<T>:** assigning `ObservableList<T>.Value` (including during `LoadDataFromModel`) is silent when the new list is element-wise equal to the current list. In-place mutators (`Add`, `Remove`, `Clear`, `Insert`, `this[i]`) and `ForceNotify()` always notify. Re-entrant assignments to `ObservableVariable<T>` are queued FIFO so each transition is delivered in order.
 
 ```csharp
 [NotifyOnSameValue] public ObservableVariable<int> lastRoll;

@@ -5,9 +5,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
 using TMPro;
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
 using Unity.Scripting.LifecycleManagement;
-#endif
 
 namespace SavableObservable
 {
@@ -54,39 +52,54 @@ namespace SavableObservable
     /// </summary>
     public static partial class UIAdapterRegistry
     {
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static readonly List<IUIAdapter> _adapters = new List<IUIAdapter>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly List<IUIAdapter> _customAdapters = new List<IUIAdapter>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [NoAutoStaticsCleanup]
-#endif
         private static readonly object _lock = new object();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static bool _initialized;
         
         // Immutable snapshot of adapters for lock-free iteration after initialization
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static IUIAdapter[] _adaptersSnapshot;
         
         // Cache mapping Type -> IUIAdapter for O(1) lookups after first call
         // Null adapters are cached separately to avoid repeated failed lookups
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static readonly Dictionary<Type, IUIAdapter> _adapterCache = new Dictionary<Type, IUIAdapter>();
-#if UNITY_6000_5_OR_NEWER || UNITY_HAS_LIFECYCLE_MANAGEMENT
         [AutoStaticsCleanup]
-#endif
         private static readonly HashSet<Type> _negativeCache = new HashSet<Type>();
+        [AutoStaticsCleanup]
+        private static readonly HashSet<object> _activeSetValueTargets = new HashSet<object>();
+
+        internal static bool EnterSetValue(object control)
+        {
+            if (control == null) return false;
+            lock (_lock)
+            {
+                return _activeSetValueTargets.Add(control);
+            }
+        }
+
+        internal static void ExitSetValue(object control)
+        {
+            if (control == null) return;
+            lock (_lock)
+            {
+                _activeSetValueTargets.Remove(control);
+            }
+        }
+
+        internal static bool IsSettingValue(object control)
+        {
+            if (control == null) return false;
+            lock (_lock)
+            {
+                return _activeSetValueTargets.Contains(control);
+            }
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetRegistry()
@@ -96,6 +109,7 @@ namespace SavableObservable
                 _adapters.Clear();
                 _adapterCache.Clear();
                 _negativeCache.Clear();
+                _activeSetValueTargets.Clear();
                 _adaptersSnapshot = null;
                 _initialized = false;
                 EnsureInitialized();
@@ -110,19 +124,25 @@ namespace SavableObservable
             {
                 EnsureInitialized();
 
-                if (!_customAdapters.Contains(adapter))
+                var adapterType = adapter.GetType();
+                for (int i = _customAdapters.Count - 1; i >= 0; i--)
                 {
-                    _customAdapters.Add(adapter);
+                    if (_customAdapters[i].GetType() == adapterType)
+                    {
+                        var old = _customAdapters[i];
+                        _customAdapters.RemoveAt(i);
+                        _adapters.Remove(old);
+                    }
                 }
 
-                if (!_adapters.Contains(adapter))
-                {
-                    _adapters.Add(adapter);
-                    _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
-                    _adaptersSnapshot = _adapters.ToArray();
-                    _adapterCache.Clear();
-                    _negativeCache.Clear();
-                }
+                _customAdapters.Add(adapter);
+
+                _adapters.Remove(adapter);
+                _adapters.Add(adapter);
+                _adapters.Sort((a, b) => b.Priority.CompareTo(a.Priority));
+                _adaptersSnapshot = _adapters.ToArray();
+                _adapterCache.Clear();
+                _negativeCache.Clear();
             }
         }
 
@@ -254,6 +274,79 @@ namespace SavableObservable
             listenerAdapter = GetAdapter(uiComponentType) as IUIListenerAdapter;
             return listenerAdapter != null;
         }
+
+        internal static bool TryConvertValue(object rawValue, Type targetType, out object converted)
+        {
+            converted = null;
+            if (targetType == null) return false;
+
+            Type underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            bool isNullable = Nullable.GetUnderlyingType(targetType) != null;
+
+            if (rawValue == null || (rawValue is string str && string.IsNullOrWhiteSpace(str)))
+            {
+                if (isNullable)
+                {
+                    converted = null;
+                    return true;
+                }
+                if (underlying == typeof(string))
+                {
+                    converted = rawValue ?? string.Empty;
+                    return true;
+                }
+                if (underlying.IsValueType)
+                {
+                    converted = Activator.CreateInstance(underlying);
+                    return true;
+                }
+                return false;
+            }
+
+            try
+            {
+                if (underlying.IsEnum)
+                {
+                    if (rawValue is string s)
+                    {
+                        if (Enum.TryParse(underlying, s, ignoreCase: true, out var parsed))
+                        {
+                            converted = parsed;
+                            return true;
+                        }
+                        return false;
+                    }
+                    else
+                    {
+                        var enumUnderlying = Enum.GetUnderlyingType(underlying);
+                        var numericVal = Convert.ChangeType(rawValue, enumUnderlying, CultureInfo.InvariantCulture);
+                        converted = Enum.ToObject(underlying, numericVal);
+                        return true;
+                    }
+                }
+
+                if (underlying == typeof(string))
+                {
+                    converted = rawValue.ToString();
+                    return true;
+                }
+
+                converted = Convert.ChangeType(rawValue, underlying, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    converted = Convert.ChangeType(rawValue, underlying);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -265,8 +358,6 @@ namespace SavableObservable
     public abstract class StringInputAdapterBase<TField> : IUIListenerAdapter
         where TField : Component
     {
-        [ThreadStatic] private static bool _isSettingValue;
-
         public abstract int Priority { get; }
 
         public bool CanHandle(Type uiComponentType)
@@ -286,14 +377,14 @@ namespace SavableObservable
                 string stringValue = value?.ToString() ?? string.Empty;
                 if (GetText(inputField) != stringValue)
                 {
-                    _isSettingValue = true;
+                    UIAdapterRegistry.EnterSetValue(inputField);
                     try
                     {
                         SetTextWithoutNotify(inputField, stringValue);
                     }
                     finally
                     {
-                        _isSettingValue = false;
+                        UIAdapterRegistry.ExitSetValue(inputField);
                     }
                 }
             }
@@ -305,40 +396,10 @@ namespace SavableObservable
             {
                 UnityAction<string> listener = val =>
                 {
-                    if (_isSettingValue) return;
-                    try
+                    if (UIAdapterRegistry.IsSettingValue(inputField)) return;
+                    if (UIAdapterRegistry.TryConvertValue(val, valueType, out var convertedValue))
                     {
-                        object convertedValue = val;
-                        if (valueType != typeof(string))
-                        {
-                            if (string.IsNullOrEmpty(val))
-                            {
-                                if (valueType.IsValueType)
-                                {
-                                    convertedValue = Activator.CreateInstance(valueType);
-                                }
-                                else
-                                {
-                                    return;
-                                }
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
-                                }
-                                catch
-                                {
-                                    convertedValue = Convert.ChangeType(val, valueType);
-                                }
-                            }
-                        }
                         onValueChanged(convertedValue);
-                    }
-                    catch
-                    {
-                        // Conversion failed, ignore update
                     }
                 };
                 AddTextListener(inputField, listener);
@@ -430,8 +491,6 @@ namespace SavableObservable
     /// </summary>
     public class ToggleAdapter : IUIListenerAdapter
     {
-        [ThreadStatic] private static bool _isSettingValue;
-
         public int Priority => 100;
 
         public bool CanHandle(Type uiComponentType)
@@ -447,14 +506,14 @@ namespace SavableObservable
                 {
                     if (toggle.isOn != boolValue)
                     {
-                        _isSettingValue = true;
+                        UIAdapterRegistry.EnterSetValue(toggle);
                         try
                         {
                             toggle.SetIsOnWithoutNotify(boolValue);
                         }
                         finally
                         {
-                            _isSettingValue = false;
+                            UIAdapterRegistry.ExitSetValue(toggle);
                         }
                     }
                 }
@@ -471,7 +530,7 @@ namespace SavableObservable
             {
                 UnityAction<bool> listener = val =>
                 {
-                    if (_isSettingValue) return;
+                    if (UIAdapterRegistry.IsSettingValue(toggle)) return;
                     onValueChanged(val);
                 };
                 toggle.onValueChanged.AddListener(listener);
@@ -494,8 +553,6 @@ namespace SavableObservable
     /// </summary>
     public class SliderAdapter : IUIListenerAdapter
     {
-        [ThreadStatic] private static bool _isSettingValue;
-
         public int Priority => 100;
 
         public bool CanHandle(Type uiComponentType)
@@ -509,17 +566,26 @@ namespace SavableObservable
             {
                 try
                 {
-                    float floatValue = Convert.ToSingle(value, CultureInfo.InvariantCulture);
+                    float floatValue;
+                    if (value is Enum)
+                    {
+                        floatValue = Convert.ToSingle(Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()), CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        floatValue = Convert.ToSingle(value, CultureInfo.InvariantCulture);
+                    }
+
                     if (!Mathf.Approximately(slider.value, floatValue))
                     {
-                        _isSettingValue = true;
+                        UIAdapterRegistry.EnterSetValue(slider);
                         try
                         {
                             slider.SetValueWithoutNotify(floatValue);
                         }
                         finally
                         {
-                            _isSettingValue = false;
+                            UIAdapterRegistry.ExitSetValue(slider);
                         }
                     }
                 }
@@ -536,26 +602,10 @@ namespace SavableObservable
             {
                 UnityAction<float> listener = val =>
                 {
-                    if (_isSettingValue) return;
-                    try
+                    if (UIAdapterRegistry.IsSettingValue(slider)) return;
+                    if (UIAdapterRegistry.TryConvertValue(val, valueType, out var convertedValue))
                     {
-                        object convertedValue = val;
-                        if (valueType != typeof(float))
-                        {
-                            try
-                            {
-                                convertedValue = Convert.ChangeType(val, valueType, CultureInfo.InvariantCulture);
-                            }
-                            catch
-                            {
-                                convertedValue = Convert.ChangeType(val, valueType);
-                            }
-                        }
                         onValueChanged(convertedValue);
-                    }
-                    catch
-                    {
-                        // Conversion failed, ignore update
                     }
                 };
                 slider.onValueChanged.AddListener(listener);

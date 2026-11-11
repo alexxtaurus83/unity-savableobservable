@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
@@ -51,6 +52,14 @@ namespace SavableObservable.Tests {
             // Rule 3: One GameObject = one logic.
             var logicAttrs = typeof(BaseLogic).GetCustomAttributes(typeof(DisallowMultipleComponent), true);
             Assert.IsTrue(logicAttrs.Length > 0, "BaseLogic must have [DisallowMultipleComponent]");
+        }
+
+        [Test]
+        public void ServiceLocatorAndPresenter_HaveExplicitDefaultExecutionOrderAttributes() {
+            Assert.AreEqual(-200, typeof(ServiceLocator).GetCustomAttribute<DefaultExecutionOrder>()?.order,
+                "ServiceLocator must declare [DefaultExecutionOrder(-200)]");
+            Assert.AreEqual(-150, typeof(BaseObservablePresenter<>).GetCustomAttribute<DefaultExecutionOrder>()?.order,
+                "BaseObservablePresenter<> must declare [DefaultExecutionOrder(-150)]");
         }
 
         [Test]
@@ -824,6 +833,38 @@ namespace SavableObservable.Tests {
                 Assert.IsNull(Services.Get<SamplePlayerLogic>());
             } finally {
                 UnityEngine.Object.DestroyImmediate(locatorObj);
+            }
+        }
+
+        [Test]
+        public void InitializeSharedSingletons_ScopesStrictlyToOwnScene_EvenWhenSceneNotLoaded() {
+            var sceneA = UnityEditor.SceneManagement.EditorSceneManager.NewPreviewScene();
+            var sceneB = UnityEditor.SceneManagement.EditorSceneManager.NewPreviewScene();
+            try {
+                var locatorHostA = new GameObject("LocatorHostA");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(locatorHostA, sceneA);
+                var locatorA = locatorHostA.AddComponent<ServiceLocator>();
+
+                var unitA = new GameObject("UnitA");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(unitA, sceneA);
+                unitA.AddComponent<SamplePlayerModel>();
+                unitA.AddComponent<SamplePlayerPresenter>();
+                var logicA = unitA.AddComponent<SamplePlayerLogic>();
+
+                var unitB = new GameObject("UnitB");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(unitB, sceneB);
+                unitB.AddComponent<SamplePlayerModel>();
+                unitB.AddComponent<SamplePlayerPresenter>();
+                var logicB = unitB.AddComponent<SamplePlayerLogic>();
+
+                locatorA.InitializeSharedSingletons();
+
+                Assert.IsTrue(locatorA.IsRegistered(logicA), "Logic in own scene should be registered");
+                Assert.AreSame(logicA, locatorA.Get<SamplePlayerLogic>(), "Locator must find logic in its own scene");
+                Assert.IsFalse(locatorA.IsRegistered(logicB), "Logic in different scene must not be registered");
+            } finally {
+                UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(sceneA);
+                UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(sceneB);
             }
         }
     }

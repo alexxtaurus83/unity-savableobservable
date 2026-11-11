@@ -11,12 +11,6 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [
-        {
-            "name": "Unity",
-            "expression": "6000.5",
-            "define": "UNITY_HAS_LIFECYCLE_MANAGEMENT"
-        }
-    ],
+    "versionDefines": [],
     "noEngineReferences": false
 }

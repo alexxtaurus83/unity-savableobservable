@@ -54,6 +54,7 @@ namespace SavableObservable
 #if UNITY_EDITOR
         void OnBeginGui();
         void OnValidate();
+        void ClearEditorGuiSnapshot();
 #endif
     }
 }

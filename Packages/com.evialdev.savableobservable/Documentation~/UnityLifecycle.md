@@ -20,7 +20,7 @@ Only two framework types depend on execution order. `MMVCExecutionOrderSynchroni
 
 | Order | Class | Primary Role | Lifecycle & Operational Details |
 |---|---|---|---|
-| **`-200`** | `ServiceLocator` | Scene Discovery | `Awake()` scans **its own scene**. **Pass 1:** Registers eligible `ISharedSingleton` services (a Logic's model is resolved through its registered Logic). **Pass 2:** Calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active and inactive). |
+| **`-200`** | `ServiceLocator` | Scene Discovery | `Awake()` scans **its own scene**. Carries explicit `[DefaultExecutionOrder(-200)]` attribute in code and synchronized to `.meta` via `MMVCExecutionOrderSynchronizer`. **Pass 1:** Registers eligible `ISharedSingleton` services (a Logic's model is resolved through its registered Logic). **Pass 2:** Calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active and inactive). |
 | **`-150`** | `BaseObservablePresenter<M>` | Presentation Layer | `Awake()` calls `EnsureInitialized()`, which executes `InitializePresenter()` once and then binds `Observable.SetListeners()`. Subclasses overriding `Awake()` or `OnDestroy()` **must** call base methods, or prefer `InitializePresenter()`. |
 | **`0`** (default) | `BaseObservableDataModel`, `LoaderWithModel<M>`, `BaseLogic<M, P>` | Data, Persistence, Business Logic | No ordering requirement. The model's `Awake()` calls `EnsureFieldsInitialized()`, and every reader (presenter, logic, loader, `ServiceLocator`) also initializes the fields lazily through `GetModel()`, so it does not matter whether the model's `Awake()` has run. `LoaderWithModel<M>` has no `Awake()` or `Start()` of its own and never loads automatically. `BaseLogic<M, P>` has no `Start()` in the base class; its `Awake()` registers it as an `ISharedSingleton` if not already discovered by `ServiceLocator`. Subclasses overriding `Awake()` or `OnDestroy()` **must** call base methods. |
 
@@ -120,7 +120,7 @@ flowchart TD
 ```
 
 ### Discovery Scope & Boundaries
-- **Scoped to Own Scene:** `ServiceLocator` scans `gameObject.scene.GetRootGameObjects()` (or falls back to `FindObjectsByType` if the scene is not loaded). Cross-scene services are not automatically merged.
+- **Scoped to Own Scene:** `ServiceLocator` scopes discovery strictly to `gameObject.scene` via `GetRootGameObjects()` during `Awake()` whenever `scene.IsValid() && (Application.isPlaying || scene.isLoaded)` (even before `scene.isLoaded` flips to `true`), and filters any fallback scan so objects from other scenes or `DontDestroyOnLoad` are never pulled into this scene's `ServiceLocator`. Cross-scene services are not automatically merged.
 - **Eligible Unique Services Only:**
   - Logic instances that override `RegisterAsSharedSingleton => false` are skipped in Pass 1.
   - If multiple live instances share the same class and the same key (`singletonName`, or the class name), the first registration keeps the key. Each later one logs an error when it is registered (naming the type, the key and both GameObjects) and is **not** registered; `Services.Get<T>()` returns the first instance. Give each instance a distinct `singletonName`, or override `RegisterAsSharedSingleton => false` for multi-instance units.
@@ -260,6 +260,11 @@ foreignModel.score.OnValueChanged.Add(OnScoreChanged, this);
 ### Pitfall: Operations on Inactive GameObjects
 - Subscriptions persist while a component or GameObject is inactive. Modifying a model will trigger presenter callbacks even if its GameObject is inactive (provided the value actually changed).
 - Calling `StartCoroutine(...)` on a `MonoBehaviour` whose GameObject is inactive will log an error in Unity. Ensure handlers guard against actions invalid on inactive objects.
+
+### Domain Reload Disabled (Fast Play Mode)
+- **Minimum Supported Version:** Unity 6000.5+ is the minimum supported version. Native `Unity.Scripting.LifecycleManagement` attributes (`[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`) are unconditionally active without legacy preprocessor shims.
+- Mutable runtime static state across `Observable._instanceData`, `ObservableSettings`, `ServiceLocator.instance`, and `UIAdapterRegistry` is cleaned up automatically via `[AutoStaticsCleanup]` and explicit `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` hooks.
+- Immutable reflection caches and locks (`ModelDescriptor._cache`, `Observable._subscriberMetadataCache`, `ObservableTrackedAction._mainThreadId`, `UIAdapterRegistry._lock`, `UIAdapterRegistry._customAdapters`) are preserved across domain reloads using `[NoAutoStaticsCleanup]`.
 
 ---
 

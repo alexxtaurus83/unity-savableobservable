@@ -500,6 +500,39 @@ namespace SavableObservable.Tests {
             }
         }
 
+        private class DestroyedAutoBindSubscriber : MonoBehaviour {
+            [AutoBind("playerName")]
+            public TextMeshProUGUI nameDisplay;
+
+            [AutoBind("energy")]
+            public Slider energySlider;
+        }
+
+        [Test]
+        public void AutoBind_DestroyedUnityObject_DoesNotLogErrorsOrWarnings() {
+            var sub = _host.AddComponent<DestroyedAutoBindSubscriber>();
+            var tmpGo = new GameObject("TMP", typeof(TextMeshProUGUI));
+            tmpGo.transform.SetParent(_host.transform, false);
+            sub.nameDisplay = tmpGo.GetComponent<TextMeshProUGUI>();
+
+            var sliderGo = new GameObject("Slider", typeof(RectTransform), typeof(Slider));
+            sliderGo.transform.SetParent(_host.transform, false);
+            sub.energySlider = sliderGo.GetComponent<Slider>();
+
+            // Destroy components immediately, leaving Unity fake-null wrappers in the fields
+            UnityEngine.Object.DestroyImmediate(sub.nameDisplay);
+            UnityEngine.Object.DestroyImmediate(sub.energySlider);
+
+            Assert.IsNotNull((object)sub.nameDisplay, "CLR reference must be non-null");
+            Assert.IsTrue(sub.nameDisplay == null, "Unity equality must be null");
+
+            // SetListeners and subsequent model value mutations should not throw or log any errors/warnings
+            Observable.SetListeners(sub, _model);
+
+            _model.playerName.Value = "Hero";
+            _model.energy.Value = 0.8f;
+        }
+
         #endregion
     }
 }
