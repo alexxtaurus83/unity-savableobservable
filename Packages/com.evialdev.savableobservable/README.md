@@ -180,6 +180,67 @@ public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
 
 The framework provides base classes for presenters, allowing you to choose the right one for your needs.
 
+#### Command-Aware AutoBind & UI Input
+
+In MMVC, user input should flow from Control -> Logic -> Model -> Presenter. Command-aware `[AutoBind]` and `[ClickCommand]` provide declarative bindings that preserve this command-driven separation without boilerplate:
+
+```text
+Control input
+    -> Framework dispatches Logic command
+    -> Logic validates, updates model, applies effects and saves
+    -> Model notifications render the view
+    -> Framework reconciles the originating control with accepted state
+```
+
+##### 1. Command-Aware `[AutoBind]`
+
+Extend `[AutoBind]` with the optional `Command` property to dispatch input to a synchronous method on the paired `BaseLogic`:
+
+```csharp
+[SerializeField]
+[AutoBind(nameof(SettingsModel.musicVolume), Command = nameof(SettingsLogic.SetMusicVolume))]
+private Slider volumeSlider;
+```
+
+* **Synchronous Commands Only:** The command method on the paired `BaseLogic` must be `public void CommandName(T value)` with exactly one parameter matching the converted observable value type. Methods returning `async void`, `Task`, `ValueTask`, coroutines, or having extra/generic parameters are strictly rejected.
+* **Automatic Reconciliation:** When input occurs, the framework invokes the command on `Logic`. In `finally`, the accepted model value is repainted onto the originating control without triggering input re-entry or model notifications. Reconciliation occurs even if Logic rejects input, normalizes input (e.g. trimming whitespace without changing the model), or throws an exception.
+* **Malformed Input:** Temporarily invalid or unparsable text (such as typing `-` in a numeric field) invokes no command and remains editable until valid.
+* **Supported Controls:** Two-way adapters are built-in for `Slider`, `Toggle`, `TMP_InputField`, `InputField`, `TMP_Dropdown`, and legacy `Dropdown`.
+* **Backward Compatibility:** Omitting `Command` or leaving it empty retains legacy two-way binding (direct model mutation) unchanged.
+
+##### 2. `[ClickCommand]` For Buttons
+
+Declaratively wire a `Button.onClick` event to a zero-argument synchronous action on the paired `BaseLogic`:
+
+```csharp
+[SerializeField, ClickCommand(nameof(GameOverLogic.Hide))]
+private Button okButton;
+```
+
+* **Zero-Argument, Synchronous:** Method on paired `BaseLogic` must be `public void MethodName()`. `async void`, `Task`, `ValueTask`, and coroutine methods are not supported (use `Listeners.Listen` for async button actions).
+* **IL2CPP Stripping:** Because `nameof()` does not preserve methods under IL2CPP code stripping, decorate target logic methods with `[UnityEngine.Scripting.Preserve]`.
+* **Separate Framework Lifecycle:** Wired before `InitializePresenter()` runs, through an internal framework-owned `ListenerSet`. Consumers calling `Listeners.Clear()` in `InitializePresenter()` do not remove `[ClickCommand]` listeners. Unassigned or destroyed button fields are skipped silently.
+* **No Model -> Logic Handler:** MMVC data flow is strictly `Logic -> Model -> Presenter`. The framework deliberately rejects any attribute calling Logic on model change: `[ObservableHandler]` remains render-only.
+
+##### 3. Generic `ListenerSet` (`Listeners`)
+
+For explicit UnityEvent subscriptions (such as argument-taking buttons, `onEndEdit`, presenter-local UI state, or async handlers), use the lazy `Listeners` property on `BaseObservablePresenter<M>`:
+
+```csharp
+protected override void InitializePresenter() {
+    base.InitializePresenter();
+
+    Listeners.Listen(saveButton.onClick, GetLogic().Save);
+    Listeners.Listen(filterInput.onEndEdit, GetLogic().ApplyFilter);
+    Listeners.Listen(presetButton.onClick, () => GetLogic().ApplyPreset("MuteAll"));
+}
+```
+
+* **Automatic Cleanup:** All registrations in `Listeners` are automatically unregistered when the presenter is destroyed.
+* **Deduplication:** Repeated calls with the same event and equal delegate are automatically deduplicated.
+* **Preserves Non-Owned Listeners:** Does not call `RemoveAllListeners()`; persistent Inspector listeners and other subscribers are preserved.
+* **Lifecycle Hooks:** Rebinding via `Observable.SetListeners` preserves manual `Listeners` registrations. If `InitializePresenter()` throws, registrations added during that attempt are rolled back.
+
 #### Architecture Rule: One GameObject = One MMVC Unit
 
 Each GameObject represents a single MMVC unit containing:

@@ -163,9 +163,49 @@ Mark a serialized view field with `[AutoBind(nameof(PlayerDataModel.playerName))
 
 [AutoBind]
 [UnityEngine.SerializeField] private UnityEngine.UI.Toggle isAlive;
+
+// Command-aware AutoBind: dispatches input to Logic instead of mutating model directly
+[AutoBind(nameof(SettingsModel.musicVolume), Command = nameof(SettingsLogic.SetMusicVolume))]
+[UnityEngine.SerializeField] private UnityEngine.UI.Slider volumeSlider;
 ```
 
-Assign the actual UI component in the Inspector before binding. Treat AutoBind as value propagation, not formatting, validation, button-command wiring, or list item creation. Use a handler for formatted text, progress calculations, visibility, animations, or multiple view updates. Route validated gameplay input through logic rather than allowing two-way binding to bypass rules.
+Assign the actual UI component in the Inspector before binding.
+
+### Command-Aware AutoBind
+Setting `Command = nameof(Logic.Method)` on `[AutoBind]` routes control input to a public instance synchronous method on the paired `BaseLogic` (`public void Method(T value)`), where `T` matches the observable value type.
+- **Synchronous Only:** Returns `void`; accepts exactly one value parameter. `async void`, `Task`, `ValueTask`, and coroutine methods are rejected.
+- **Automatic Reconciliation:** In `finally`, the framework repaints the accepted model value onto the control without triggering input events or notifications. If Logic clamps, normalizes, rejects, or throws, the control reconciles to the accepted model state.
+- **Malformed Input:** Temporarily invalid numeric text (such as `-`) invokes no command and stays editable until valid.
+- **Legacy Fallback:** Omitting `Command` preserves direct model mutation.
+
+### ClickCommand For Buttons
+For zero-argument button actions triggering Logic commands:
+
+```csharp
+[SerializeField, ClickCommand(nameof(GameOverLogic.Hide))]
+private Button okButton;
+```
+- **Zero-Argument, Synchronous:** Targets a `public void Method()` on paired `BaseLogic`. Async methods are rejected (use `Listeners.Listen`).
+- **IL2CPP Stripping:** Mark the target logic method with `[UnityEngine.Scripting.Preserve]`.
+- **Framework Lifecycle:** Wired once before `InitializePresenter()` through an internal `ListenerSet`; survives consumer `Listeners.Clear()`.
+- **Render-Only Handlers:** `[ObservableHandler]` is strictly render-only. The framework deliberately provides no model-to-logic handler attribute.
+
+### Scoped ListenerSet (`Listeners`)
+Use the lazy `Listeners` property on `BaseObservablePresenter<M>` for explicit UnityEvent subscriptions:
+
+```csharp
+protected override void InitializePresenter() {
+    base.InitializePresenter();
+
+    Listeners.Listen(saveButton.onClick, GetLogic().Save);
+    Listeners.Listen(filterInput.onEndEdit, GetLogic().ApplyFilter);
+    Listeners.Listen(presetButton.onClick, () => GetLogic().ApplyPreset("Custom"));
+}
+```
+- Automatically disposed on presenter destruction (`OnDestroy`).
+- Idempotent deduplication for equal delegates.
+- Preserves Inspector-persistent listeners (does not call `RemoveAllListeners`).
+- Preserved across `Observable.SetListeners` rebinding. Calling `Listeners.Clear()` in pooled views resets dynamic listeners.
 
 ## Handlers and Collections
 
@@ -194,6 +234,7 @@ Use the framework's `ObservableList<T>` and `ObservableVariable<T>` property dra
 | `UnityEngine.UI.Toggle` | Two-way boolean binding |
 | `UnityEngine.UI.Slider` | Two-way numeric binding (also supports `enum` and `Nullable<T>`) |
 | `TMPro.TMP_InputField`, `UnityEngine.UI.InputField` | Two-way text with type conversion (supports primitives, `enum`, and `Nullable<T>`) |
+| `TMPro.TMP_Dropdown`, `UnityEngine.UI.Dropdown` | Two-way integer index and enum binding |
 | `UnityEngine.UI.Image` | Set sprite |
 
 Wire button clicks separately to logic entry points. To bind a button's label text, target its `TextMeshProUGUI` or `Text` child component directly with `[AutoBind]`. Implement `IUIAdapter` (`CanHandle`, `Priority`, `SetValue`) for display-only controls. Implement `IUIListenerAdapter` additionally for interactive controls, returning a listener token from `AddListener` and removing that exact listener in `RemoveListener`. Register with `UIAdapterRegistry.RegisterAdapter` (custom adapters deduplicate by concrete adapter type across Fast Play Mode runs). Two-way adapters use per-control re-entrancy tracking so modifying one control in a callback does not suppress callbacks on another control of the same type.

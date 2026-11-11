@@ -15,6 +15,14 @@ namespace SavableObservable
         public string VariableName { get; }
 
         /// <summary>
+        /// Optional name of a public instance synchronous method on the paired Logic component
+        /// to invoke on user input instead of directly mutating the model.
+        /// The method must return void, accept exactly one parameter matching the converted value type,
+        /// and cannot be async, generic, or coroutine-returning.
+        /// </summary>
+        public string Command { get; set; }
+
+        /// <summary>
         /// Auto-bind using the field name as the variable name.
         /// </summary>
         public AutoBindAttribute()

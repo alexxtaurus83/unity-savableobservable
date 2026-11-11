@@ -399,3 +399,120 @@ public class ScrollbarAdapter : IUIListenerAdapter {
     }
 }
 ```
+
+## Command-Aware AutoBind & ClickCommand (Settings Feature)
+
+Demonstrates command-aware `[AutoBind]`, `[ClickCommand]`, custom percentage rendering via `[ObservableHandler]`, and scoped `Listeners.Listen` for an argument-taking action.
+
+```csharp
+using System;
+using UnityEngine;
+using SavableObservable;
+
+[Serializable]
+public class SettingsModel : BaseObservableDataModel {
+    public ObservableVariable<float> musicVolume = new ObservableVariable<float>();
+    public ObservableVariable<bool> soundEnabled = new ObservableVariable<bool>();
+    public ObservableVariable<string> serverAddress = new ObservableVariable<string>();
+    public ObservableVariable<int> difficulty = new ObservableVariable<int>();
+}
+```
+
+```csharp
+using UnityEngine;
+using UnityEngine.Scripting;
+using SavableObservable;
+
+public class SettingsLogic : BaseLogic<SettingsModel, SettingsPresenter> {
+    [Preserve]
+    public void SetMusicVolume(float volume) {
+        // Clamping and validation performed exclusively by logic
+        GetModel().musicVolume.Value = Mathf.Clamp01(volume);
+    }
+
+    [Preserve]
+    public void SetSoundEnabled(bool enabled) {
+        GetModel().soundEnabled.Value = enabled;
+    }
+
+    [Preserve]
+    public void SetServerAddress(string address) {
+        // Normalizes input; even if unchanged, framework reconciles text on the control
+        GetModel().serverAddress.Value = address != null ? address.Trim() : string.Empty;
+    }
+
+    [Preserve]
+    public void SetDifficulty(int level) {
+        GetModel().difficulty.Value = Mathf.Clamp(level, 0, 3);
+    }
+
+    [Preserve]
+    public void ResetToDefaults() {
+        GetModel().musicVolume.Value = 0.8f;
+        GetModel().soundEnabled.Value = true;
+        GetModel().serverAddress.Value = "https://api.game.example.com";
+        GetModel().difficulty.Value = 1;
+    }
+
+    public void ApplyPreset(string presetName) {
+        if (presetName == "Mute") {
+            GetModel().musicVolume.Value = 0f;
+            GetModel().soundEnabled.Value = false;
+        }
+    }
+}
+```
+
+```csharp
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using SavableObservable;
+
+public class SettingsPresenter : ObservablePresenterWithLogic<SettingsModel, SettingsLogic> {
+    [Header("Command-Aware Inputs")]
+    [SerializeField]
+    [AutoBind(nameof(SettingsModel.musicVolume), Command = nameof(SettingsLogic.SetMusicVolume))]
+    private Slider volumeSlider;
+
+    [SerializeField]
+    [AutoBind(nameof(SettingsModel.soundEnabled), Command = nameof(SettingsLogic.SetSoundEnabled))]
+    private Toggle soundToggle;
+
+    [SerializeField]
+    [AutoBind(nameof(SettingsModel.serverAddress), Command = nameof(SettingsLogic.SetServerAddress))]
+    private TMP_InputField serverInput;
+
+    [SerializeField]
+    [AutoBind(nameof(SettingsModel.difficulty), Command = nameof(SettingsLogic.SetDifficulty))]
+    private TMP_Dropdown difficultyDropdown;
+
+    [Header("Zero-Argument Action Button")]
+    [SerializeField]
+    [ClickCommand(nameof(SettingsLogic.ResetToDefaults))]
+    private Button resetButton;
+
+    [Header("Explicit Scoped Action Button")]
+    [SerializeField] private Button mutePresetButton;
+
+    [Header("Pure Render Presentation")]
+    [SerializeField] private TextMeshProUGUI volumeLabel;
+
+    [ObservableHandler(nameof(SettingsModel.musicVolume), InvokeOnBind = true)]
+    private void OnVolumeChanged(float volume) {
+        if (volumeLabel != null) {
+            volumeLabel.text = $"{Mathf.RoundToInt(volume * 100f)}%";
+        }
+    }
+
+    protected override void InitializePresenter() {
+        base.InitializePresenter();
+
+        if (mutePresetButton != null) {
+            Listeners.Listen(
+                mutePresetButton.onClick,
+                () => GetLogic().ApplyPreset("Mute"));
+        }
+    }
+}
+```

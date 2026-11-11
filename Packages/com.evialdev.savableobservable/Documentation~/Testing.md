@@ -123,3 +123,17 @@ yield return MmvcLiveUiAudit.RunAudit(sceneRoot, report);
 Assert.AreEqual(0, report.FailedCount, report.SummaryText());
 ```
 Supports `[LiveUiAuditSkip("reason")]` and `LiveUiAuditOptions` for side-effecting controls.
+
+---
+
+## 5. Command-Aware Binding & Listener Test Suites
+
+The package includes comprehensive regression and contract test suites covering command-aware bindings, ClickCommand, and generic listeners:
+
+| Test Suite | Location | Scope |
+|---|---|---|
+| `CommandAutoBindTests` | `Tests/Editor/CommandAutoBindTests.cs` | Command dispatch, clamping, normalization, rejection, reconciliation, malformed numeric input, invalid declarations diagnostics, and rebind idempotency. |
+| `ListenerSetTests` | `Tests/Editor/ListenerSetTests.cs` | Generic zero- and single-argument `UnityEvent` subscriptions, method-group deduplication, non-owned listener preservation, and `Clear`/`Dispose` lifecycle. |
+| `ClickCommandTests` | `Tests/Editor/ClickCommandTests.cs` | `[ClickCommand]` button wiring, zero-parameter validation, rejection of async/Task/coroutine methods, unassigned button skipping, and presenter destruction cleanup. |
+| `CommandBindingPlayModeTests` | `Tests/Runtime/CommandBindingPlayModeTests.cs` | Runtime playmode validation of input dispatch, frame yields, and destruction order (presenter-first, model-first, control-first, command-triggered). |
+| `CommandSettingsContractTests` | `Tests/Editor/CommandSettingsContractTests.cs` | End-to-end contract tests using the `CommandSettings` sample triad. |

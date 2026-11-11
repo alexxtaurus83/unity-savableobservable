@@ -8,5 +8,6 @@ namespace SavableObservable {
         void EnsureInitializedForBinding();
         void MarkBound();
         void MarkUnbound();
+        void CleanupPresenterLifetime();
     }
 }

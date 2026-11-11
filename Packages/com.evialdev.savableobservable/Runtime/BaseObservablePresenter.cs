@@ -20,6 +20,15 @@ namespace SavableObservable {
         private M _model;
         private InitState _state = InitState.Uninitialized;
         private bool _isBound;
+        private ListenerSet _listeners;
+        private ListenerSet _clickCommandListeners;
+        private bool _clickCommandsWired;
+
+        /// <summary>
+        /// Scoped set of UnityEvent subscriptions owned by this presenter.
+        /// Automatically disposed on presenter destruction.
+        /// </summary>
+        public ListenerSet Listeners => _listeners ??= new ListenerSet();
 
         /// <summary>
         /// Returns the model component on this GameObject (observable fields initialized).
@@ -28,6 +37,14 @@ namespace SavableObservable {
 
         protected virtual void Awake() {
             EnsureInitialized();
+        }
+
+        protected virtual void OnDestroy() {
+            PresenterLifetimeTracker.Untrack(this);
+            DisposeListeners();
+            if (_model != null) {
+                Observable.RemoveAllSubscriptions(_model, this);
+            }
         }
 
         /// <summary>
@@ -64,14 +81,23 @@ namespace SavableObservable {
             if (_state == InitState.Initialized || _state == InitState.Initializing) return;
 
             _state = InitState.Initializing;
+            var listenersCheckpoint = _listeners?.Count ?? 0;
             try {
                 GetModel();
+                WireClickCommands();
                 InitializePresenter();
                 _state = InitState.Initialized;
             } catch {
                 _state = InitState.Uninitialized;
+                _listeners?.RollbackTo(listenersCheckpoint);
                 throw;
             }
+        }
+
+        private void WireClickCommands() {
+            if (_clickCommandsWired) return;
+            _clickCommandsWired = true;
+            Observable.WireClickCommands(this, ref _clickCommandListeners);
         }
 
         void IPresenterBindingState.EnsureInitializedForBinding() {
@@ -84,6 +110,22 @@ namespace SavableObservable {
 
         void IPresenterBindingState.MarkUnbound() {
             _isBound = false;
+        }
+
+        void IPresenterBindingState.CleanupPresenterLifetime() {
+            DisposeListeners();
+        }
+
+        private void DisposeListeners() {
+            if (_listeners != null) {
+                _listeners.Dispose();
+                _listeners = null;
+            }
+            if (_clickCommandListeners != null) {
+                _clickCommandListeners.Dispose();
+                _clickCommandListeners = null;
+            }
+            _clickCommandsWired = false;
         }
 
         public BaseObservableDataModel GetObservableModel() {

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.Events;
 using System.Runtime.CompilerServices;
 using Unity.Scripting.LifecycleManagement;
 
@@ -56,8 +59,9 @@ namespace SavableObservable {
             public readonly Dictionary<string, List<MethodInfo>> HandlerMethods = new Dictionary<string, List<MethodInfo>>();
             /// <summary>Handler methods whose attribute sets <see cref="ObservableHandlerAttribute.InvokeOnBind"/>.</summary>
             public readonly HashSet<MethodInfo> InvokeOnBindMethods = new HashSet<MethodInfo>();
-            public readonly List<(FieldInfo field, string targetName)> AutoBindFields = new List<(FieldInfo, string)>();
+            public readonly List<(FieldInfo field, string targetName, string commandName)> AutoBindFields = new List<(FieldInfo, string, string)>();
             public readonly HashSet<string> AutoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
+            public readonly List<(FieldInfo field, string commandName)> ClickCommandFields = new List<(FieldInfo, string)>();
 
             public SubscriberMetadata(Type subscriberType) {
                 var seenVirtualBaseDefs = new HashSet<MethodInfo>();
@@ -96,10 +100,23 @@ namespace SavableObservable {
 
                     var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
                     foreach (var field in fields) {
-                        var attr = field.GetCustomAttribute<AutoBindAttribute>();
-                        if (attr != null) {
-                            var targetName = string.IsNullOrWhiteSpace(attr.VariableName) ? field.Name : attr.VariableName;
-                            AutoBindFields.Add((field, targetName));
+                        var clickAttr = field.GetCustomAttribute<ClickCommandAttribute>();
+                        var autoBindAttr = field.GetCustomAttribute<AutoBindAttribute>();
+
+                        if (clickAttr != null && autoBindAttr != null) {
+                            Debug.LogError($"[SavableObservable] Field '{field.Name}' on '{subscriberType.Name}' cannot have both [ClickCommand] and [AutoBind].", null);
+                        } else if (clickAttr != null) {
+                            if (!typeof(Button).IsAssignableFrom(field.FieldType)) {
+                                Debug.LogError($"[SavableObservable] Invalid [ClickCommand] on field '{field.Name}' ({subscriberType.Name}): field type '{field.FieldType.Name}' is not UnityEngine.UI.Button or a subclass.", null);
+                            } else if (string.IsNullOrWhiteSpace(clickAttr.MethodName)) {
+                                Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({subscriberType.Name}) has an empty method name.", null);
+                            } else {
+                                ClickCommandFields.Add((field, clickAttr.MethodName.Trim()));
+                            }
+                        } else if (autoBindAttr != null) {
+                            var targetName = string.IsNullOrWhiteSpace(autoBindAttr.VariableName) ? field.Name : autoBindAttr.VariableName;
+                            var commandName = !string.IsNullOrWhiteSpace(autoBindAttr.Command) ? autoBindAttr.Command.Trim() : null;
+                            AutoBindFields.Add((field, targetName, commandName));
                             if (!string.IsNullOrWhiteSpace(targetName)) {
                                 AutoBindTargetNames.Add(targetName);
                             }
@@ -160,7 +177,9 @@ namespace SavableObservable {
             model.EnsureFieldsInitialized();
             if (subscriber is IPresenterBindingState presenterState) {
                 presenterState.EnsureInitializedForBinding();
+                PresenterLifetimeTracker.Track(presenterState);
             }
+            PresenterLifetimeTracker.SweepDeadPresenters();
 
             // Replace framework-created bindings so repeated calls are idempotent,
             // while manual subscriptions on the same subscriber are preserved.
@@ -288,7 +307,7 @@ namespace SavableObservable {
         {
             if (subMetadata.AutoBindFields.Count == 0) return;
 
-            foreach (var (uiField, targetName) in subMetadata.AutoBindFields) {
+            foreach (var (uiField, targetName, commandName) in subMetadata.AutoBindFields) {
                 try {
                     if (!descriptor.ObservableFieldsByName.TryGetValue(targetName, out var observableField)) {
                         Debug.LogWarning($"[SavableObservable] [AutoBind] on '{uiField.Name}' could not find ObservableVariable '{targetName}' in {dataModel.GetType().Name}.", monoBehaviour);
@@ -301,7 +320,7 @@ namespace SavableObservable {
                         continue;
                     }
 
-                    SubscribeAutoBindHandler(obj, uiField, observableField, dataModel, adapter, replay);
+                    SubscribeAutoBindHandler(obj, uiField, observableField, commandName, dataModel, adapter, replay);
                 } catch (Exception ex) {
                     Debug.LogError($"[SavableObservable] Failed to wire [AutoBind] for field '{uiField.Name}' on {obj.GetType().Name}: {ex.Message}", monoBehaviour);
                 }
@@ -314,6 +333,7 @@ namespace SavableObservable {
             object obj,
             FieldInfo uiField,
             FieldInfo observableField,
+            string commandName,
             BaseObservableDataModel dataModel,
             IUIAdapter adapter,
             List<(IObservableVariable source, Delegate handler)> replay)
@@ -343,37 +363,385 @@ namespace SavableObservable {
                 replay?.Add((observableVar, wrappedHandler));
             }
 
-            // 2) Subscribe UI -> Model (Two-way binding, if supported)
+            // 2) Subscribe UI -> Model or UI -> Logic (Two-way / Command binding)
             // ----------------------------------------------------------------
             try {
+                var presenterMb = obj as MonoBehaviour;
                 var currentUiComponent = uiField.GetValue(obj);
-                if (IsTargetAlive(currentUiComponent)) {
-                    if (UIAdapterRegistry.TryGetListenerAdapter(currentUiComponent.GetType(), out var listenerAdapter)) {
-                        var valueProp = observableField.FieldType.GetProperty("Value");
-                        Action<object> uiToModelHandler = newValue => {
-                            try {
-                                if (valueProp != null && valueProp.CanWrite) {
-                                    valueProp.SetValue(observableVar, newValue);
-                                }
-                            } catch (Exception ex) {
-                                Debug.LogError($"[SavableObservable] Failed to update Observable '{observableField.Name}' from UI: {ex.Message}", obj as MonoBehaviour);
+                if (!IsTargetAlive(currentUiComponent)) return;
+
+                if (!UIAdapterRegistry.TryGetListenerAdapter(currentUiComponent.GetType(), out var listenerAdapter)) {
+                    if (!string.IsNullOrEmpty(commandName)) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}', but UI component type '{currentUiComponent.GetType().Name}' does not support input events.", presenterMb);
+                    }
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(commandName)) {
+                    var valueProp = observableField.FieldType.GetProperty("Value");
+                    Action<object> uiToModelHandler = newValue => {
+                        try {
+                            if (valueProp != null && valueProp.CanWrite) {
+                                valueProp.SetValue(observableVar, newValue);
                             }
-                        };
-
-                        object token = listenerAdapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
-
-                        if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
-                            RegisterUiListener(dataModel, obj, () => {
-                                if (unityUiComponent != null) {
-                                    listenerAdapter.RemoveListener(unityUiComponent, token);
-                                }
-                            });
+                        } catch (Exception ex) {
+                            Debug.LogError($"[SavableObservable] Failed to update Observable '{observableField.Name}' from UI: {ex.Message}", presenterMb);
                         }
+                    };
+
+                    object token = listenerAdapter.AddListener(currentUiComponent, uiToModelHandler, valueType);
+
+                    if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
+                        RegisterUiListener(dataModel, obj, () => {
+                            if (unityUiComponent != null) {
+                                listenerAdapter.RemoveListener(unityUiComponent, token);
+                            }
+                        });
+                    }
+                } else {
+                    if (IsObservableListType(observableField.FieldType)) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}' for '{observableField.Name}', but command binding is not supported for ObservableList. Expected ObservableVariable.", presenterMb);
+                        return;
+                    }
+
+                    if (!(obj is IAutoBindCommandTarget commandTarget)) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}', but presenter does not implement IAutoBindCommandTarget.", presenterMb);
+                        return;
+                    }
+
+                    var logic = commandTarget.GetAutoBindCommandTarget();
+                    if (!IsTargetAlive(logic)) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}', but paired Logic target is null or destroyed.", presenterMb);
+                        return;
+                    }
+
+                    if (presenterMb != null && logic.gameObject != presenterMb.gameObject) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}', but paired Logic is on a different GameObject ('{logic.gameObject.name}'). Must be on the same GameObject.", presenterMb);
+                        return;
+                    }
+
+                    if (!ReferenceEquals(logic.GetUntypedModel(), dataModel)) {
+                        Debug.LogError($"[SavableObservable] [AutoBind] on field '{uiField.Name}' ({obj.GetType().Name}) declares Command '{commandName}', but paired Logic does not own model '{dataModel.GetType().Name}'.", presenterMb);
+                        return;
+                    }
+
+                    if (!GetOrValidateCommandMethod(logic.GetType(), commandName, valueType, out var methodInfo, out var error)) {
+                        Debug.LogError($"[SavableObservable] Invalid [AutoBind] Command '{commandName}' on field '{uiField.Name}' ({obj.GetType().Name}): {error} Expected signature on {logic.GetType().Name}: 'public void {commandName}({valueType.Name} value)'", presenterMb);
+                        return;
+                    }
+
+                    bool isProcessingCommand = false;
+                    Action<object> uiToCommandHandler = newValue => {
+                        try {
+                            if (isProcessingCommand) return;
+                            var currentUi = uiField.GetValue(obj);
+                            if (!IsTargetAlive(currentUi) || !IsTargetAlive(obj) || !IsTargetAlive(logic) || !IsTargetAlive(dataModel)) return;
+                            if (UIAdapterRegistry.IsSettingValue(currentUi)) return;
+
+                            isProcessingCommand = true;
+                            try {
+                                methodInfo.Invoke(logic, new object[] { newValue });
+                            } catch (TargetInvocationException tie) {
+                                Debug.LogError($"[SavableObservable] Command '{methodInfo.Name}' on '{logic.GetType().Name}' threw an exception: {tie.InnerException?.Message ?? tie.Message}", presenterMb);
+                            } catch (Exception ex) {
+                                Debug.LogError($"[SavableObservable] Command '{methodInfo.Name}' on '{logic.GetType().Name}' threw an exception: {ex.Message}", presenterMb);
+                            } finally {
+                                try {
+                                    if (IsTargetAlive(currentUi) && IsTargetAlive(dataModel)) {
+                                        observableVar.InvokeHandler(wrappedHandler);
+                                    }
+                                } catch (Exception rex) {
+                                    Debug.LogError($"[SavableObservable] Failed to reconcile UI field '{uiField.Name}' from '{observableField.Name}': {rex.Message}", presenterMb);
+                                }
+                                isProcessingCommand = false;
+                            }
+                        } catch (Exception ex) {
+                            Debug.LogError($"[SavableObservable] Failed to process UI command for '{uiField.Name}': {ex.Message}", presenterMb);
+                        }
+                    };
+
+                    object token = listenerAdapter.AddListener(currentUiComponent, uiToCommandHandler, valueType);
+
+                    if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
+                        RegisterUiListener(dataModel, obj, () => {
+                            if (unityUiComponent != null) {
+                                listenerAdapter.RemoveListener(unityUiComponent, token);
+                            }
+                        });
                     }
                 }
             } catch (Exception ex) {
                 Debug.LogWarning($"[SavableObservable] Failed to setup two-way binding for '{uiField.Name}': {ex.Message}", obj as MonoBehaviour);
             }
+        }
+
+        internal static void WireClickCommands(MonoBehaviour presenter, ref ListenerSet clickListeners) {
+            if (presenter == null) return;
+            var subMetadata = GetSubscriberMetadata(presenter.GetType());
+            if (subMetadata.ClickCommandFields.Count == 0) return;
+
+            if (!(presenter is IAutoBindCommandTarget commandTarget)) {
+                for (int i = 0; i < subMetadata.ClickCommandFields.Count; i++) {
+                    var (field, commandName) = subMetadata.ClickCommandFields[i];
+                    Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({presenter.GetType().Name}) requires a paired Logic component, but {presenter.GetType().Name} does not implement IAutoBindCommandTarget.", presenter);
+                }
+                return;
+            }
+
+            var logic = commandTarget.GetAutoBindCommandTarget();
+            if (!IsTargetAlive(logic)) {
+                for (int i = 0; i < subMetadata.ClickCommandFields.Count; i++) {
+                    var (field, commandName) = subMetadata.ClickCommandFields[i];
+                    Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({presenter.GetType().Name}): paired Logic target is null or destroyed.", presenter);
+                }
+                return;
+            }
+
+            if (logic.gameObject != presenter.gameObject) {
+                for (int i = 0; i < subMetadata.ClickCommandFields.Count; i++) {
+                    var (field, commandName) = subMetadata.ClickCommandFields[i];
+                    Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({presenter.GetType().Name}): paired Logic is on a different GameObject ('{logic.gameObject.name}'). Must be on the same GameObject.", presenter);
+                }
+                return;
+            }
+
+            var model = (presenter as IObservablePresenter)?.GetObservableModel();
+            if (model != null && !ReferenceEquals(logic.GetUntypedModel(), model)) {
+                for (int i = 0; i < subMetadata.ClickCommandFields.Count; i++) {
+                    var (field, commandName) = subMetadata.ClickCommandFields[i];
+                    Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({presenter.GetType().Name}): paired Logic does not own model '{model.GetType().Name}'.", presenter);
+                }
+                return;
+            }
+
+            for (int i = 0; i < subMetadata.ClickCommandFields.Count; i++) {
+                var (buttonField, commandName) = subMetadata.ClickCommandFields[i];
+                try {
+                    var button = buttonField.GetValue(presenter) as Button;
+                    if (!IsTargetAlive(button)) {
+                        continue;
+                    }
+
+                    if (!GetOrValidateClickCommandMethod(logic.GetType(), commandName, out var methodInfo, out var error)) {
+                        Debug.LogError($"[SavableObservable] Invalid [ClickCommand] '{commandName}' on field '{buttonField.Name}' ({presenter.GetType().Name}): {error} Expected signature on {logic.GetType().Name}: 'public void {commandName}()'", presenter);
+                        continue;
+                    }
+
+                    clickListeners ??= new ListenerSet();
+                    var cachedMethod = methodInfo;
+                    UnityAction clickAction = () => {
+                        if (!IsTargetAlive(presenter) || !IsTargetAlive(logic) || !IsTargetAlive(button)) return;
+                        try {
+                            cachedMethod.Invoke(logic, null);
+                        } catch (TargetInvocationException tie) {
+                            Debug.LogError($"[SavableObservable] ClickCommand '{cachedMethod.Name}' on button '{buttonField.Name}' ({presenter.GetType().Name}) threw an exception: {tie.InnerException?.Message ?? tie.Message}", presenter);
+                        } catch (Exception ex) {
+                            Debug.LogError($"[SavableObservable] ClickCommand '{cachedMethod.Name}' on button '{buttonField.Name}' ({presenter.GetType().Name}) threw an exception: {ex.Message}", presenter);
+                        }
+                    };
+
+                    clickListeners.Listen(button.onClick, clickAction);
+                } catch (Exception ex) {
+                    Debug.LogError($"[SavableObservable] Failed to wire [ClickCommand] on field '{buttonField.Name}' ({presenter.GetType().Name}): {ex.Message}", presenter);
+                }
+            }
+        }
+
+        [NoAutoStaticsCleanup]
+        private static readonly Dictionary<(Type, string), (MethodInfo method, string error)> _clickCommandMethodCache =
+            new Dictionary<(Type, string), (MethodInfo, string)>();
+        [NoAutoStaticsCleanup]
+        private static readonly object _clickCommandMethodLock = new object();
+
+        private static bool GetOrValidateClickCommandMethod(Type logicType, string commandName, out MethodInfo methodInfo, out string error) {
+            var key = (logicType, commandName);
+            lock (_clickCommandMethodLock) {
+                if (_clickCommandMethodCache.TryGetValue(key, out var cached)) {
+                    methodInfo = cached.method;
+                    error = cached.error;
+                    return methodInfo != null;
+                }
+            }
+
+            var result = ResolveClickCommandMethod(logicType, commandName);
+            lock (_clickCommandMethodLock) {
+                _clickCommandMethodCache[key] = result;
+            }
+
+            methodInfo = result.method;
+            error = result.error;
+            return methodInfo != null;
+        }
+
+        private static (MethodInfo method, string error) ResolveClickCommandMethod(Type logicType, string commandName) {
+            var allMethods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(m => m.Name == commandName).ToList();
+
+            if (allMethods.Count == 0) {
+                return (null, $"Method '{commandName}' not found on '{logicType.Name}'.");
+            }
+
+            if (allMethods.All(m => m.IsStatic)) {
+                return (null, $"Method '{commandName}' on '{logicType.Name}' is static. Commands must be public instance methods.");
+            }
+
+            if (allMethods.All(m => !m.IsPublic)) {
+                return (null, $"Method '{commandName}' on '{logicType.Name}' is not public. Commands must be public instance methods.");
+            }
+
+            var publicInstance = allMethods.Where(m => m.IsPublic && !m.IsStatic).ToList();
+            var candidates = new List<MethodInfo>();
+            string firstError = null;
+
+            foreach (var m in publicInstance) {
+                if (m.IsGenericMethod || m.ContainsGenericParameters) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is generic. Generic methods are not supported.";
+                    continue;
+                }
+
+                if (m.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() != null) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is async void. Commands must be synchronous.";
+                    continue;
+                }
+
+                if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType) ||
+                    m.ReturnType.Name == "ValueTask" ||
+                    typeof(System.Collections.IEnumerator).IsAssignableFrom(m.ReturnType)) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must be synchronous with void return.";
+                    continue;
+                }
+
+                if (m.ReturnType != typeof(void)) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must return void.";
+                    continue;
+                }
+
+                var parameters = m.GetParameters();
+                if (parameters.Length != 0) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Click commands must have zero parameters.";
+                    continue;
+                }
+
+                candidates.Add(m);
+            }
+
+            if (candidates.Count == 0) {
+                return (null, firstError ?? $"Method '{commandName}' on '{logicType.Name}' does not have the expected signature.");
+            }
+
+            if (candidates.Count > 1) {
+                var filtered = candidates.Where(c => !candidates.Any(other => !ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType))).ToList();
+                if (filtered.Count == 1) {
+                    return (filtered[0], null);
+                }
+                return (null, $"Ambiguous matches found for command '{commandName}' on '{logicType.Name}'.");
+            }
+
+            return (candidates[0], null);
+        }
+
+        [NoAutoStaticsCleanup]
+        private static readonly Dictionary<(Type, string, Type), (MethodInfo method, string error)> _commandMethodCache =
+            new Dictionary<(Type, string, Type), (MethodInfo, string)>();
+        [NoAutoStaticsCleanup]
+        private static readonly object _commandMethodLock = new object();
+
+        private static bool GetOrValidateCommandMethod(Type logicType, string commandName, Type valueType, out MethodInfo methodInfo, out string error) {
+            var key = (logicType, commandName, valueType);
+            lock (_commandMethodLock) {
+                if (_commandMethodCache.TryGetValue(key, out var cached)) {
+                    methodInfo = cached.method;
+                    error = cached.error;
+                    return methodInfo != null;
+                }
+            }
+
+            var result = ResolveCommandMethod(logicType, commandName, valueType);
+            lock (_commandMethodLock) {
+                _commandMethodCache[key] = result;
+            }
+
+            methodInfo = result.method;
+            error = result.error;
+            return methodInfo != null;
+        }
+
+        private static (MethodInfo method, string error) ResolveCommandMethod(Type logicType, string commandName, Type valueType) {
+            var allMethods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(m => m.Name == commandName).ToList();
+
+            if (allMethods.Count == 0) {
+                return (null, $"Method '{commandName}' not found on '{logicType.Name}'.");
+            }
+
+            if (allMethods.All(m => m.IsStatic)) {
+                return (null, $"Method '{commandName}' on '{logicType.Name}' is static. Commands must be public instance methods.");
+            }
+
+            if (allMethods.All(m => !m.IsPublic)) {
+                return (null, $"Method '{commandName}' on '{logicType.Name}' is not public. Commands must be public instance methods.");
+            }
+
+            var publicInstance = allMethods.Where(m => m.IsPublic && !m.IsStatic).ToList();
+            var candidates = new List<MethodInfo>();
+            string firstError = null;
+
+            foreach (var m in publicInstance) {
+                if (m.IsGenericMethod || m.ContainsGenericParameters) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is generic. Generic methods are not supported.";
+                    continue;
+                }
+
+                if (m.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() != null) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is async void. Commands must be synchronous.";
+                    continue;
+                }
+
+                if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType) ||
+                    m.ReturnType.Name == "ValueTask" ||
+                    typeof(System.Collections.IEnumerator).IsAssignableFrom(m.ReturnType)) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must be synchronous with void return.";
+                    continue;
+                }
+
+                if (m.ReturnType != typeof(void)) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must return void.";
+                    continue;
+                }
+
+                var parameters = m.GetParameters();
+                if (parameters.Length != 1) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Commands must have exactly one parameter matching the value type '{valueType.Name}'.";
+                    continue;
+                }
+
+                var p = parameters[0];
+                if (p.ParameterType.IsByRef || p.IsOut) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter '{p.Name}' has ref/out modifier. By-ref parameters are not supported.";
+                    continue;
+                }
+
+                if (p.ParameterType != valueType) {
+                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter type '{p.ParameterType.Name}' does not match expected value type '{valueType.Name}'.";
+                    continue;
+                }
+
+                candidates.Add(m);
+            }
+
+            if (candidates.Count == 0) {
+                return (null, firstError ?? $"Method '{commandName}' on '{logicType.Name}' does not have the expected signature.");
+            }
+
+            if (candidates.Count > 1) {
+                var filtered = candidates.Where(c => !candidates.Any(other => !ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType))).ToList();
+                if (filtered.Count == 1) {
+                    return (filtered[0], null);
+                }
+                return (null, $"Ambiguous matches found for command '{commandName}' on '{logicType.Name}'.");
+            }
+
+            return (candidates[0], null);
         }
 
         #endregion
@@ -416,8 +784,12 @@ namespace SavableObservable {
             if (!_instanceData.TryGetValue(dataModel, out var data)) return;
 
             var all = new List<SubscriptionRecord>();
-            foreach (var list in data.Subscriptions.Values) {
-                all.AddRange(list);
+            foreach (var kvp in data.Subscriptions) {
+                if (kvp.Key is IPresenterBindingState bindingState) {
+                    bindingState.CleanupPresenterLifetime();
+                    PresenterLifetimeTracker.Untrack(bindingState);
+                }
+                all.AddRange(kvp.Value);
             }
             data.Subscriptions.Clear();
 
@@ -499,6 +871,16 @@ namespace SavableObservable {
         }
 
         #endregion
+
+        private static bool IsObservableListType(Type type) {
+            while (type != null && type != typeof(object)) {
+                if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ObservableList<>)) {
+                    return true;
+                }
+                type = type.BaseType;
+            }
+            return false;
+        }
 
         /// <summary>
         /// Determines whether field type is <see cref="ObservableVariable{T}" /> or <see cref="ObservableList{T}" /> (or a subclass of either).

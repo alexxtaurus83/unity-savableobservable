@@ -221,7 +221,9 @@ This prevents registration overhead, avoids duplicate-registration errors, and k
    Mutating a model while its GameObject is inactive will invoke presenter handlers if the value actually changes. Ensure presenter handlers do not call methods that require an active object (such as `StartCoroutine`, which logs an error when invoked on an inactive GameObject).
 2. **No Replay on Activation:**  
    Activating an object does not replay model values into the presenter. Binding does: `Observable.SetListeners` pushes the current state to `[AutoBind]` targets and to `[ObservableHandler(..., InvokeOnBind = true)]` handlers once, when the presenter binds (`ObservableSettings.SyncOnBind`, default on; see [Unity Lifecycle](UnityLifecycle.md)). A pooled prefab that is unbound and rebound gets a fresh replay; one that stays bound and is only deactivated and reactivated does not, so its model must keep it up to date through normal change notifications.
-3. **Never-Active Inactive Destruction:**  
+3. **Pooled Views and Scoped Listeners (`Listeners.Clear()`):**  
+   If a pooled view registers dynamic event listeners into `Listeners` during checkout or runtime, call `Listeners.Clear()` when returning the view to the pool. This cleans up manual event subscriptions while leaving `[ClickCommand]` registrations and the core MMVC binding intact.
+4. **Never-Active Inactive Destruction:**  
    If an inactive object is early-bound via `EnsureInitialized()` or `logic.GetModel()` and destroyed without ever being activated, call `Observable.CleanupSubscriptions(model)` before destroying to avoid dangling delegates.
 
 ---

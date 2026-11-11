@@ -2,6 +2,28 @@
 
 ## [2.1.0] - 2026-11-11 - Unity 6000.5+ baseline & engine bug-fixes
 
+### Added (Command-Aware AutoBind, ClickCommand & Generic ListenerSet)
+- **Command-Aware `[AutoBind]`:**
+  - Added optional `AutoBindAttribute.Command` property to route UI control input directly to a synchronous command method on the paired `BaseLogic` (`public void Method(T value)`), rather than mutating the model directly.
+  - Automatically reconciles the originating control with the accepted model value in `finally`, even if Logic rejects, clamps, or normalizes input without model notification.
+  - Added `IAutoBindCommandTarget` implemented explicitly by `ObservablePresenterWithLogic<M, LO>` to resolve paired Logic on the same GameObject.
+  - Strict validation rejects `async void`, `Task`, `ValueTask`, coroutines, generic methods, and wrong parameter types with descriptive diagnostics.
+  - Preserves legacy direct model mutation when `Command` is omitted.
+- **Built-in `TMP_Dropdown` and `Dropdown` UI Adapters:**
+  - Added built-in `TMP_DropdownAdapter` and `DropdownAdapter` supporting two-way integer index and enum binding via `SetValueWithoutNotify` and `onValueChanged`.
+- **`[ClickCommand]` Attribute for Buttons:**
+  - Declaratively binds `Button.onClick` fields to zero-argument, synchronous public instance methods on paired `BaseLogic` (`public void Method()`).
+  - Wired once per presenter instance through an internal framework-owned `ListenerSet` before `InitializePresenter()` runs, surviving consumer `Listeners.Clear()` calls.
+  - Inherited button fields are automatically discovered; unassigned/destroyed button fields are skipped silently.
+- **Generic `ListenerSet` Container:**
+  - Added `ListenerSet` implementing `IDisposable` with `Listen(UnityEvent, UnityAction)` and `Listen<T>(UnityEvent<T>, UnityAction<T>)`.
+  - Added lazy `Listeners` property on `BaseObservablePresenter<M>` for explicit scoped event subscriptions (argument-taking buttons, `onEndEdit`, presenter-local state).
+  - Automatically deduplicates identical delegate registrations and removes only registrations owned by the set without calling `RemoveAllListeners()`.
+  - Automatically cleaned up on presenter destruction; backed by `PresenterLifetimeTracker` sweeps against shadowed `OnDestroy()` methods.
+- **Compiling Samples & Contract Tests:**
+  - Added `CommandSettings` sample triad (`CommandSettingsModel`, `CommandSettingsLogic`, `CommandSettingsPresenter`) under `Samples/Scripts/CommandSettings/`.
+  - Added `CommandAutoBindTests`, `ClickCommandTests`, `ListenerSetTests`, `CommandBindingPlayModeTests`, and `CommandSettingsContractTests`.
+
 ### Changed (engine & compatibility)
 - **Minimum Unity Version Bumped to 6000.5:**
   - Updated `package.json` minimum Unity version to `6000.5`.

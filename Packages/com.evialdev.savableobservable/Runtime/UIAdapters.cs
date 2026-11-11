@@ -240,6 +240,8 @@ namespace SavableObservable
                 RegisterBuiltInAdapter(new UnityTextAdapter());
                 RegisterBuiltInAdapter(new ToggleAdapter());
                 RegisterBuiltInAdapter(new SliderAdapter());
+                RegisterBuiltInAdapter(new TMP_DropdownAdapter());
+                RegisterBuiltInAdapter(new DropdownAdapter());
                 RegisterBuiltInAdapter(new ImageAdapter());
 
                 for (int i = 0; i < _customAdapters.Count; i++)
@@ -619,6 +621,156 @@ namespace SavableObservable
             if (uiComponent is Slider slider && token is UnityAction<float> listener)
             {
                 slider.onValueChanged.RemoveListener(listener);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adapter for TMP_Dropdown components. Handles integer index and enum values.
+    /// </summary>
+    public class TMP_DropdownAdapter : IUIListenerAdapter
+    {
+        public int Priority => 100;
+
+        public bool CanHandle(Type uiComponentType)
+        {
+            return typeof(TMP_Dropdown).IsAssignableFrom(uiComponentType);
+        }
+
+        public void SetValue(object uiComponent, object value, Type valueType)
+        {
+            if (uiComponent is TMP_Dropdown dropdown && value != null)
+            {
+                try
+                {
+                    int intValue;
+                    if (value is Enum)
+                    {
+                        intValue = Convert.ToInt32(Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()), CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        intValue = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    }
+
+                    if (dropdown.value != intValue)
+                    {
+                        UIAdapterRegistry.EnterSetValue(dropdown);
+                        try
+                        {
+                            dropdown.SetValueWithoutNotify(intValue);
+                        }
+                        finally
+                        {
+                            UIAdapterRegistry.ExitSetValue(dropdown);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore conversion failures
+                }
+            }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
+        {
+            if (uiComponent is TMP_Dropdown dropdown)
+            {
+                UnityAction<int> listener = val =>
+                {
+                    if (UIAdapterRegistry.IsSettingValue(dropdown)) return;
+                    if (UIAdapterRegistry.TryConvertValue(val, valueType, out var convertedValue))
+                    {
+                        onValueChanged(convertedValue);
+                    }
+                };
+                dropdown.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is TMP_Dropdown dropdown && token is UnityAction<int> listener)
+            {
+                dropdown.onValueChanged.RemoveListener(listener);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adapter for legacy UGUI Dropdown components. Handles integer index and enum values.
+    /// </summary>
+    public class DropdownAdapter : IUIListenerAdapter
+    {
+        public int Priority => 100;
+
+        public bool CanHandle(Type uiComponentType)
+        {
+            return typeof(Dropdown).IsAssignableFrom(uiComponentType);
+        }
+
+        public void SetValue(object uiComponent, object value, Type valueType)
+        {
+            if (uiComponent is Dropdown dropdown && value != null)
+            {
+                try
+                {
+                    int intValue;
+                    if (value is Enum)
+                    {
+                        intValue = Convert.ToInt32(Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()), CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        intValue = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    }
+
+                    if (dropdown.value != intValue)
+                    {
+                        UIAdapterRegistry.EnterSetValue(dropdown);
+                        try
+                        {
+                            dropdown.SetValueWithoutNotify(intValue);
+                        }
+                        finally
+                        {
+                            UIAdapterRegistry.ExitSetValue(dropdown);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore conversion failures
+                }
+            }
+        }
+
+        public object AddListener(object uiComponent, Action<object> onValueChanged, Type valueType)
+        {
+            if (uiComponent is Dropdown dropdown)
+            {
+                UnityAction<int> listener = val =>
+                {
+                    if (UIAdapterRegistry.IsSettingValue(dropdown)) return;
+                    if (UIAdapterRegistry.TryConvertValue(val, valueType, out var convertedValue))
+                    {
+                        onValueChanged(convertedValue);
+                    }
+                };
+                dropdown.onValueChanged.AddListener(listener);
+                return listener;
+            }
+            return null;
+        }
+
+        public void RemoveListener(object uiComponent, object token)
+        {
+            if (uiComponent is Dropdown dropdown && token is UnityAction<int> listener)
+            {
+                dropdown.onValueChanged.RemoveListener(listener);
             }
         }
     }
