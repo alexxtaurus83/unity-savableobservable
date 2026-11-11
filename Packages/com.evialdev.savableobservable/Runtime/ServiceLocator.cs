@@ -47,6 +47,9 @@ namespace SavableObservable {
         // The only store: (concrete type, key) -> service instance.
         private readonly Dictionary<(Type Type, string Key), object> _services = new Dictionary<(Type, string), object>();
 
+        // Cache of Type -> Type.Name to avoid allocating strings on unnamed lookups.
+        private readonly Dictionary<Type, string> _defaultKeyCache = new Dictionary<Type, string>();
+
         // Instances already reported as duplicates, so scene Pass 1 and the later Awake of the same unit log once.
         private readonly HashSet<object> _reportedDuplicates = new HashSet<object>();
 
@@ -59,10 +62,19 @@ namespace SavableObservable {
 
         private void OnDestroy() {
             _services.Clear();
+            _defaultKeyCache.Clear();
             _reportedDuplicates.Clear();
             if (ReferenceEquals(instance, this)) {
                 instance = null;
             }
+        }
+
+        private string GetDefaultKey(Type type) {
+            if (!_defaultKeyCache.TryGetValue(type, out var key)) {
+                key = type.Name;
+                _defaultKeyCache[type] = key;
+            }
+            return key;
         }
 
         /// <summary>Unity-aware liveness: destroyed UnityEngine.Object instances are not live even when typed as object/interface.</summary>
@@ -100,7 +112,7 @@ namespace SavableObservable {
         }
 
         public bool IsRegistered(Type type, string name = null) {
-            string key = string.IsNullOrEmpty(name) ? type.Name : name;
+            string key = string.IsNullOrEmpty(name) ? GetDefaultKey(type) : name;
             return Lookup(type, key) != null;
         }
 
@@ -115,11 +127,11 @@ namespace SavableObservable {
                 return Lookup(bindingType, name);
             }
 
-            var byDefaultKey = Lookup(bindingType, bindingType.Name);
+            var byDefaultKey = Lookup(bindingType, GetDefaultKey(bindingType));
             if (byDefaultKey != null) return byDefaultKey;
 
             object only = null;
-            var keys = new List<string>();
+            int count = 0;
             List<(Type, string)> dead = null;
             foreach (var kvp in _services) {
                 if (kvp.Key.Type != bindingType) continue;
@@ -128,15 +140,21 @@ namespace SavableObservable {
                     continue;
                 }
                 only = kvp.Value;
-                keys.Add(kvp.Key.Key);
+                count++;
             }
             if (dead != null) {
                 for (int i = 0; i < dead.Count; i++) _services.Remove(dead[i]);
             }
 
-            if (keys.Count == 1) return only;
+            if (count == 1) return only;
 
-            if (keys.Count > 1 && enableLogging) {
+            if (count > 1 && enableLogging) {
+                var keys = new List<string>(count);
+                foreach (var kvp in _services) {
+                    if (kvp.Key.Type == bindingType && IsLive(kvp.Value)) {
+                        keys.Add(kvp.Key.Key);
+                    }
+                }
                 Debug.LogError($"[ServiceLocator] Ambiguous Get request for type '{bindingType.FullName}' with no name. {keys.Count} instances are registered under different keys ({string.Join(", ", keys)}). Pass the name of the instance you want.");
             }
             return null;
@@ -156,7 +174,7 @@ namespace SavableObservable {
         public M GetModel<M>(string name = null) where M : BaseObservableDataModel {
             Type modelType = typeof(M);
             M found = null;
-            var keys = new List<string>();
+            int count = 0;
             List<(Type, string)> dead = null;
 
             foreach (var kvp in _services) {
@@ -179,7 +197,7 @@ namespace SavableObservable {
                 }
 
                 found = (M)model;
-                keys.Add(kvp.Key.Key);
+                count++;
             }
 
             if (dead != null) {
@@ -187,9 +205,15 @@ namespace SavableObservable {
             }
 
             if (!string.IsNullOrEmpty(name)) return found;
-            if (keys.Count <= 1) return found;
+            if (count <= 1) return found;
 
             if (enableLogging) {
+                var keys = new List<string>(count);
+                foreach (var kvp in _services) {
+                    if (kvp.Value is BaseLogic logic && IsLive(logic) && logic.ModelType == modelType && IsLive(logic.GetUntypedModel())) {
+                        keys.Add(kvp.Key.Key);
+                    }
+                }
                 Debug.LogError($"[ServiceLocator] Ambiguous GetModel request for model type '{modelType.FullName}' with no name. {keys.Count} registered Logic units own a model of this type ({string.Join(", ", keys)}). Pass the Logic name.");
             }
             return null;

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
@@ -574,22 +573,47 @@ namespace SavableObservable {
         }
 
         private static (MethodInfo method, string error) ResolveClickCommandMethod(Type logicType, string commandName) {
-            var allMethods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                .Where(m => m.Name == commandName).ToList();
+            var methods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            var allMethods = new List<MethodInfo>();
+            for (int i = 0; i < methods.Length; i++) {
+                if (methods[i].Name == commandName) {
+                    allMethods.Add(methods[i]);
+                }
+            }
 
             if (allMethods.Count == 0) {
                 return (null, $"Method '{commandName}' not found on '{logicType.Name}'.");
             }
 
-            if (allMethods.All(m => m.IsStatic)) {
+            bool allStatic = true;
+            for (int i = 0; i < allMethods.Count; i++) {
+                if (!allMethods[i].IsStatic) {
+                    allStatic = false;
+                    break;
+                }
+            }
+            if (allStatic) {
                 return (null, $"Method '{commandName}' on '{logicType.Name}' is static. Commands must be public instance methods.");
             }
 
-            if (allMethods.All(m => !m.IsPublic)) {
+            bool allNonPublic = true;
+            for (int i = 0; i < allMethods.Count; i++) {
+                if (allMethods[i].IsPublic) {
+                    allNonPublic = false;
+                    break;
+                }
+            }
+            if (allNonPublic) {
                 return (null, $"Method '{commandName}' on '{logicType.Name}' is not public. Commands must be public instance methods.");
             }
 
-            var publicInstance = allMethods.Where(m => m.IsPublic && !m.IsStatic).ToList();
+            var publicInstance = new List<MethodInfo>();
+            for (int i = 0; i < allMethods.Count; i++) {
+                var m = allMethods[i];
+                if (m.IsPublic && !m.IsStatic) {
+                    publicInstance.Add(m);
+                }
+            }
             var candidates = new List<MethodInfo>();
             string firstError = null;
 
@@ -630,7 +654,21 @@ namespace SavableObservable {
             }
 
             if (candidates.Count > 1) {
-                var filtered = candidates.Where(c => !candidates.Any(other => !ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType))).ToList();
+                var filtered = new List<MethodInfo>();
+                for (int i = 0; i < candidates.Count; i++) {
+                    var c = candidates[i];
+                    bool hasDerivedOverride = false;
+                    for (int j = 0; j < candidates.Count; j++) {
+                        var other = candidates[j];
+                        if (!ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType)) {
+                            hasDerivedOverride = true;
+                            break;
+                        }
+                    }
+                    if (!hasDerivedOverride) {
+                        filtered.Add(c);
+                    }
+                }
                 if (filtered.Count == 1) {
                     return (filtered[0], null);
                 }
@@ -667,22 +705,47 @@ namespace SavableObservable {
         }
 
         private static (MethodInfo method, string error) ResolveCommandMethod(Type logicType, string commandName, Type valueType) {
-            var allMethods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                .Where(m => m.Name == commandName).ToList();
+            var methods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            var allMethods = new List<MethodInfo>();
+            for (int i = 0; i < methods.Length; i++) {
+                if (methods[i].Name == commandName) {
+                    allMethods.Add(methods[i]);
+                }
+            }
 
             if (allMethods.Count == 0) {
                 return (null, $"Method '{commandName}' not found on '{logicType.Name}'.");
             }
 
-            if (allMethods.All(m => m.IsStatic)) {
+            bool allStatic = true;
+            for (int i = 0; i < allMethods.Count; i++) {
+                if (!allMethods[i].IsStatic) {
+                    allStatic = false;
+                    break;
+                }
+            }
+            if (allStatic) {
                 return (null, $"Method '{commandName}' on '{logicType.Name}' is static. Commands must be public instance methods.");
             }
 
-            if (allMethods.All(m => !m.IsPublic)) {
+            bool allNonPublic = true;
+            for (int i = 0; i < allMethods.Count; i++) {
+                if (allMethods[i].IsPublic) {
+                    allNonPublic = false;
+                    break;
+                }
+            }
+            if (allNonPublic) {
                 return (null, $"Method '{commandName}' on '{logicType.Name}' is not public. Commands must be public instance methods.");
             }
 
-            var publicInstance = allMethods.Where(m => m.IsPublic && !m.IsStatic).ToList();
+            var publicInstance = new List<MethodInfo>();
+            for (int i = 0; i < allMethods.Count; i++) {
+                var m = allMethods[i];
+                if (m.IsPublic && !m.IsStatic) {
+                    publicInstance.Add(m);
+                }
+            }
             var candidates = new List<MethodInfo>();
             string firstError = null;
 
@@ -734,7 +797,21 @@ namespace SavableObservable {
             }
 
             if (candidates.Count > 1) {
-                var filtered = candidates.Where(c => !candidates.Any(other => !ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType))).ToList();
+                var filtered = new List<MethodInfo>();
+                for (int i = 0; i < candidates.Count; i++) {
+                    var c = candidates[i];
+                    bool hasDerivedOverride = false;
+                    for (int j = 0; j < candidates.Count; j++) {
+                        var other = candidates[j];
+                        if (!ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType)) {
+                            hasDerivedOverride = true;
+                            break;
+                        }
+                    }
+                    if (!hasDerivedOverride) {
+                        filtered.Add(c);
+                    }
+                }
                 if (filtered.Count == 1) {
                     return (filtered[0], null);
                 }

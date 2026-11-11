@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Reduced allocations in service and model lookups without changing lookup behavior or the public API.
+- Removed LINQ from command method resolution without changing binding behavior.
+
 ## [2.1.0] - 2026-11-11 - Unity 6000.5+ baseline & engine bug-fixes
 
 ### Added (Command-Aware AutoBind, ClickCommand & Generic ListenerSet)
