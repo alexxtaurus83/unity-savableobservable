@@ -10,7 +10,7 @@ namespace SavableObservable.Editor {
     /// - ServiceLocator: -200 (registers services, then binds all scene presenters)
     /// - BaseObservablePresenter: -150 (binds dynamically instantiated prefabs)
     /// - BaseObservableDataModel / LoaderWithModel / BaseLogic: 0 (the default; they do not depend on execution order,
-    ///   so any earlier non-default order is reset to 0)
+    ///   so any earlier non-default order is reset to 0 unless the class explicitly declares its own [DefaultExecutionOrder])
     /// </summary>
     [InitializeOnLoad]
     public static class MMVCExecutionOrderSynchronizer {
@@ -66,7 +66,8 @@ namespace SavableObservable.Editor {
             if ((typeof(BaseObservableDataModel).IsAssignableFrom(type) && type != typeof(BaseObservableDataModel))
                 || TypeUtil.IsSubclassOfRawGeneric(typeof(LoaderWithModel<>), type)
                 || typeof(BaseLogic).IsAssignableFrom(type)) {
-                return 0;
+                var explicitOrder = (DefaultExecutionOrder)Attribute.GetCustomAttribute(type, typeof(DefaultExecutionOrder), false);
+                return explicitOrder != null ? explicitOrder.order : 0;
             }
             return int.MinValue;
         }

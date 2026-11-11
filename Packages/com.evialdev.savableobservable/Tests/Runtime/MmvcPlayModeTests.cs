@@ -182,5 +182,32 @@ namespace SavableObservable.Tests {
 
             Services.SetTestLocator(null);
         }
+
+        [UnityTest]
+        public IEnumerator PlayMode_ServiceLocator_SameFrameReplacement_PreservesNewInstanceAfterOldDestroy() {
+            var oldLocatorObj = new GameObject("OldPlayModeLocatorHost");
+            oldLocatorObj.transform.SetParent(_root.transform, false);
+            var oldLocator = oldLocatorObj.AddComponent<ServiceLocator>();
+            Assert.AreSame(oldLocator, ServiceLocator.instance);
+
+            // Destroy old locator asynchronously (deferred to end of frame)
+            Object.Destroy(oldLocatorObj);
+
+            // In the same frame before end-of-frame deferred OnDestroy, create a new ServiceLocator
+            var newLocatorObj = new GameObject("NewPlayModeLocatorHost");
+            newLocatorObj.transform.SetParent(_root.transform, false);
+            var newLocator = newLocatorObj.AddComponent<ServiceLocator>();
+
+            Assert.AreSame(newLocator, ServiceLocator.instance, "New ServiceLocator Awake must take over instance immediately when previous locator is destroyed");
+
+            // Yield to let end of frame run Object.Destroy and OnDestroy on oldLocatorObj
+            yield return null;
+
+            Assert.AreSame(newLocator, ServiceLocator.instance, "Deferred OnDestroy of old ServiceLocator must not clear the new live instance");
+
+            Object.Destroy(newLocatorObj);
+            yield return null;
+            Assert.IsNull(ServiceLocator.instance);
+        }
     }
 }

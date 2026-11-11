@@ -404,5 +404,72 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(10, target.BasePlain, "Base private plain field must be copied independently");
             Assert.AreEqual(20, target.DerivedPlain, "Derived private plain field must be copied independently");
         }
+
+        private class BaseShadowDto {
+            public int level { get; set; } = 10;
+        }
+
+        private class DerivedShadowDto : BaseShadowDto {
+            public new int level { get; set; } = 20;
+        }
+
+        private class CaseCollisionDto {
+            public string item { get; set; } = "lower";
+            public string ITEM { get; set; } = "UPPER";
+        }
+
+        private class CaseCollisionTargetModel : BaseObservableDataModel {
+            public ObservableVariable<string> item = new ObservableVariable<string>();
+        }
+
+        private class ShadowDtoTargetModel : BaseObservableDataModel {
+            public ObservableVariable<int> level = new ObservableVariable<int>();
+        }
+
+        [Test]
+        public void LoadDataFromModel_ShadowedDtoMember_DoesNotThrowAmbiguousMatchException() {
+            var target = _unitA.AddComponent<ShadowDtoTargetModel>();
+            target.EnsureFieldsInitialized();
+            target.level.Value = 0;
+
+            var dto = new DerivedShadowDto();
+            // Should succeed without AmbiguousMatchException and prefer derived property
+            Assert.DoesNotThrow(() => target.LoadDataFromModel(dto));
+            Assert.AreEqual(20, target.level.Value);
+        }
+
+        [Test]
+        public void LoadDataFromModel_CaseCollidingDtoMembers_PrefersExactCaseMatch() {
+            var target = _unitA.AddComponent<CaseCollisionTargetModel>();
+            target.EnsureFieldsInitialized();
+            target.item.Value = "initial";
+
+            var dto = new CaseCollisionDto();
+            Assert.DoesNotThrow(() => target.LoadDataFromModel(dto));
+            Assert.AreEqual("lower", target.item.Value);
+        }
+
+        private class InterfaceCollectionDto {
+            public System.Collections.Generic.IReadOnlyList<string> tags { get; set; }
+        }
+
+        private class InterfaceCollectionModel : BaseObservableDataModel {
+            public ObservableVariable<System.Collections.Generic.List<string>> tags = new ObservableVariable<System.Collections.Generic.List<string>>();
+        }
+
+        [Test]
+        public void LoadDataFromModel_ReadOnlyListSource_ClonesToListWhenTargetIsList() {
+            var target = _unitA.AddComponent<InterfaceCollectionModel>();
+            target.EnsureFieldsInitialized();
+
+            var originalList = new System.Collections.ObjectModel.ReadOnlyCollection<string>(new System.Collections.Generic.List<string> { "one", "two" });
+            var dto = new InterfaceCollectionDto { tags = originalList };
+
+            target.LoadDataFromModel(dto);
+
+            Assert.IsNotNull(target.tags.Value);
+            CollectionAssert.AreEqual(new[] { "one", "two" }, target.tags.Value);
+            Assert.AreNotSame(originalList, target.tags.Value);
+        }
     }
 }

@@ -70,10 +70,12 @@ namespace SavableObservable.Tests {
 
             public bool ClearListenersInInit;
             public bool ThrowInInitOnce;
+            public bool AssignButtonInInit;
             private bool _threw;
 
             protected override void InitializePresenter() {
                 base.InitializePresenter();
+                if (AssignButtonInInit) resetButton = GetComponent<Button>();
                 if (ThrowInInitOnce && !_threw) {
                     _threw = true;
                     throw new InvalidOperationException("Simulated init failure");
@@ -151,6 +153,59 @@ namespace SavableObservable.Tests {
             _presenter.resetButton = _host.AddComponent<Button>();
             _presenter.baseButton = new GameObject("BaseButton").AddComponent<Button>();
             _host.SetActive(true);
+        }
+
+        [Test]
+        public void ForeignModelCleanup_PreservesPresenterListenersAndClickCommands() {
+            _presenter.EnsureInitialized();
+            var foreignHost = new GameObject("ForeignModel");
+            foreignHost.SetActive(false);
+            try {
+                var foreign = foreignHost.AddComponent<TestModel>();
+                foreign.EnsureFieldsInitialized();
+                foreign.score.OnValueChanged.Add(_ => { }, _presenter);
+                int manualClicks = 0;
+                _presenter.Listeners.Listen(_presenter.resetButton.onClick, () => manualClicks++);
+                Observable.CleanupSubscriptions(foreign);
+                _presenter.resetButton.onClick.Invoke();
+                Assert.AreEqual(1, manualClicks);
+                Assert.AreEqual(1, _logic.ResetCount);
+                Assert.AreEqual(0, foreign.score.OnValueChanged.HandlerCount);
+            } finally { UnityEngine.Object.DestroyImmediate(foreignHost); }
+        }
+
+        [Test]
+        public void ClickCommand_RebindReplacesButtonAndRecoversAfterCleanup() {
+            _presenter.EnsureInitialized();
+            var old = _presenter.resetButton;
+            var child = new GameObject("ReplacementButton");
+            child.transform.SetParent(_host.transform);
+            _presenter.resetButton = child.AddComponent<Button>();
+            Observable.SetListeners(_presenter, _model);
+            old.onClick.Invoke();
+            Assert.AreEqual(0, _logic.ResetCount);
+            _presenter.resetButton.onClick.Invoke();
+            Assert.AreEqual(1, _logic.ResetCount);
+            Observable.CleanupSubscriptions(_model);
+            _presenter.EnsureInitialized();
+            _presenter.resetButton.onClick.Invoke();
+            Assert.AreEqual(2, _logic.ResetCount);
+        }
+
+        [Test]
+        public void ClickCommand_ButtonAssignedInInitializePresenter_IsWired() {
+            var host = new GameObject("LateButtonHost");
+            host.SetActive(false);
+            try {
+                host.AddComponent<TestModel>();
+                var logic = host.AddComponent<TestLogic>();
+                var presenter = host.GetComponent<TestPresenter>() ?? host.AddComponent<TestPresenter>();
+                var button = host.AddComponent<Button>();
+                presenter.AssignButtonInInit = true;
+                presenter.EnsureInitialized();
+                button.onClick.Invoke();
+                Assert.AreEqual(1, logic.ResetCount);
+            } finally { UnityEngine.Object.DestroyImmediate(host); }
         }
 
         [TearDown]
@@ -269,6 +324,8 @@ namespace SavableObservable.Tests {
 
                 LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
                 p.EnsureInitialized();
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
+                Observable.SetListeners(p, go.GetComponent<TestModel>());
             } finally {
                 UnityEngine.Object.DestroyImmediate(go);
             }

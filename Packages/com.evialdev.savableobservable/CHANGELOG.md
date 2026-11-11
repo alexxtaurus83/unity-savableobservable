@@ -1,10 +1,23 @@
 # Changelog
 
-## [Unreleased]
+## [2.1.1] - 2026-11-11
 
 ### Changed
 - Reduced allocations in service and model lookups without changing lookup behavior or the public API.
 - Removed LINQ from command method resolution without changing binding behavior.
+- Shared assembly audits now reject hidden non-override MMVC `Awake` and `OnDestroy` methods. Consumer classes must override the virtual lifecycle method and call base.
+- Shared unit contracts prepare mock UI controls before binding, use normalized slider input with command reconciliation, and validate subclassed observable handler types.
+
+### Fixed
+- List mutations made during notification now deliver stable current/previous transitions in FIFO order without duplicate passes, while retaining the allocation-free ordinary mutation path. Variable notification guards reset on aborted delivery.
+- Assigning real null over a destroyed Unity object clears the retained reference and notifies; list equality uses the same identity-aware comparison.
+- Subclassed observables resolve their value types for automatic binding. Virtual handler attributes on distinct model fields are preserved without duplicating inherited virtual bindings.
+- Persistence tolerates shadowed and case-colliding source members and clones compatible read-only list sources without changing shallow element-copy semantics.
+- Click commands wire after `InitializePresenter()` and refresh on explicit rebind, including replacement buttons and recovery after model subscription cleanup. Foreign model cleanup preserves the presenter's own scoped listeners and click commands.
+- Invalid click declarations report per binding with presenter context, and generic `ValueTask<T>` commands receive synchronous-command diagnostics.
+- Empty non-nullable numeric command input remains editable without invoking Logic; legacy empty-to-default conversion is unchanged. Non-flags enums reject undefined numeric strings, and sliders ignore NaN/infinity.
+- A replacement service locator takes ownership before the previous locator's deferred destruction. Execution priorities remain `ServiceLocator` (`-200`) and presenter (`-150`); the editor synchronizer preserves explicit user model/loader/logic order attributes.
+- Editor property paths support consecutive indexers. The player sample preserves base presenter cleanup, loads inventory through a single observable assignment, and excludes transient `lastRoll` from saves.
 
 ## [2.1.0] - 2026-11-11 - Unity 6000.5+ baseline & engine bug-fixes
 

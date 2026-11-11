@@ -488,6 +488,8 @@ namespace SavableObservable.Tests {
         [Test]
         public void SliderAdapter_SupportsEnumAndNullableTwoWayBinding() {
             var slider = _host.AddComponent<Slider>();
+            slider.minValue = 0f;
+            slider.maxValue = 10f;
             var adapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
             Assert.IsNotNull(adapter);
 
@@ -537,6 +539,62 @@ namespace SavableObservable.Tests {
             Assert.AreEqual((int?)99, receivedNullable);
         }
 
+        [Flags]
+        public enum SampleFlagsEnum {
+            None = 0,
+            OptionA = 1,
+            OptionB = 2,
+            OptionC = 4
+        }
+
+        [Test]
+        public void UIAdapterRegistry_TryConvertValue_Enum_RejectsUndefinedIntegerStringsForNonFlagsEnum() {
+            // Defined enum value string
+            Assert.IsTrue(UIAdapterRegistry.TryConvertValue("Second", typeof(SampleAdapterEnum), out var val1));
+            Assert.AreEqual(SampleAdapterEnum.Second, val1);
+
+            // Defined enum integer string
+            Assert.IsTrue(UIAdapterRegistry.TryConvertValue("1", typeof(SampleAdapterEnum), out var val2));
+            Assert.AreEqual(SampleAdapterEnum.Second, val2);
+
+            // Undefined enum integer string for non-flags enum must be rejected
+            Assert.IsFalse(UIAdapterRegistry.TryConvertValue("99999", typeof(SampleAdapterEnum), out _),
+                "Undefined numeric string should be rejected for non-flags enum");
+
+            // Undefined string name must be rejected
+            Assert.IsFalse(UIAdapterRegistry.TryConvertValue("InvalidValueName", typeof(SampleAdapterEnum), out _));
+
+            // Flags enum accepts bit combinations (e.g. 3 = OptionA | OptionB)
+            Assert.IsTrue(UIAdapterRegistry.TryConvertValue("3", typeof(SampleFlagsEnum), out var valFlags));
+            Assert.AreEqual(SampleFlagsEnum.OptionA | SampleFlagsEnum.OptionB, valFlags);
+        }
+
+        [Test]
+        public void SliderAdapter_SetValue_GuardsAgainstNaNAndInfinity() {
+            var slider = _host.AddComponent<Slider>();
+            slider.minValue = 0f;
+            slider.maxValue = 20f;
+            slider.value = 5f;
+            var adapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
+            Assert.IsNotNull(adapter);
+
+            // NaN should not throw and should not update slider.value
+            Assert.DoesNotThrow(() => adapter.SetValue(slider, float.NaN, typeof(float)));
+            Assert.AreEqual(5f, slider.value);
+
+            // PositiveInfinity should not throw and should not update slider.value
+            Assert.DoesNotThrow(() => adapter.SetValue(slider, float.PositiveInfinity, typeof(float)));
+            Assert.AreEqual(5f, slider.value);
+
+            // NegativeInfinity should not throw and should not update slider.value
+            Assert.DoesNotThrow(() => adapter.SetValue(slider, float.NegativeInfinity, typeof(float)));
+            Assert.AreEqual(5f, slider.value);
+
+            // Normal valid float should update slider.value
+            adapter.SetValue(slider, 10f, typeof(float));
+            Assert.AreEqual(10f, slider.value);
+        }
+
         [Test]
         public void UIAdapters_PerControlReentrancy_DoesNotSuppressOtherControlCallbacks() {
             var goA = new GameObject("SliderA", typeof(RectTransform), typeof(Slider));
@@ -546,6 +604,10 @@ namespace SavableObservable.Tests {
 
             var sliderA = goA.GetComponent<Slider>();
             var sliderB = goB.GetComponent<Slider>();
+            sliderA.minValue = 0f;
+            sliderA.maxValue = 20f;
+            sliderB.minValue = 0f;
+            sliderB.maxValue = 20f;
             var adapter = UIAdapterRegistry.GetAdapter(typeof(Slider)) as IUIListenerAdapter;
             Assert.IsNotNull(adapter);
 
@@ -557,13 +619,15 @@ namespace SavableObservable.Tests {
                 sliderB.value = v * 2f;
             });
 
-            // SetValue on sliderA triggers its onValueChanged callback, which sets sliderB.value
+            // SetValue is deliberately silent; ordinary user input still invokes both controls.
             sliderA.value = 1f;
             adapter.SetValue(sliderA, 5f, typeof(float));
+            Assert.AreEqual(2f, sliderBReceived, "Model-to-UI updates must not invoke input callbacks.");
+            sliderA.value = 6f;
 
             // If re-entrancy tracking was static, sliderB's listener would have been suppressed.
             // With per-control tracking, sliderB's listener runs and captures 10f.
-            Assert.AreEqual(10f, sliderBReceived, "Control B's listener must not be suppressed during Control A's SetValue callback.");
+            Assert.AreEqual(12f, sliderBReceived, "Control B's listener must receive user-driven updates from Control A.");
         }
     }
 }

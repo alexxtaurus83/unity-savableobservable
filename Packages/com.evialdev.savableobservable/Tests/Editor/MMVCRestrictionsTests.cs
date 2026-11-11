@@ -727,6 +727,53 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(int.MinValue, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(BaseObservableDataModel)), "The abstract base itself is not synchronized.");
         }
 
+        [DefaultExecutionOrder(42)]
+        private class CustomOrderModel : BaseObservableDataModel { }
+
+        [DefaultExecutionOrder(-50)]
+        private class CustomOrderLogic : BaseLogic<SamplePlayerModel, SamplePlayerPresenter> { }
+
+        [DefaultExecutionOrder(100)]
+        private class CustomOrderLoader : LoaderWithModel<SamplePlayerModel> { }
+
+        [Test]
+        public void MMVCExecutionOrderSynchronizer_GetTargetExecutionOrder_PreservesExplicitDefaultExecutionOrderOnUserScripts() {
+            Assert.AreEqual(42, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(CustomOrderModel)));
+            Assert.AreEqual(-50, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(CustomOrderLogic)));
+            Assert.AreEqual(100, MMVCExecutionOrderSynchronizer.GetTargetExecutionOrder(typeof(CustomOrderLoader)));
+        }
+
+        [Test]
+        public void ServiceLocator_Awake_ReplacesDeadOrDyingLocator_PreservingInstanceThroughDeferredOnDestroy() {
+            var oldGo = new GameObject("OldLocatorGo");
+            var oldLocator = oldGo.AddComponent<ServiceLocator>();
+            var awakeMethod = typeof(ServiceLocator).GetMethod("Awake", BindingFlags.NonPublic | BindingFlags.Instance);
+            awakeMethod.Invoke(oldLocator, null);
+            Assert.AreSame(oldLocator, ServiceLocator.instance);
+
+            // Simulate frame where oldLocator is Destroy()ed (not DestroyImmediate)
+            // In the same frame before OnDestroy runs, a new ServiceLocator awakens (e.g. new scene or replacement)
+            var newGo = new GameObject("NewLocatorGo");
+            var newLocator = newGo.AddComponent<ServiceLocator>();
+            awakeMethod.Invoke(newLocator, null);
+
+            // New locator should have taken over instance
+            Assert.AreSame(newLocator, ServiceLocator.instance);
+
+            // Simulate deferred OnDestroy of oldLocator
+            var onDestroyMethod = typeof(ServiceLocator).GetMethod("OnDestroy", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(onDestroyMethod);
+            onDestroyMethod.Invoke(oldLocator, null);
+
+            // New locator instance must NOT have been wiped out by oldLocator.OnDestroy()
+            Assert.AreSame(newLocator, ServiceLocator.instance, "Dying locator's deferred OnDestroy must not clear the new locator's instance");
+
+            // Restore static state
+            UnityEngine.Object.DestroyImmediate(oldGo);
+            UnityEngine.Object.DestroyImmediate(newGo);
+            ServiceLocator.instance = null;
+        }
+
         [Test]
         public void FrameworkBaseClasses_DeclareOnlyServiceLocatorAndPresenterExecutionOrder() {
             Assert.IsEmpty(typeof(BaseObservableDataModel).GetCustomAttributes(typeof(DefaultExecutionOrder), false));
@@ -861,7 +908,7 @@ namespace SavableObservable.Tests {
 
                 Assert.IsTrue(locatorA.IsRegistered(logicA), "Logic in own scene should be registered");
                 Assert.AreSame(logicA, locatorA.Get<SamplePlayerLogic>(), "Locator must find logic in its own scene");
-                Assert.IsFalse(locatorA.IsRegistered(logicB), "Logic in different scene must not be registered");
+                Assert.AreNotSame(logicB, locatorA.Get<SamplePlayerLogic>(), "Logic in different scene must not be registered; IsRegistered(instance) checks its type/key, not instance identity.");
             } finally {
                 UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(sceneA);
                 UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(sceneB);

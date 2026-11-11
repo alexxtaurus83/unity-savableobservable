@@ -132,7 +132,7 @@ The framework uses a two-stage execution order synchronized by `MMVCExecutionOrd
 1. `ServiceLocator` (`-200`): Registers all scene `ISharedSingleton` instances in Pass 1, then calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive) in Pass 2.
 2. `BaseObservablePresenter<M>` (`-150`): `Awake()` calls `EnsureInitialized()`, which is an idempotent no-op once bound and binds dynamically instantiated prefabs automatically.
 
-Models, loaders and `BaseLogic<M, P>` / services run at the default order (`0`). They have no ordering requirement: `GetModel()` initializes the model's fields lazily, so the model's own `Awake()` is not relied upon.
+Models, loaders and `BaseLogic<M, P>` have no ordering requirement: `GetModel()` initializes the model's fields lazily, so the model's own `Awake()` is not relied upon. The synchronizer preserves explicit execution orders declared by user classes.
 
 Because `ServiceLocator` registers all services in Pass 1 before initializing presenters in Pass 2, `Services.Get<T>()` is guaranteed non-null inside `InitializePresenter()`.
 
@@ -175,7 +175,7 @@ Assign the actual UI component in the Inspector before binding.
 Setting `Command = nameof(Logic.Method)` on `[AutoBind]` routes control input to a public instance synchronous method on the paired `BaseLogic` (`public void Method(T value)`), where `T` matches the observable value type.
 - **Synchronous Only:** Returns `void`; accepts exactly one value parameter. `async void`, `Task`, `ValueTask`, and coroutine methods are rejected.
 - **Automatic Reconciliation:** In `finally`, the framework repaints the accepted model value onto the control without triggering input events or notifications. If Logic clamps, normalizes, rejects, or throws, the control reconciles to the accepted model state.
-- **Malformed Input:** Temporarily invalid numeric text (such as `-`) invokes no command and stays editable until valid.
+- **Malformed Input:** Temporarily invalid numeric text (such as `-` or an empty non-nullable numeric input) invokes no command and stays editable until valid. Undefined numeric values are rejected for non-flags enums.
 - **Legacy Fallback:** Omitting `Command` preserves direct model mutation.
 
 ### ClickCommand For Buttons
@@ -187,7 +187,7 @@ private Button okButton;
 ```
 - **Zero-Argument, Synchronous:** Targets a `public void Method()` on paired `BaseLogic`. Async methods are rejected (use `Listeners.Listen`).
 - **IL2CPP Stripping:** Mark the target logic method with `[UnityEngine.Scripting.Preserve]`.
-- **Framework Lifecycle:** Wired once before `InitializePresenter()` through an internal `ListenerSet`; survives consumer `Listeners.Clear()`.
+- **Framework Lifecycle:** Wired after `InitializePresenter()` and refreshed on `Observable.SetListeners` rebind through an internal `ListenerSet`; survives consumer `Listeners.Clear()`.
 - **Render-Only Handlers:** `[ObservableHandler]` is strictly render-only. The framework deliberately provides no model-to-logic handler attribute.
 
 ### Scoped ListenerSet (`Listeners`)
@@ -245,7 +245,7 @@ Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` 
 
 Use `.Add(handler, subscriber)` after parent initialization. Tracking requires both a non-null subscriber and a parent model; subscriptions made before parent linkage are not retroactively tracked.
 
-Preserve `BaseObservableDataModel.OnDestroy()`, which calls `Observable.CleanupSubscriptions(this)`.
+Do not hide the virtual `Awake()` or `OnDestroy()` methods on models, presenters, or logic. Override them and call the base implementation; in particular, `BaseObservableDataModel.OnDestroy()` calls `Observable.CleanupSubscriptions(this)`.
 
 Call `Observable.RemoveListeners(model, subscriber)` to remove tracked model callbacks and UI listener tokens for one subscriber.
 

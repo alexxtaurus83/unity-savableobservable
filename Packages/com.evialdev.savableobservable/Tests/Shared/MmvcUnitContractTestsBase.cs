@@ -226,11 +226,17 @@ namespace SavableObservable.Tests.Contracts {
                         bool isList = false;
                         Type itemType = null;
 
-                        if (fieldType.IsGenericType && fieldType.GetGenericTypeDefinition() == typeof(ObservableList<>)) {
+                        var observableBase = fieldType;
+                        while (observableBase != null && (!observableBase.IsGenericType
+                            || (observableBase.GetGenericTypeDefinition() != typeof(ObservableList<>)
+                                && observableBase.GetGenericTypeDefinition() != typeof(ObservableVariable<>)))) {
+                            observableBase = observableBase.BaseType;
+                        }
+                        if (observableBase != null && observableBase.GetGenericTypeDefinition() == typeof(ObservableList<>)) {
                             isList = true;
-                            itemType = fieldType.GetGenericArguments()[0];
-                        } else if (fieldType.IsGenericType && fieldType.GetGenericTypeDefinition() == typeof(ObservableVariable<>)) {
-                            itemType = fieldType.GetGenericArguments()[0];
+                            itemType = observableBase.GetGenericArguments()[0];
+                        } else if (observableBase != null) {
+                            itemType = observableBase.GetGenericArguments()[0];
                         }
 
                         if (paramInfos.Length == 1) {
@@ -343,7 +349,20 @@ namespace SavableObservable.Tests.Contracts {
             var presenterType = typeof(TPresenter);
             var fields = presenterType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             bool testedAny = false;
+            var createdControls = new List<(FieldInfo field, Component control)>();
 
+            try {
+                foreach (var field in fields) {
+                    if (!field.IsDefined(typeof(AutoBindAttribute), true)
+                        || !(UIAdapterRegistry.GetAdapter(field.FieldType) is IUIListenerAdapter)
+                        || field.GetValue(Presenter) != null) continue;
+                    var child = new GameObject(field.Name + "_MockUI");
+                    child.transform.SetParent(Host.transform);
+                    var control = child.AddComponent(field.FieldType);
+                    field.SetValue(Presenter, control);
+                    createdControls.Add((field, control));
+                }
+                Observable.SetListeners(Presenter, Model);
             foreach (var field in fields) {
                 var attrs = field.GetCustomAttributes(typeof(AutoBindAttribute), true);
                 if (attrs == null || attrs.Length == 0) continue;
@@ -361,18 +380,6 @@ namespace SavableObservable.Tests.Contracts {
 
                     // Ensure the UI field is populated with a test component if currently null
                     object uiInstance = field.GetValue(Presenter);
-                    bool createdUi = false;
-                    if (uiInstance == null) {
-                        var child = new GameObject(field.Name + "_MockUI");
-                        child.transform.SetParent(Host.transform);
-                        uiInstance = child.AddComponent(field.FieldType);
-                        field.SetValue(Presenter, uiInstance);
-                        createdUi = true;
-                    }
-
-                    try {
-                        Observable.SetListeners(Presenter, Model);
-
                         // If Toggle bound to bool
                         if (uiInstance is Toggle toggle && modelVar is ObservableVariable<bool> boolVar) {
                             bool original = boolVar.Value;
@@ -383,22 +390,26 @@ namespace SavableObservable.Tests.Contracts {
                         // If Slider bound to float
                         else if (uiInstance is Slider slider && modelVar is ObservableVariable<float> floatVar) {
                             slider.minValue = 0f;
-                            slider.maxValue = 100f;
-                            slider.value = 42f;
-                            Assert.AreEqual(42f, floatVar.Value, 0.01f, "Slider change should propagate to model.");
+                            slider.maxValue = 1f;
+                            var requested = Mathf.Approximately(floatVar.Value, 0.5f) ? 0.25f : 0.5f;
+                            slider.value = requested;
+                            Assert.AreEqual(string.IsNullOrWhiteSpace(attr.Command) ? requested : floatVar.Value,
+                                slider.value, 0.01f, "Slider input must converge with the accepted model value.");
+                            if (string.IsNullOrWhiteSpace(attr.Command))
+                                Assert.AreEqual(requested, floatVar.Value, 0.01f, "Slider change should propagate to model.");
                             testedAny = true;
                         }
-                    } finally {
-                        if (createdUi && uiInstance is Component comp) {
-                            UnityEngine.Object.DestroyImmediate(comp.gameObject);
-                            field.SetValue(Presenter, null);
-                        }
-                    }
                 }
             }
 
             if (!testedAny) {
                 Assert.Ignore($"Skipping TwoWayAutoBindFields test for {typeof(TLogic).Name}: No two-way AutoBind controls (Toggle/Slider) found on presenter.");
+            }
+            } finally {
+                foreach (var (field, control) in createdControls) {
+                    if (control != null) UnityEngine.Object.DestroyImmediate(control.gameObject);
+                    field.SetValue(Presenter, null);
+                }
             }
         }
 

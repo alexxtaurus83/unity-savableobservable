@@ -39,18 +39,8 @@ namespace SavableObservable.Samples {
         }
 
         public void LoadSampleState(SampleSaveDto dto) {
-            var model = GetModel();
-            if (model == null || dto == null) return;
-
-            if (model.playerName != null) model.playerName.Value = dto.playerName;
-            if (model.health != null) model.health.Value = dto.health;
-            if (model.energy != null) model.energy.Value = dto.energy;
-            if (model.isShieldActive != null) model.isShieldActive.Value = dto.isShieldActive;
-            if (model.inventory != null && dto.inventory != null) {
-                model.inventory.Clear();
-                model.inventory.AddRange(dto.inventory);
-            }
-            model.score = dto.score;
+            if (dto == null) return;
+            LoadDataFromModel(dto);
         }
     }
 }

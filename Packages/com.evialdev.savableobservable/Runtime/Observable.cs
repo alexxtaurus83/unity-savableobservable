@@ -61,9 +61,10 @@ namespace SavableObservable {
             public readonly List<(FieldInfo field, string targetName, string commandName)> AutoBindFields = new List<(FieldInfo, string, string)>();
             public readonly HashSet<string> AutoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
             public readonly List<(FieldInfo field, string commandName)> ClickCommandFields = new List<(FieldInfo, string)>();
+            public readonly List<string> InvalidClickCommandErrors = new List<string>();
 
             public SubscriberMetadata(Type subscriberType) {
-                var seenVirtualBaseDefs = new HashSet<MethodInfo>();
+                var seenVirtualBaseDefs = new HashSet<(MethodInfo, string)>();
 
                 foreach (var t in TypeUtil.GetUserHierarchy(subscriberType)) {
                     var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly);
@@ -71,21 +72,12 @@ namespace SavableObservable {
                         MethodInfo baseDef = null;
                         if (method.IsVirtual) {
                             baseDef = method.GetBaseDefinition();
-                            if (seenVirtualBaseDefs.Contains(baseDef)) {
-                                continue;
-                            }
                         }
 
-                        var attr = method.GetCustomAttribute<ObservableHandlerAttribute>();
-                        if (attr == null && method.IsVirtual && baseDef != null) {
-                            attr = baseDef.GetCustomAttribute<ObservableHandlerAttribute>();
-                        }
-
-                        if (method.IsVirtual && baseDef != null) {
-                            seenVirtualBaseDefs.Add(baseDef);
-                        }
+                        var attr = method.GetCustomAttribute<ObservableHandlerAttribute>(false);
 
                         if (attr != null && !string.IsNullOrWhiteSpace(attr.VariableName)) {
+                            if (baseDef != null && !seenVirtualBaseDefs.Add((baseDef, attr.VariableName))) continue;
                             if (!HandlerMethods.TryGetValue(attr.VariableName, out var list)) {
                                 list = new List<MethodInfo>();
                                 HandlerMethods[attr.VariableName] = list;
@@ -103,12 +95,12 @@ namespace SavableObservable {
                         var autoBindAttr = field.GetCustomAttribute<AutoBindAttribute>();
 
                         if (clickAttr != null && autoBindAttr != null) {
-                            Debug.LogError($"[SavableObservable] Field '{field.Name}' on '{subscriberType.Name}' cannot have both [ClickCommand] and [AutoBind].", null);
+                            InvalidClickCommandErrors.Add($"[SavableObservable] Field '{field.Name}' on '{subscriberType.Name}' cannot have both [ClickCommand] and [AutoBind].");
                         } else if (clickAttr != null) {
                             if (!typeof(Button).IsAssignableFrom(field.FieldType)) {
-                                Debug.LogError($"[SavableObservable] Invalid [ClickCommand] on field '{field.Name}' ({subscriberType.Name}): field type '{field.FieldType.Name}' is not UnityEngine.UI.Button or a subclass.", null);
+                                InvalidClickCommandErrors.Add($"[SavableObservable] Invalid [ClickCommand] on field '{field.Name}' ({subscriberType.Name}): field type '{field.FieldType.Name}' is not UnityEngine.UI.Button or a subclass.");
                             } else if (string.IsNullOrWhiteSpace(clickAttr.MethodName)) {
-                                Debug.LogError($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({subscriberType.Name}) has an empty method name.", null);
+                                InvalidClickCommandErrors.Add($"[SavableObservable] [ClickCommand] on field '{field.Name}' ({subscriberType.Name}) has an empty method name.");
                             } else {
                                 ClickCommandFields.Add((field, clickAttr.MethodName.Trim()));
                             }
@@ -341,7 +333,13 @@ namespace SavableObservable {
 
             // 1) Subscribe Model -> UI (One-way binding)
             // ----------------------------------------------------------------
-            var genericArgs = observableField.FieldType.GetGenericArguments();
+            var observableType = observableField.FieldType;
+            while (observableType != null && (!observableType.IsGenericType
+                || (observableType.GetGenericTypeDefinition() != typeof(ObservableVariable<>)
+                    && observableType.GetGenericTypeDefinition() != typeof(ObservableList<>)))) {
+                observableType = observableType.BaseType;
+            }
+            var genericArgs = observableType?.GetGenericArguments() ?? Type.EmptyTypes;
             var valueType = genericArgs.Length > 0 ? genericArgs[0] : typeof(object);
 
             Action<object> modelToUiHandler = value => {
@@ -436,6 +434,9 @@ namespace SavableObservable {
                             var currentUi = uiField.GetValue(obj);
                             if (!IsTargetAlive(currentUi) || !IsTargetAlive(obj) || !IsTargetAlive(logic) || !IsTargetAlive(dataModel)) return;
                             if (UIAdapterRegistry.IsSettingValue(currentUi)) return;
+                            if (newValue is string raw && string.IsNullOrWhiteSpace(raw)
+                                && valueType.IsValueType && Nullable.GetUnderlyingType(valueType) == null) return;
+                            if (!UIAdapterRegistry.TryConvertValue(newValue, valueType, out newValue)) return;
 
                             isProcessingCommand = true;
                             try {
@@ -459,7 +460,11 @@ namespace SavableObservable {
                         }
                     };
 
-                    object token = listenerAdapter.AddListener(currentUiComponent, uiToCommandHandler, valueType);
+                    // Text adapters normally convert before invoking us. Keep raw text in command mode
+                    // so incomplete input can be rejected before legacy empty-to-default conversion.
+                    var inputType = currentUiComponent is InputField || currentUiComponent is TMPro.TMP_InputField
+                        ? typeof(string) : valueType;
+                    object token = listenerAdapter.AddListener(currentUiComponent, uiToCommandHandler, inputType);
 
                     if (token != null && currentUiComponent is UnityEngine.Object unityUiComponent) {
                         RegisterUiListener(dataModel, obj, () => {
@@ -477,6 +482,7 @@ namespace SavableObservable {
         internal static void WireClickCommands(MonoBehaviour presenter, ref ListenerSet clickListeners) {
             if (presenter == null) return;
             var subMetadata = GetSubscriberMetadata(presenter.GetType());
+            foreach (var error in subMetadata.InvalidClickCommandErrors) Debug.LogError(error, presenter);
             if (subMetadata.ClickCommandFields.Count == 0) return;
 
             if (!(presenter is IAutoBindCommandTarget commandTarget)) {
@@ -629,7 +635,7 @@ namespace SavableObservable {
                 }
 
                 if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType) ||
-                    m.ReturnType.Name == "ValueTask" ||
+                    m.ReturnType.Name == "ValueTask" || m.ReturnType.Name == "ValueTask`1" ||
                     typeof(System.Collections.IEnumerator).IsAssignableFrom(m.ReturnType)) {
                     firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must be synchronous with void return.";
                     continue;
@@ -761,7 +767,7 @@ namespace SavableObservable {
                 }
 
                 if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType) ||
-                    m.ReturnType.Name == "ValueTask" ||
+                    m.ReturnType.Name == "ValueTask" || m.ReturnType.Name == "ValueTask`1" ||
                     typeof(System.Collections.IEnumerator).IsAssignableFrom(m.ReturnType)) {
                     firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must be synchronous with void return.";
                     continue;
@@ -863,8 +869,11 @@ namespace SavableObservable {
             var all = new List<SubscriptionRecord>();
             foreach (var kvp in data.Subscriptions) {
                 if (kvp.Key is IPresenterBindingState bindingState) {
-                    bindingState.CleanupPresenterLifetime();
-                    PresenterLifetimeTracker.Untrack(bindingState);
+                    if (bindingState is Component component && (component == null || component.gameObject == dataModel.gameObject)) {
+                        bindingState.MarkUnbound();
+                        bindingState.CleanupPresenterLifetime();
+                        PresenterLifetimeTracker.Untrack(bindingState);
+                    }
                 }
                 all.AddRange(kvp.Value);
             }
@@ -966,9 +975,7 @@ namespace SavableObservable {
         /// <returns>
         ///   <c>true</c> if the field is a supported observable; otherwise, <c>false</c>.</returns>
         internal static bool IsSupportedFieldType(FieldInfo field) {
-            if (!field.FieldType.IsGenericType) return false;
-
-            var genericDef = field.FieldType.GetGenericTypeDefinition();
+            var genericDef = field.FieldType.IsGenericType ? field.FieldType.GetGenericTypeDefinition() : null;
             if (genericDef == typeof(ObservableVariable<>) || genericDef == typeof(ObservableList<>)) {
                 return true;
             }

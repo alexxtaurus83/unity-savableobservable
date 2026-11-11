@@ -19,10 +19,11 @@ namespace SavableObservable.Tests {
         private SettingsPresenter _presenter;
 
         public class SettingsModel : BaseObservableDataModel {
+            public class IntObservable : ObservableVariable<int> { }
             public ObservableVariable<float> musicVolume = new ObservableVariable<float>();
             public ObservableVariable<bool> musicEnabled = new ObservableVariable<bool>();
             public ObservableVariable<string> serverUrl = new ObservableVariable<string>();
-            public ObservableVariable<int> difficulty = new ObservableVariable<int>();
+            public IntObservable difficulty = new IntObservable();
             public ObservableList<string> tags = new ObservableList<string>();
         }
 
@@ -95,6 +96,9 @@ namespace SavableObservable.Tests {
             [AutoBind(nameof(SettingsModel.difficulty), Command = nameof(SettingsLogic.SetDifficulty))]
             public TMP_Dropdown difficultyDropdown;
 
+            [AutoBind(nameof(SettingsModel.difficulty), Command = nameof(SettingsLogic.SetDifficulty))]
+            public InputField difficultyInput;
+
             [AutoBind(nameof(SettingsModel.musicVolume))]
             public Slider legacySlider;
 
@@ -152,6 +156,7 @@ namespace SavableObservable.Tests {
             _presenter.enabledToggle = CreateChild("Toggle").AddComponent<Toggle>();
             _presenter.urlInput = CreateChild("Input").AddComponent<TMP_InputField>();
             _presenter.difficultyDropdown = CreateChild("Dropdown").AddComponent<TMP_Dropdown>();
+            _presenter.difficultyInput = CreateChild("NumericInput").AddComponent<InputField>();
             _presenter.difficultyDropdown.ClearOptions();
             _presenter.difficultyDropdown.AddOptions(new System.Collections.Generic.List<string> { "Easy", "Normal", "Hard", "Expert" });
             _presenter.legacySlider = CreateChild("LegacySlider").AddComponent<Slider>();
@@ -170,6 +175,18 @@ namespace SavableObservable.Tests {
             if (_host != null) {
                 UnityEngine.Object.DestroyImmediate(_host);
             }
+        }
+
+        [Test]
+        public void CommandAutoBind_SubclassedNumericInput_EmptyRemainsEditable() {
+            _presenter.EnsureInitialized();
+            _presenter.difficultyInput.text = "";
+            Assert.AreEqual(0, _logic.DifficultyCallCount);
+            Assert.AreEqual(1, _model.difficulty.Value);
+            Assert.AreEqual("", _presenter.difficultyInput.text);
+            _presenter.difficultyInput.text = "2";
+            Assert.AreEqual(1, _logic.DifficultyCallCount);
+            Assert.AreEqual(2, _model.difficulty.Value);
         }
 
         [Test]

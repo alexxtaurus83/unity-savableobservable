@@ -51,6 +51,37 @@ namespace SavableObservable.Tests {
             }
         }
 
+        private class BaseVirtualSubscriber : MonoBehaviour {
+            public int Calls;
+            [ObservableHandler("health")]
+            protected virtual void Render(int value) { Calls++; }
+        }
+
+        private class OverrideOtherFieldSubscriber : BaseVirtualSubscriber {
+            [ObservableHandler("score")]
+            protected override void Render(int value) { Calls++; }
+        }
+
+        private class InheritedAttributeSubscriber : BaseVirtualSubscriber {
+            protected override void Render(int value) { Calls++; }
+        }
+
+        [Test]
+        public void VirtualHandler_DifferentOverrideAttribute_PreservesBaseBinding() {
+            var subscriber = _host.AddComponent<OverrideOtherFieldSubscriber>();
+            Observable.SetListeners(subscriber, _model);
+            _model.health.Value = 37;
+            Assert.AreEqual(1, subscriber.Calls);
+        }
+
+        [Test]
+        public void VirtualHandler_InheritedAttribute_InvokesOverrideOnce() {
+            var subscriber = _host.AddComponent<InheritedAttributeSubscriber>();
+            Observable.SetListeners(subscriber, _model);
+            _model.health.Value = 37;
+            Assert.AreEqual(1, subscriber.Calls);
+        }
+
         [SetUp]
         public void SetUp() {
             _host = new GameObject("TestHost");

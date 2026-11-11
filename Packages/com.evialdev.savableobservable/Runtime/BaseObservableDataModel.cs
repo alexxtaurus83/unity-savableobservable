@@ -91,6 +91,41 @@ namespace SavableObservable {
                         }
                         return clonedList;
                     } catch {
+                        // Fallback: if value cannot be instantiated (e.g. read-only collection or interface)
+                        // but targetType is an interface or List<T> that can accept List<T>, construct a List<T>.
+                        Type itemType = null;
+                        if (targetType.IsGenericType) {
+                            var genDef = targetType.GetGenericTypeDefinition();
+                            if (genDef == typeof(IList<>) ||
+                                genDef == typeof(ICollection<>) ||
+                                genDef == typeof(IEnumerable<>) ||
+                                genDef == typeof(IReadOnlyList<>) ||
+                                genDef == typeof(IReadOnlyCollection<>)) {
+                                itemType = targetType.GetGenericArguments()[0];
+                            }
+                        }
+
+                        if (itemType == null) {
+                            var valType = value.GetType();
+                            foreach (var iface in valType.GetInterfaces()) {
+                                if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>)) {
+                                    itemType = iface.GetGenericArguments()[0];
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (itemType != null) {
+                            var constructed = typeof(List<>).MakeGenericType(itemType);
+                            if (targetType.IsAssignableFrom(constructed)) {
+                                var clonedList = (System.Collections.IList)Activator.CreateInstance(constructed);
+                                for (int i = 0; i < list.Count; i++) {
+                                    clonedList.Add(list[i]);
+                                }
+                                return clonedList;
+                            }
+                        }
+
                         return value;
                     }
                 }
@@ -102,26 +137,55 @@ namespace SavableObservable {
             value = null;
             if (source == null || sourceType == null) return false;
 
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+            const BindingFlags DeclaredExact = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            const BindingFlags DeclaredIgnore = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.DeclaredOnly;
 
-            var prop = sourceType.GetProperty(name, flags);
-            if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
+            for (var t = sourceType; t != null && t != typeof(object); t = t.BaseType) {
+                // Exact-case property
                 try {
-                    var raw = prop.GetValue(source);
-                    if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
-                        value = raw;
-                        return true;
+                    var prop = t.GetProperty(name, DeclaredExact);
+                    if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
+                        var raw = prop.GetValue(source);
+                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                            value = raw;
+                            return true;
+                        }
                     }
                 } catch { }
-            }
 
-            var field = sourceType.GetField(name, flags);
-            if (field != null) {
+                // Case-insensitive property
                 try {
-                    var raw = field.GetValue(source);
-                    if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
-                        value = raw;
-                        return true;
+                    var prop = t.GetProperty(name, DeclaredIgnore);
+                    if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
+                        var raw = prop.GetValue(source);
+                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                            value = raw;
+                            return true;
+                        }
+                    }
+                } catch { }
+
+                // Exact-case field
+                try {
+                    var field = t.GetField(name, DeclaredExact);
+                    if (field != null) {
+                        var raw = field.GetValue(source);
+                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                            value = raw;
+                            return true;
+                        }
+                    }
+                } catch { }
+
+                // Case-insensitive field
+                try {
+                    var field = t.GetField(name, DeclaredIgnore);
+                    if (field != null) {
+                        var raw = field.GetValue(source);
+                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                            value = raw;
+                            return true;
+                        }
                     }
                 } catch { }
             }
@@ -189,8 +253,8 @@ namespace SavableObservable {
                             var srcValProp = memberObj.GetType().GetProperty("Value");
                             if (srcValProp != null && srcValProp.CanRead) {
                                 sourceValue = srcValProp.GetValue(memberObj);
-                            } else if (destType.IsAssignableFrom(memberObj.GetType())) {
-                                sourceValue = memberObj;
+                            } else if (destType.IsAssignableFrom(memberObj.GetType()) || memberObj is System.Collections.IList) {
+                                sourceValue = CloneIfListOrArray(memberObj, destType);
                             } else {
                                 continue;
                             }

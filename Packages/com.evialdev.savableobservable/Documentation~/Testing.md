@@ -82,6 +82,8 @@ Usage:
 
 The same base includes `Contract_AutoBindTextTargets_ShowTheModelValueRightAfterBind`. For every `[AutoBind]` field of a `TMP_Text` type bound to an `ObservableVariable<T>`, it binds the presenter (`EnsureInitialized()`) and asserts that the text equals the model value (`ToString()`), without any manual first paint (`ObservableSettings.SyncOnBind`, default on). A target the unit leaves unassigned gets a temporary TMP child, so a naked instantiation is covered. A presenter that overwrites an AutoBind target in `InitializePresenter()`, or a model whose default differs from the text the scene shows, fails here. The contract is ignored when `SyncOnBind` is off or the presenter has no such target. Consumer projects that derive a contract class from `MmvcTriadContractTestsBase` pick it up automatically.
 
+Shared assembly audits also check that MMVC lifecycle methods are not hidden by non-override declarations. Consumers inheriting the audit should override the virtual base lifecycle methods rather than hiding them and must call their base implementation.
+
 ---
 
 ## 4. Live UI Assertions & Audit (`MmvcLiveUiAssert`)

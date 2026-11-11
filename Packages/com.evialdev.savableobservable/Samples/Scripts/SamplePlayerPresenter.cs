@@ -41,13 +41,6 @@ namespace SavableObservable.Samples {
         public int RepeatedRollCount { get; private set; }
         public List<string> CurrentInventoryItems { get; } = new List<string>();
 
-        private void OnDestroy() {
-            var model = GetModel();
-            if (model != null) {
-                Observable.RemoveListeners(model, this);
-            }
-        }
-
         protected override void InitializePresenter() {
             base.InitializePresenter();
             InitializePresenterCount++;

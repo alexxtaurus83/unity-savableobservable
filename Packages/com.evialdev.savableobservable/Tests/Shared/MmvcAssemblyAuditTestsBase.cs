@@ -124,5 +124,42 @@ namespace SavableObservable.Tests.Contracts {
                 Assert.Fail("Logic Awake hiding audit failed:\n" + string.Join("\n", warnings));
             }
         }
+
+        [Test]
+        public void Audit_AllMmvcLifecycleMethods_DoNotHideBaseLifecycleMethods() {
+            var warnings = new List<string>();
+
+            // 1. BaseLogic subclasses: Awake and OnDestroy
+            foreach (var lType in GetTypesDerivedFrom<BaseLogic>()) {
+                CheckLifecycleMethodHiding(lType, "BaseLogic", "Awake", warnings);
+                CheckLifecycleMethodHiding(lType, "BaseLogic", "OnDestroy", warnings);
+            }
+
+            // 2. IObservablePresenter subclasses: Awake and OnDestroy
+            foreach (var pType in GetTypesDerivedFrom<IObservablePresenter>()) {
+                CheckLifecycleMethodHiding(pType, "BaseObservablePresenter", "Awake", warnings);
+                CheckLifecycleMethodHiding(pType, "BaseObservablePresenter", "OnDestroy", warnings);
+            }
+
+            // 3. BaseObservableDataModel subclasses: Awake and OnDestroy
+            foreach (var mType in GetTypesDerivedFrom<BaseObservableDataModel>()) {
+                CheckLifecycleMethodHiding(mType, "BaseObservableDataModel", "Awake", warnings);
+                CheckLifecycleMethodHiding(mType, "BaseObservableDataModel", "OnDestroy", warnings);
+            }
+
+            if (warnings.Count > 0) {
+                Assert.Fail("MMVC lifecycle hiding audit failed:\n" + string.Join("\n", warnings));
+            }
+        }
+
+        private static void CheckLifecycleMethodHiding(Type derivedType, string baseTypeName, string methodName, List<string> warnings) {
+            var method = derivedType.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            if (method != null) {
+                // If not virtual/override or if private (private methods in C# cannot be overrides and will shadow base method)
+                if (method.IsPrivate || method.GetBaseDefinition().DeclaringType == derivedType) {
+                    warnings.Add($"{baseTypeName} subclass '{derivedType.FullName}' declares non-override '{methodName}()', which hides {baseTypeName}.{methodName}(). Use 'protected override void {methodName}() {{ base.{methodName}(); ... }}' instead.");
+                }
+            }
+        }
     }
 }

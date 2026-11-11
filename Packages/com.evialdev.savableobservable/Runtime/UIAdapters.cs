@@ -313,8 +313,11 @@ namespace SavableObservable
                     {
                         if (Enum.TryParse(underlying, s, ignoreCase: true, out var parsed))
                         {
-                            converted = parsed;
-                            return true;
+                            if (Enum.IsDefined(underlying, parsed) || underlying.IsDefined(typeof(FlagsAttribute), false))
+                            {
+                                converted = parsed;
+                                return true;
+                            }
                         }
                         return false;
                     }
@@ -576,6 +579,11 @@ namespace SavableObservable
                     else
                     {
                         floatValue = Convert.ToSingle(value, CultureInfo.InvariantCulture);
+                    }
+
+                    if (float.IsNaN(floatValue) || float.IsInfinity(floatValue))
+                    {
+                        return;
                     }
 
                     if (!Mathf.Approximately(slider.value, floatValue))

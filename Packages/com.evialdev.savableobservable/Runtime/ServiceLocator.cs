@@ -54,9 +54,7 @@ namespace SavableObservable {
         private readonly HashSet<object> _reportedDuplicates = new HashSet<object>();
 
         private void Awake() {
-            if (instance == null) {
-                instance = this;
-            }
+            instance = this;
             InitializeSharedSingletons();
         }
 

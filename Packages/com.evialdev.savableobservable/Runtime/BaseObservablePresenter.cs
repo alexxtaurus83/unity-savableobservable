@@ -84,12 +84,13 @@ namespace SavableObservable {
             var listenersCheckpoint = _listeners?.Count ?? 0;
             try {
                 GetModel();
-                WireClickCommands();
                 InitializePresenter();
                 _state = InitState.Initialized;
             } catch {
                 _state = InitState.Uninitialized;
                 _listeners?.RollbackTo(listenersCheckpoint);
+                _clickCommandListeners?.Clear();
+                _clickCommandsWired = false;
                 throw;
             }
         }
@@ -102,6 +103,9 @@ namespace SavableObservable {
 
         void IPresenterBindingState.EnsureInitializedForBinding() {
             RunInitializePresenter();
+            _clickCommandListeners?.Clear();
+            _clickCommandsWired = false;
+            WireClickCommands();
         }
 
         void IPresenterBindingState.MarkBound() {

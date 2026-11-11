@@ -13,7 +13,7 @@ At its core, the framework is built on these key principles:
 * **Attribute-Based Binding**: Use `[ObservableHandler]` and `[AutoBind]` attributes to declaratively connect observables to handlers and UI elements.
 * **Primary Component & Automatic Component Requirements**: In the Unity Editor, adding `BaseLogic<M, P>` to a GameObject automatically provisions its paired `Model` and `Presenter` components on the same GameObject (no `[RequireComponent]` attributes required on concrete classes).
 * **Built-in Service Locator & Logic Singletons**: `ServiceLocator`, `Services.Get<TLogic>()`, and `Services.GetModel<TModel>()` provide automatic scene discovery, a clear duplicate-key rule (duplicate = error, first registration wins), and zero-boilerplate access to MMVC Logic and Model instances.
-* **Two-Stage Execution Order**: `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`); models, loaders and logic run at the default order because they initialize lazily through `GetModel()`. Synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer` (with `ServiceLocator` carrying explicit `[DefaultExecutionOrder(-200)]` and `BaseObservablePresenter<M>` carrying `[DefaultExecutionOrder(-150)]` attributes in code).
+* **Two-Stage Execution Order**: `ServiceLocator` (`-200`) -> `BaseObservablePresenter<M>` (`-150`), declared in code with `[DefaultExecutionOrder(-200)]` and `[DefaultExecutionOrder(-150)]` and synchronized in the Unity Editor by `MMVCExecutionOrderSynchronizer`. Models, loaders and logic default to `0` and have no execution-order dependency because they initialize lazily through `GetModel()`. For those classes, the synchronizer preserves an explicitly declared user `[DefaultExecutionOrder]` instead of resetting it to `0`.
 
 ## Core Components
 
@@ -204,7 +204,7 @@ private Slider volumeSlider;
 
 * **Synchronous Commands Only:** The command method on the paired `BaseLogic` must be `public void CommandName(T value)` with exactly one parameter matching the converted observable value type. Methods returning `async void`, `Task`, `ValueTask`, coroutines, or having extra/generic parameters are strictly rejected.
 * **Automatic Reconciliation:** When input occurs, the framework invokes the command on `Logic`. In `finally`, the accepted model value is repainted onto the originating control without triggering input re-entry or model notifications. Reconciliation occurs even if Logic rejects input, normalizes input (e.g. trimming whitespace without changing the model), or throws an exception.
-* **Malformed Input:** Temporarily invalid or unparsable text (such as typing `-` in a numeric field) invokes no command and remains editable until valid.
+* **Malformed Input:** Temporarily invalid or unparsable text (such as typing `-` or clearing a non-nullable numeric field) invokes no command and remains editable until valid. Undefined numeric values are rejected for non-flags enums.
 * **Supported Controls:** Two-way adapters are built-in for `Slider`, `Toggle`, `TMP_InputField`, `InputField`, `TMP_Dropdown`, and legacy `Dropdown`.
 * **Backward Compatibility:** Omitting `Command` or leaving it empty retains legacy two-way binding (direct model mutation) unchanged.
 
@@ -219,7 +219,7 @@ private Button okButton;
 
 * **Zero-Argument, Synchronous:** Method on paired `BaseLogic` must be `public void MethodName()`. `async void`, `Task`, `ValueTask`, and coroutine methods are not supported (use `Listeners.Listen` for async button actions).
 * **IL2CPP Stripping:** Because `nameof()` does not preserve methods under IL2CPP code stripping, decorate target logic methods with `[UnityEngine.Scripting.Preserve]`.
-* **Separate Framework Lifecycle:** Wired before `InitializePresenter()` runs, through an internal framework-owned `ListenerSet`. Consumers calling `Listeners.Clear()` in `InitializePresenter()` do not remove `[ClickCommand]` listeners. Unassigned or destroyed button fields are skipped silently.
+* **Separate Framework Lifecycle:** Wired after `InitializePresenter()` runs and refreshed on `Observable.SetListeners` rebind, through an internal framework-owned `ListenerSet`. Consumers calling `Listeners.Clear()` do not remove `[ClickCommand]` listeners. Unassigned or destroyed button fields are skipped silently.
 * **No Model -> Logic Handler:** MMVC data flow is strictly `Logic -> Model -> Presenter`. The framework deliberately rejects any attribute calling Logic on model change: `[ObservableHandler]` remains render-only.
 
 ##### 3. Generic `ListenerSet` (`Listeners`)

@@ -73,6 +73,7 @@ namespace SavableObservable {
         }
 
         [NonSerialized] private Queue<(T value, bool isForce)> _pendingTransitions;
+        [NonSerialized] private bool _isNotifying;
 
         /// <summary>
         /// Main access point for getting and setting the variable.
@@ -82,13 +83,13 @@ namespace SavableObservable {
         public T Value {
             get => _value;
             set {
-                if (_onValueChanged != null && _onValueChanged.IsInvoking) {
+                if (_isNotifying || (_onValueChanged != null && _onValueChanged.IsInvoking)) {
                     if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
                     _pendingTransitions.Enqueue((value, false));
                     return;
                 }
 
-                if (!_notifyOnSameValue && EqualityComparer<T>.Default.Equals(_value, value)) return;
+                if (!_notifyOnSameValue && AreEqual(_value, value)) return;
                 ApplyAndNotify(value, force: false);
             }
         }
@@ -97,7 +98,7 @@ namespace SavableObservable {
         /// Forces the OnValueChanged event to fire, useful for when values are changed directly in the editor.
         /// </summary>
         public void ForceNotify() {
-            if (_onValueChanged != null && _onValueChanged.IsInvoking) {
+            if (_isNotifying || (_onValueChanged != null && _onValueChanged.IsInvoking)) {
                 if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
                 _pendingTransitions.Enqueue((_value, true));
                 return;
@@ -107,45 +108,63 @@ namespace SavableObservable {
         }
 
         private void ApplyAndNotify(T newValue, bool force) {
-            PreviousValue = _value;
-            if (!force) {
-                _value = newValue;
-            }
+            _isNotifying = true;
+            try {
+                PreviousValue = _value;
+                if (!force) {
+                    _value = newValue;
+                }
 #if UNITY_EDITOR
-            _lastValidatedValue = _value;
-            _hasLastValidatedValue = true;
-            _hasEditorGuiSnapshot = false;
+                _lastValidatedValue = _value;
+                _hasLastValidatedValue = true;
+                _hasEditorGuiSnapshot = false;
 #endif
-            OnValueChanged?.Invoke(this);
+                OnValueChanged?.Invoke(this);
 
-            if (_pendingTransitions != null && _pendingTransitions.Count > 0) {
-                const int maxIterations = 32;
-                int iterations = 0;
-                while (_pendingTransitions.Count > 0) {
-                    var (nextVal, isForce) = _pendingTransitions.Dequeue();
-                    if (!isForce && !_notifyOnSameValue && EqualityComparer<T>.Default.Equals(_value, nextVal)) {
-                        continue;
-                    }
+                if (_pendingTransitions != null && _pendingTransitions.Count > 0) {
+                    const int maxIterations = 32;
+                    int iterations = 0;
+                    while (_pendingTransitions.Count > 0) {
+                        var (nextVal, isForce) = _pendingTransitions.Dequeue();
+                        if (!isForce && !_notifyOnSameValue && AreEqual(_value, nextVal)) {
+                            continue;
+                        }
 
-                    PreviousValue = _value;
-                    if (!isForce) {
-                        _value = nextVal;
-                    }
+                        PreviousValue = _value;
+                        if (!isForce) {
+                            _value = nextVal;
+                        }
 #if UNITY_EDITOR
-                    _lastValidatedValue = _value;
-                    _hasLastValidatedValue = true;
-                    _hasEditorGuiSnapshot = false;
+                        _lastValidatedValue = _value;
+                        _hasLastValidatedValue = true;
+                        _hasEditorGuiSnapshot = false;
 #endif
-                    OnValueChanged?.Invoke(this);
+                        OnValueChanged?.Invoke(this);
 
-                    iterations++;
-                    if (iterations >= maxIterations) {
-                        _pendingTransitions.Clear();
-                        Debug.LogError($"ObservableTrackedAction.Invoke exceeded maxIterations ({maxIterations}); stopping to prevent infinite loop.");
-                        break;
+                        iterations++;
+                        if (iterations >= maxIterations) {
+                            _pendingTransitions.Clear();
+                            Debug.LogError($"ObservableTrackedAction.Invoke exceeded maxIterations ({maxIterations}); stopping to prevent infinite loop.");
+                            break;
+                        }
                     }
                 }
+            } finally {
+                _isNotifying = false;
+                if (_pendingTransitions != null && _pendingTransitions.Count > 0) {
+                    _pendingTransitions.Clear();
+                }
             }
+        }
+
+        internal static bool AreEqual(T a, T b) {
+            if (!typeof(T).IsValueType) {
+                if (ReferenceEquals(a, b)) return true;
+                // Unity's fake-null equality must not retain a destroyed reference over real null.
+                if ((a is UnityEngine.Object left && left == null)
+                    || (b is UnityEngine.Object right && right == null)) return false;
+            }
+            return EqualityComparer<T>.Default.Equals(a, b);
         }
 
         public override string ToString() => _value?.ToString();

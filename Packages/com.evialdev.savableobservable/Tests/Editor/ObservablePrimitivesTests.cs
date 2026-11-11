@@ -328,6 +328,7 @@ namespace SavableObservable.Tests {
             try {
                 var model = host.AddComponent<SamplePlayerModel>();
                 model.InitializeDefaults();
+                model.inventory.Value = new List<string> { "Sword", "Potion" };
                 int healthChanges = 0;
                 model.health.OnValueChanged.Add(_ => healthChanges++, null);
                 int inventoryChanges = 0;
@@ -403,6 +404,32 @@ namespace SavableObservable.Tests {
 
                 Assert.IsNotNull(target);
                 Assert.AreSame(derived.ScoreField, target);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(host);
+            }
+        }
+
+        private class MultiDimMatrixModel : MonoBehaviour {
+            [SerializeField] private int[][] _jagged = new int[][] {
+                new int[] { 10, 20 },
+                new int[] { 30, 40 }
+            };
+            public int[][] Jagged => _jagged;
+        }
+
+        [Test]
+        public void PropertyResolver_ResolvePathOnObject_HandlesMultipleIndexersInSingleSegment() {
+            var host = new GameObject("MatrixTestHost");
+            try {
+                var model = host.AddComponent<MultiDimMatrixModel>();
+                // Unity does not serialize jagged arrays; exercise the path resolver directly.
+                var resMethod = typeof(PropertyResolver).GetMethod("ResolvePathOnObject", BindingFlags.NonPublic | BindingFlags.Static);
+                Assert.IsNotNull(resMethod);
+                var resolvedDirect = resMethod.Invoke(null, new object[] { model, "_jagged[1][0]" });
+                Assert.AreEqual(30, resolvedDirect);
+
+                var resolvedDirect2 = resMethod.Invoke(null, new object[] { model, "_jagged[0][1]" });
+                Assert.AreEqual(20, resolvedDirect2);
             } finally {
                 UnityEngine.Object.DestroyImmediate(host);
             }
@@ -715,6 +742,155 @@ namespace SavableObservable.Tests {
             structVar.Value = new Vector2Int(5, 10);
             Assert.AreEqual(new Vector2Int(5, 10), observed);
             Assert.AreEqual(new Vector2Int(1, 2), structVar.PreviousValue);
+        }
+
+        #endregion
+
+        #region Regression Tests for 1.1, 1.2, 2.1
+
+        [Test]
+        public void ObservableVariable_DestroyedUnityObject_TransitionToNull_NotifiesAndUpdatesValue() {
+            var go = new GameObject("FakeNullTarget");
+            var variable = new ObservableVariable<GameObject> { Value = go };
+            int changes = 0;
+            GameObject observedVal = go;
+            GameObject observedPrev = null;
+
+            variable.OnValueChanged.Add(v => {
+                changes++;
+                observedVal = v.Value;
+                observedPrev = v.PreviousValue;
+            }, null);
+
+            UnityEngine.Object.DestroyImmediate(go);
+
+            // Under standard Unity operator ==, go == null is true.
+            // But !ReferenceEquals(go, null).
+            // Assigning real null must not be suppressed by EqualityComparer!
+            variable.Value = null;
+
+            Assert.AreEqual(1, changes, "Assigning real null over a destroyed UnityEngine.Object must trigger change notification.");
+            Assert.IsNull(variable.Value, "Variable Value must now be real null.");
+            Assert.IsNull(observedVal);
+            Assert.IsNotNull(observedPrev, "PreviousValue was the destroyed reference.");
+            Assert.IsTrue(observedPrev == null, "PreviousValue in Unity equality is null (destroyed).");
+        }
+
+        [Test]
+        public void ObservableVariable_RealNull_ToDestroyedUnityObject_Notifies() {
+            var go = new GameObject("FakeNullTarget2");
+            var variable = new ObservableVariable<GameObject> { Value = null };
+            int changes = 0;
+
+            variable.OnValueChanged.Add(_ => changes++, null);
+
+            UnityEngine.Object.DestroyImmediate(go);
+
+            // Assigning destroyed object to a variable that currently holds null:
+            // They are not reference equal. Must notify.
+            variable.Value = go;
+
+            Assert.AreEqual(1, changes);
+            Assert.AreSame(go, variable.Value);
+        }
+
+        [Test]
+        public void ObservableVariable_ApplyAndNotify_ExceptionInHandler_CleansUpStateInFinally() {
+            var variable = new ObservableVariable<int> { Value = 0 };
+
+            // Handler that throws on Value == 1
+            variable.OnValueChanged.Add(v => {
+                if (v.Value == 1) {
+                    throw new InvalidOperationException("Test exception in handler");
+                }
+            }, null);
+
+            // Note: ObservableTrackedAction catches and logs exceptions per handler,
+            // so let's verify both when tracked action catches or if invoked directly.
+            // But if an exception were to escape OnValueChanged.Invoke (e.g. if custom or unhandled),
+            // ApplyAndNotify's finally block guarantees _isNotifying = false and _pendingTransitions.Clear().
+            // Let's test that subsequent mutations after a threw/re-entrant scenario work cleanly:
+            LogAssert.Expect(LogType.Exception, new System.Text.RegularExpressions.Regex("Test exception in handler"));
+            variable.Value = 1;
+
+            Assert.AreEqual(1, variable.Value);
+
+            // Next mutation works normally without lingering pending transitions
+            variable.Value = 2;
+            Assert.AreEqual(2, variable.Value);
+        }
+
+        [Test]
+        public void ObservableList_ReentrantMutation_DeliversFifoTransitions_WithoutDoubleNotify() {
+            var list = new ObservableList<string>();
+            var recordedValues = new List<List<string>>();
+            var recordedPrevious = new List<List<string>>();
+
+            // Subscriber 1: when list receives "A", re-entrantly adds "B" and "C"
+            list.OnChanged.Add(l => {
+                if (l.Count == 1 && l[0] == "A") {
+                    l.Add("B");
+                    l.Add("C");
+                }
+            }, null);
+
+            // Subscriber 2: records every transition
+            list.OnChanged.Add(l => {
+                recordedValues.Add(new List<string>(l.Value));
+                recordedPrevious.Add(new List<string>(l.PreviousValue));
+            }, null);
+
+            list.Add("A");
+
+            // Transitions should be:
+            // 1. Initial Add("A"): Value = ["A"], Previous = []
+            // 2. Re-entrant Add("B"): Value = ["A", "B"], Previous = ["A"]
+            // 3. Re-entrant Add("C"): Value = ["A", "B", "C"], Previous = ["A", "B"]
+            Assert.AreEqual(3, recordedValues.Count, "All transitions including queued re-entrant ones must be delivered.");
+            CollectionAssert.AreEqual(new[] { "A" }, recordedValues[0]);
+            CollectionAssert.AreEqual(Array.Empty<string>(), recordedPrevious[0]);
+
+            CollectionAssert.AreEqual(new[] { "A", "B" }, recordedValues[1]);
+            CollectionAssert.AreEqual(new[] { "A" }, recordedPrevious[1]);
+
+            CollectionAssert.AreEqual(new[] { "A", "B", "C" }, recordedValues[2]);
+            CollectionAssert.AreEqual(new[] { "A", "B" }, recordedPrevious[2]);
+
+            // Final state of list
+            CollectionAssert.AreEqual(new[] { "A", "B", "C" }, list.Value);
+        }
+
+        [Test]
+        public void ObservableList_ReentrantMutation_IndexerAndRemove_PreservesState() {
+            var list = new ObservableList<int> { 10, 20, 30 };
+            var history = new List<(int[] current, int[] prev)>();
+
+            list.OnChanged.Add(l => {
+                if (l.Count == 3 && l[0] == 99 && history.Count == 0) {
+                    // Re-entrant remove and indexer
+                    l.Remove(20);
+                    l[1] = 999;
+                }
+            }, null);
+
+            list.OnChanged.Add(l => {
+                history.Add((l.Value.ToArray(), l.PreviousValue != null ? new List<int>(l.PreviousValue).ToArray() : Array.Empty<int>()));
+            }, null);
+
+            list[0] = 99;
+
+            Assert.AreEqual(3, history.Count);
+            // 1st: [99, 20, 30], prev [10, 20, 30]
+            CollectionAssert.AreEqual(new[] { 99, 20, 30 }, history[0].current);
+            CollectionAssert.AreEqual(new[] { 10, 20, 30 }, history[0].prev);
+
+            // 2nd: [99, 30], prev [99, 20, 30]
+            CollectionAssert.AreEqual(new[] { 99, 30 }, history[1].current);
+            CollectionAssert.AreEqual(new[] { 99, 20, 30 }, history[1].prev);
+
+            // 3rd: [99, 999], prev [99, 30]
+            CollectionAssert.AreEqual(new[] { 99, 999 }, history[2].current);
+            CollectionAssert.AreEqual(new[] { 99, 30 }, history[2].prev);
         }
 
         #endregion

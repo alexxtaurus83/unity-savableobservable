@@ -43,6 +43,33 @@ namespace SavableObservable {
         [NonSerialized] private IReadOnlyList<T> _previousCache;
         [NonSerialized] private List<T> _itemsAtDelta;
         [NonSerialized] private int _countAtDelta;
+        [NonSerialized] private bool _isNotifying;
+        [NonSerialized] private Queue<(List<T> items, T[] previous)> _pendingTransitions;
+        [NonSerialized] private List<T> _pendingItems;
+
+        private enum Mutation { Assign, Replace, Add, AddRange, Clear, Insert, Remove, RemoveAt, Force }
+
+        private bool QueueMutation(Mutation mutation, T item = default, int index = 0, IEnumerable<T> values = null) {
+            var previous = _pendingItems ?? Items;
+            var next = new List<T>(previous);
+            bool force = true;
+            switch (mutation) {
+                case Mutation.Assign: next.Clear(); next.AddRange(values); force = false; break;
+                case Mutation.Replace: next[index] = item; break;
+                case Mutation.Add: next.Add(item); break;
+                case Mutation.AddRange: next.AddRange(values); force = next.Count != previous.Count; break;
+                case Mutation.Clear: next.Clear(); force = previous.Count > 0; break;
+                case Mutation.Insert: next.Insert(index, item); break;
+                case Mutation.Remove: if (!next.Remove(item)) return false; break;
+                case Mutation.RemoveAt: next.RemoveAt(index); break;
+            }
+            if (force || !AreListsEqual(previous, next)) {
+                _pendingTransitions ??= new Queue<(List<T>, T[])>();
+                _pendingTransitions.Enqueue((next, previous.ToArray()));
+                _pendingItems = next;
+            }
+            return true;
+        }
 
         /// <summary>
         /// Snapshot of list state before the latest mutation.
@@ -68,6 +95,10 @@ namespace SavableObservable {
             get => Items;
             set {
                 var next = value ?? new List<T>();
+                if (_isNotifying) {
+                    QueueMutation(Mutation.Assign, values: next);
+                    return;
+                }
                 if (AreListsEqual(Items, next)) {
                     _items = next;
                     _itemsAtDelta = _items;
@@ -94,6 +125,10 @@ namespace SavableObservable {
         public T this[int index] {
             get => Items[index];
             set {
+                if (_isNotifying) {
+                    QueueMutation(Mutation.Replace, value, index);
+                    return;
+                }
                 T oldItem = Items[index];
                 Items[index] = value;
                 RecordReplaced(index, oldItem);
@@ -102,6 +137,7 @@ namespace SavableObservable {
         }
 
         public void Add(T item) {
+            if (_isNotifying) { QueueMutation(Mutation.Add, item); return; }
             int oldCount = Items.Count;
             Items.Add(item);
             RecordInserted(oldCount, 1);
@@ -110,6 +146,7 @@ namespace SavableObservable {
 
         public void AddRange(IEnumerable<T> items) {
             if (items == null) return;
+            if (_isNotifying) { QueueMutation(Mutation.AddRange, values: items); return; }
             if (items is ICollection<T> col && col.Count == 0) return;
             int oldCount = Items.Count;
             Items.AddRange(items);
@@ -120,6 +157,7 @@ namespace SavableObservable {
         }
 
         public void Clear() {
+            if (_isNotifying) { QueueMutation(Mutation.Clear); return; }
             if (Items.Count == 0) return;
             var snapshot = Items.ToArray();
             Items.Clear();
@@ -138,12 +176,16 @@ namespace SavableObservable {
         public int IndexOf(T item) => Items.IndexOf(item);
 
         public void Insert(int index, T item) {
+            if (_isNotifying) { QueueMutation(Mutation.Insert, item, index); return; }
             Items.Insert(index, item);
             RecordInserted(index, 1);
             NotifyChanged();
         }
 
         public bool Remove(T item) {
+            if (_isNotifying) {
+                return QueueMutation(Mutation.Remove, item);
+            }
             var index = Items.IndexOf(item);
             if (index < 0) return false;
 
@@ -155,6 +197,7 @@ namespace SavableObservable {
         }
 
         public void RemoveAt(int index) {
+            if (_isNotifying) { QueueMutation(Mutation.RemoveAt, index: index); return; }
             T removedItem = Items[index];
             Items.RemoveAt(index);
             RecordRemoved(index, removedItem);
@@ -162,6 +205,7 @@ namespace SavableObservable {
         }
 
         public void ForceNotify() {
+            if (_isNotifying) { QueueMutation(Mutation.Force); return; }
             RecordUnchanged();
             NotifyChanged();
         }
@@ -410,12 +454,31 @@ namespace SavableObservable {
         }
 
         private void NotifyChanged() {
+            _isNotifying = true;
+            try {
+                int iterations = 0;
+                while (true) {
 #if UNITY_EDITOR
-            _lastValidatedSnapshot = (_items == null || _items.Count == 0) ? Array.Empty<T>() : _items.ToArray();
-            _hasLastValidatedSnapshot = true;
-            _hasEditorGuiSnapshot = false;
+                    // No editor snapshot is needed until an inspector/validation path uses it.
+                    if (_hasLastValidatedSnapshot) _lastValidatedSnapshot = Items.ToArray();
+                    _hasEditorGuiSnapshot = false;
 #endif
-            OnChanged?.Invoke(this);
+                    OnChanged?.Invoke(this);
+                    if (_pendingTransitions == null || _pendingTransitions.Count == 0) break;
+                    if (++iterations >= 32) {
+                        Debug.LogError("ObservableList notification exceeded maxIterations (32); stopping to prevent infinite loop.");
+                        break;
+                    }
+                    var transition = _pendingTransitions.Dequeue();
+                    _items = transition.items;
+                    RecordSnapshot(transition.previous);
+                    if (_pendingTransitions.Count == 0) _pendingItems = null;
+                }
+            } finally {
+                _isNotifying = false;
+                _pendingTransitions?.Clear();
+                _pendingItems = null;
+            }
         }
 
         private static bool AreListsEqual(IReadOnlyList<T> previous, IReadOnlyList<T> current) {
@@ -423,9 +486,8 @@ namespace SavableObservable {
             if (previous == null || current == null) return false;
             if (previous.Count != current.Count) return false;
 
-            var comparer = EqualityComparer<T>.Default;
             for (int i = 0; i < previous.Count; i++) {
-                if (!comparer.Equals(previous[i], current[i])) {
+                if (!ObservableVariable<T>.AreEqual(previous[i], current[i])) {
                     return false;
                 }
             }

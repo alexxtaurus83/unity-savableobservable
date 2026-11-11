@@ -50,10 +50,40 @@ namespace SavableObservable.Editor {
             var elements = path.Split('.');
 
             foreach (var element in elements) {
-                if (element.Contains("[")) {
-                    var elementName = element.Substring(0, element.IndexOf("["));
-                    var index = Convert.ToInt32(element.Substring(element.IndexOf("[")).Replace("[", "").Replace("]", ""));
-                    obj = GetValueByPathSegment(obj, elementName, index);
+                int firstBracket = element.IndexOf('[');
+                if (firstBracket >= 0) {
+                    var elementName = element.Substring(0, firstBracket);
+                    obj = GetValueByPathSegment(obj, elementName);
+                    if (obj == null) return null;
+
+                    int currentIdx = firstBracket;
+                    while (currentIdx < element.Length && element[currentIdx] == '[') {
+                        int closeBracket = element.IndexOf(']', currentIdx);
+                        if (closeBracket < 0) return null;
+                        var indexStr = element.Substring(currentIdx + 1, closeBracket - currentIdx - 1);
+                        if (!int.TryParse(indexStr, out int index)) return null;
+
+                        var enumerable = obj as IEnumerable;
+                        if (enumerable == null) return null;
+
+                        object elementAt = null;
+                        var enm = enumerable.GetEnumerator();
+                        try {
+                            for (int i = 0; i <= index; i++) {
+                                if (!enm.MoveNext()) {
+                                    elementAt = null;
+                                    break;
+                                }
+                                elementAt = enm.Current;
+                            }
+                        } finally {
+                            (enm as IDisposable)?.Dispose();
+                        }
+
+                        obj = elementAt;
+                        if (obj == null) return null;
+                        currentIdx = closeBracket + 1;
+                    }
                 } else {
                     obj = GetValueByPathSegment(obj, element);
                 }
