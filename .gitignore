@@ -29,6 +29,9 @@
 *.usermacos
 *.userwin
 
+# Kilo
+.kilo/
+
 # OS generated
 *.DS_Store
 __MACOSX
