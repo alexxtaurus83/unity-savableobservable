@@ -449,6 +449,57 @@ namespace SavableObservable.Tests {
             Assert.AreEqual("lower", target.item.Value);
         }
 
+        private class PascalCaseTargetModel : BaseObservableDataModel {
+            public ObservableVariable<string> Item = new ObservableVariable<string>();
+        }
+
+        private class TypeDisambiguationDto {
+            public int value { get; set; } = 42;
+            public string VALUE { get; set; } = "forty-two";
+        }
+
+        private class TypeDisambiguationTargetModel : BaseObservableDataModel {
+            public string Value { get; set; } = "initial";
+        }
+
+        [Test]
+        public void LoadDataFromModel_CaseCollidingDtoMembers_AlternateCasingLoadsWithoutAmbiguousMatchException() {
+            var target = _unitA.AddComponent<PascalCaseTargetModel>();
+            target.EnsureFieldsInitialized();
+            target.Item.Value = "initial";
+
+            var dto = new CaseCollisionDto();
+            Assert.DoesNotThrow(() => target.LoadDataFromModel(dto));
+            Assert.IsTrue(target.Item.Value == "lower" || target.Item.Value == "UPPER");
+        }
+
+        [Test]
+        public void LoadDataFromModel_CaseCollidingDtoMembers_DisambiguatesByExpectedType() {
+            var target = _unitA.AddComponent<TypeDisambiguationTargetModel>();
+            target.EnsureFieldsInitialized();
+            target.Value = "initial";
+
+            var dto = new TypeDisambiguationDto();
+            Assert.DoesNotThrow(() => target.LoadDataFromModel(dto));
+            Assert.AreEqual("forty-two", target.Value);
+        }
+
+        private class ExactFieldCaseInsensitivePropDto {
+            public string item = "exactField";
+            public string ITEM => "caseInsensitiveProp";
+        }
+
+        [Test]
+        public void LoadDataFromModel_ExactField_TakesPrecedenceOverCaseInsensitiveProperty() {
+            var target = _unitA.AddComponent<CaseCollisionTargetModel>();
+            target.EnsureFieldsInitialized();
+            target.item.Value = "initial";
+
+            var dto = new ExactFieldCaseInsensitivePropDto();
+            Assert.DoesNotThrow(() => target.LoadDataFromModel(dto));
+            Assert.AreEqual("exactField", target.item.Value);
+        }
+
         private class InterfaceCollectionDto {
             public System.Collections.Generic.IReadOnlyList<string> tags { get; set; }
         }

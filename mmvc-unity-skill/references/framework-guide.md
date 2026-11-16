@@ -241,7 +241,7 @@ Wire button clicks separately to logic entry points. To bind a button's label te
 
 ## Lifetime and Cleanup
 
-Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity. Re-entrant assignments to `ObservableVariable<T>.Value` during handlers are queued FIFO so each transition is delivered in order to every subscriber.
+Use `Add(Action<T> handler, object subscriber)` and `Remove(Action<T> handler)` for explicit registration. The `+=` and `-=` operators provide alternate syntax, but `+=` supplies no subscriber identity (`null` subscriber), meaning manual subscriptions added via `+=` are not recorded in the model's subscription registry and will not be cleaned up by `Observable.RemoveListeners` or model destruction (though instance methods on `UnityEngine.Object` targets are pruned on next invocation if destroyed). Always prefer `Add(handler, this)` for managed lifecycles. Re-entrant assignments to `ObservableVariable<T>.Value` during handlers are queued FIFO so each transition is delivered in order to every subscriber.
 
 Use `.Add(handler, subscriber)` after parent initialization. Tracking requires both a non-null subscriber and a parent model; subscriptions made before parent linkage are not retroactively tracked.
 

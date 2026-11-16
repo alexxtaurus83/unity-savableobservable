@@ -795,6 +795,71 @@ namespace SavableObservable.Tests {
         }
 
         [Test]
+        public void ObservableVariable_SameDestroyedUnityObject_IsEqualAndSilent() {
+            var go = new GameObject("SameDestroyedTarget");
+            var variable = new ObservableVariable<GameObject> { Value = go };
+            int changes = 0;
+
+            variable.OnValueChanged.Add(_ => changes++, null);
+
+            UnityEngine.Object.DestroyImmediate(go);
+
+            // Re-assigning the SAME destroyed reference is reference-equal and must be silent
+            variable.Value = go;
+
+            Assert.AreEqual(0, changes, "Re-assigning the exact same destroyed reference must not trigger notification.");
+        }
+
+        [Test]
+        public void ObservableVariable_DifferentDestroyedUnityObjects_AreNotEqualAndNotify() {
+            var go1 = new GameObject("DestroyedTarget1");
+            var go2 = new GameObject("DestroyedTarget2");
+            var variable = new ObservableVariable<GameObject> { Value = go1 };
+            int changes = 0;
+            GameObject observedPrev = null;
+            GameObject observedVal = null;
+
+            variable.OnValueChanged.Add(v => {
+                changes++;
+                observedVal = v.Value;
+                observedPrev = v.PreviousValue;
+            }, null);
+
+            UnityEngine.Object.DestroyImmediate(go1);
+            UnityEngine.Object.DestroyImmediate(go2);
+
+            // Assigning a DIFFERENT destroyed reference must be considered not equal and notify
+            variable.Value = go2;
+
+            Assert.AreEqual(1, changes, "Assigning a different destroyed object must notify.");
+            Assert.AreSame(go2, variable.Value);
+            Assert.AreSame(go2, observedVal);
+            Assert.AreSame(go1, observedPrev);
+        }
+
+        [Test]
+        public void ObservableList_DestroyedUnityObjects_EqualitySemantics() {
+            var go1 = new GameObject("ListDestroyed1");
+            var go2 = new GameObject("ListDestroyed2");
+            var list = new ObservableList<GameObject> { go1 };
+            int changes = 0;
+
+            list.OnChanged.Add(_ => changes++, null);
+
+            UnityEngine.Object.DestroyImmediate(go1);
+            UnityEngine.Object.DestroyImmediate(go2);
+
+            // Re-assigning a list with the SAME destroyed reference is element-wise equal and silent
+            list.Value = new List<GameObject> { go1 };
+            Assert.AreEqual(0, changes, "List with the same destroyed reference is element-wise equal and silent.");
+
+            // Assigning a list with a DIFFERENT destroyed reference is element-wise unequal and notifies
+            list.Value = new List<GameObject> { go2 };
+            Assert.AreEqual(1, changes, "List with a different destroyed reference is not equal and notifies.");
+            Assert.AreSame(go2, list[0]);
+        }
+
+        [Test]
         public void ObservableVariable_ApplyAndNotify_ExceptionInHandler_CleansUpStateInFinally() {
             var variable = new ObservableVariable<int> { Value = 0 };
 
@@ -927,6 +992,68 @@ namespace SavableObservable.Tests {
             action.Add(handler, null);
 
             Assert.AreEqual(1, action.HandlerCount);
+        }
+
+        private class TestTrackedActionSubscriber : MonoBehaviour {
+            public int calls;
+            public void OnValueChanged(ObservableVariable<int> v) {
+                calls++;
+            }
+        }
+
+        private class TrackedActionTestModel : BaseObservableDataModel {
+            public ObservableVariable<int> someInt = new ObservableVariable<int>();
+        }
+
+        [Test]
+        public void ObservableTrackedAction_OperatorPlus_InstanceMethodOnUnityObject_PrunedWhenTargetDestroyed() {
+            var go = new GameObject("OperatorPlusHost");
+            try {
+                var sub = go.AddComponent<TestTrackedActionSubscriber>();
+                var variable = new ObservableVariable<int>();
+
+                // Subscription via operator += with instance method on Unity object
+                variable.OnValueChanged += sub.OnValueChanged;
+                Assert.AreEqual(1, variable.OnValueChanged.HandlerCount);
+
+                variable.Value = 10;
+                Assert.AreEqual(1, sub.calls);
+
+                // Destroy the subscriber
+                UnityEngine.Object.DestroyImmediate(sub);
+
+                // Next mutation prunes the dead subscriber without throwing or invoking
+                variable.Value = 20;
+                Assert.AreEqual(0, variable.OnValueChanged.HandlerCount);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void ObservableTrackedAction_AddWithSubscriber_TrackedInRegistry_AndCleanedUpByRemoveListeners() {
+            var go = new GameObject("TrackedRegistryHost");
+            try {
+                var model = go.AddComponent<TrackedActionTestModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<TestTrackedActionSubscriber>();
+
+                // Explicit Add with subscriber tracks subscription in model registry
+                model.someInt.OnValueChanged.Add(sub.OnValueChanged, sub);
+                Assert.AreEqual(1, model.someInt.OnValueChanged.HandlerCount);
+
+                model.someInt.Value = 5;
+                Assert.AreEqual(1, sub.calls);
+
+                // Observable.RemoveListeners cleans up all subscriptions for this subscriber
+                Observable.RemoveListeners(model, sub);
+                Assert.AreEqual(0, model.someInt.OnValueChanged.HandlerCount);
+
+                model.someInt.Value = 10;
+                Assert.AreEqual(1, sub.calls);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
         }
 
         #endregion

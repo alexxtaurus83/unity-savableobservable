@@ -564,6 +564,67 @@ namespace SavableObservable.Tests {
             _model.energy.Value = 0.8f;
         }
 
+        private class BaseShadowedFieldModel : BaseObservableDataModel {
+            public ObservableVariable<int> score = new ObservableVariable<int>();
+        }
+
+        private class DerivedShadowedFieldModel : BaseShadowedFieldModel {
+            public new ObservableVariable<int> score = new ObservableVariable<int>();
+        }
+
+        private class ShadowedFieldSubscriber : MonoBehaviour {
+            public int observedDerivedScore = -1;
+            public int handlerCallCount;
+
+            [ObservableHandler(nameof(DerivedShadowedFieldModel.score))]
+            private void OnScoreChanged(int value) {
+                observedDerivedScore = value;
+                handlerCallCount++;
+            }
+        }
+
+        [Test]
+        public void SetListeners_ShadowedModelField_BindsMostDerivedFieldOnly() {
+            var go = new GameObject("ShadowedHost");
+            try {
+                var model = go.AddComponent<DerivedShadowedFieldModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ShadowedFieldSubscriber>();
+
+                Observable.SetListeners(sub, model);
+
+                // Derived score mutation should trigger handler
+                model.score.Value = 42;
+                Assert.AreEqual(42, sub.observedDerivedScore);
+                Assert.AreEqual(1, sub.handlerCallCount);
+
+                // Mutating shadowed base field directly must NOT trigger the subscriber
+                ((BaseShadowedFieldModel)model).score.Value = 999;
+                Assert.AreEqual(42, sub.observedDerivedScore, "Mutating shadowed base field should not affect subscriber");
+                Assert.AreEqual(1, sub.handlerCallCount, "Handler must only be bound to most-derived field");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void SetListeners_ShadowedModelField_StrictBinding_DoesNotWarnForShadowedBaseField() {
+            var go = new GameObject("ShadowedStrictHost");
+            var prevStrict = ObservableSettings.StrictBinding;
+            try {
+                ObservableSettings.StrictBinding = true;
+                var model = go.AddComponent<DerivedShadowedFieldModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ShadowedFieldSubscriber>();
+
+                // Should not log any warnings about shadowed base score field
+                Assert.DoesNotThrow(() => Observable.SetListeners(sub, model));
+            } finally {
+                ObservableSettings.StrictBinding = prevStrict;
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
         #endregion
     }
 }
