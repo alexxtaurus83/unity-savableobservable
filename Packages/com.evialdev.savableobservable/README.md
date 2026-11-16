@@ -278,6 +278,8 @@ public class ScoreObserver : MonoBehaviour {
 }
 ```
 
+> **Manual Subscription Lifetime (`.Add(handler, this)` vs `+=`):** Always prefer `observable.OnValueChanged.Add(handler, this)` (or `Listeners.Listen(...)`) over `operator +=`. Providing `this` records the subscription in the model's registry so that `Observable.RemoveListeners(model, this)` and model destruction clean it up automatically. `operator +=` passes a `null` subscriber; while instance methods on `UnityEngine.Object` targets are pruned on next invocation if destroyed, closure delegates capturing destroyed objects cannot be detected without an explicit subscriber handle, and manual subscriptions via `+=` require an explicit `-=` for early cleanup.
+
 #### Automatic Dependency Provisioning (Editor)
 
 The framework auto-adds required components in the Unity Editor (during `Reset` / `OnValidate`) when you attach your primary components.

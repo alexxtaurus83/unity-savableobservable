@@ -138,10 +138,9 @@ namespace SavableObservable {
             if (source == null || sourceType == null) return false;
 
             const BindingFlags DeclaredExact = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-            const BindingFlags DeclaredIgnore = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.DeclaredOnly;
 
+            // Pass 1: Exact-case matches across the hierarchy (properties then fields)
             for (var t = sourceType; t != null && t != typeof(object); t = t.BaseType) {
-                // Exact-case property
                 try {
                     var prop = t.GetProperty(name, DeclaredExact);
                     if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
@@ -153,19 +152,6 @@ namespace SavableObservable {
                     }
                 } catch { }
 
-                // Case-insensitive property
-                try {
-                    var prop = t.GetProperty(name, DeclaredIgnore);
-                    if (prop != null && prop.CanRead && prop.GetIndexParameters().Length == 0) {
-                        var raw = prop.GetValue(source);
-                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
-                            value = raw;
-                            return true;
-                        }
-                    }
-                } catch { }
-
-                // Exact-case field
                 try {
                     var field = t.GetField(name, DeclaredExact);
                     if (field != null) {
@@ -176,15 +162,34 @@ namespace SavableObservable {
                         }
                     }
                 } catch { }
+            }
 
-                // Case-insensitive field
+            // Pass 2: Case-insensitive matches across the hierarchy (disambiguating collisions)
+            for (var t = sourceType; t != null && t != typeof(object); t = t.BaseType) {
                 try {
-                    var field = t.GetField(name, DeclaredIgnore);
-                    if (field != null) {
-                        var raw = field.GetValue(source);
-                        if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
-                            value = raw;
-                            return true;
+                    var props = t.GetProperties(DeclaredExact);
+                    for (int i = 0; i < props.Length; i++) {
+                        var p = props[i];
+                        if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) && p.CanRead && p.GetIndexParameters().Length == 0) {
+                            var raw = p.GetValue(source);
+                            if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                                value = raw;
+                                return true;
+                            }
+                        }
+                    }
+                } catch { }
+
+                try {
+                    var fields = t.GetFields(DeclaredExact);
+                    for (int i = 0; i < fields.Length; i++) {
+                        var f = fields[i];
+                        if (string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)) {
+                            var raw = f.GetValue(source);
+                            if (raw == null || expectedType.IsAssignableFrom(raw.GetType())) {
+                                value = raw;
+                                return true;
+                            }
                         }
                     }
                 } catch { }

@@ -16,9 +16,18 @@ namespace SavableObservable {
         private static ConditionalWeakTable<BaseObservableDataModel, InstanceData> _instanceData =
             new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
 
+        private sealed class ClickCommandDiagnosticsState {
+            public bool ErrorsLogged;
+        }
+
+        [AutoStaticsCleanup]
+        private static ConditionalWeakTable<MonoBehaviour, ClickCommandDiagnosticsState> _clickCommandDiagnostics =
+            new ConditionalWeakTable<MonoBehaviour, ClickCommandDiagnosticsState>();
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetInstanceData() {
             _instanceData = new ConditionalWeakTable<BaseObservableDataModel, InstanceData>();
+            _clickCommandDiagnostics = new ConditionalWeakTable<MonoBehaviour, ClickCommandDiagnosticsState>();
         }
 
         /// <summary>
@@ -182,7 +191,7 @@ namespace SavableObservable {
             // Handlers to call once with the current state after binding (SyncOnBind). Null when replay is off.
             var replay = ObservableSettings.SyncOnBind ? new List<(IObservableVariable source, Delegate handler)>() : null;
 
-            foreach (var field in descriptor.ObservableFields) {
+            foreach (var field in descriptor.ObservableFieldsByName.Values) {
                 if (subMetadata.HandlerMethods.TryGetValue(field.Name, out var handlerMethods)) {
                     foreach (var handlerMethod in handlerMethods) {
                         SubscribeIndividualHandler(subscriber, handlerMethod, field, model, subMetadata, replay);
@@ -482,7 +491,13 @@ namespace SavableObservable {
         internal static void WireClickCommands(MonoBehaviour presenter, ref ListenerSet clickListeners) {
             if (presenter == null) return;
             var subMetadata = GetSubscriberMetadata(presenter.GetType());
-            foreach (var error in subMetadata.InvalidClickCommandErrors) Debug.LogError(error, presenter);
+            if (subMetadata.InvalidClickCommandErrors.Count > 0) {
+                var diagState = _clickCommandDiagnostics.GetOrCreateValue(presenter);
+                if (!diagState.ErrorsLogged) {
+                    diagState.ErrorsLogged = true;
+                    foreach (var error in subMetadata.InvalidClickCommandErrors) Debug.LogError(error, presenter);
+                }
+            }
             if (subMetadata.ClickCommandFields.Count == 0) return;
 
             if (!(presenter is IAutoBindCommandTarget commandTarget)) {
@@ -578,111 +593,8 @@ namespace SavableObservable {
             return methodInfo != null;
         }
 
-        private static (MethodInfo method, string error) ResolveClickCommandMethod(Type logicType, string commandName) {
-            var methods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            var allMethods = new List<MethodInfo>();
-            for (int i = 0; i < methods.Length; i++) {
-                if (methods[i].Name == commandName) {
-                    allMethods.Add(methods[i]);
-                }
-            }
-
-            if (allMethods.Count == 0) {
-                return (null, $"Method '{commandName}' not found on '{logicType.Name}'.");
-            }
-
-            bool allStatic = true;
-            for (int i = 0; i < allMethods.Count; i++) {
-                if (!allMethods[i].IsStatic) {
-                    allStatic = false;
-                    break;
-                }
-            }
-            if (allStatic) {
-                return (null, $"Method '{commandName}' on '{logicType.Name}' is static. Commands must be public instance methods.");
-            }
-
-            bool allNonPublic = true;
-            for (int i = 0; i < allMethods.Count; i++) {
-                if (allMethods[i].IsPublic) {
-                    allNonPublic = false;
-                    break;
-                }
-            }
-            if (allNonPublic) {
-                return (null, $"Method '{commandName}' on '{logicType.Name}' is not public. Commands must be public instance methods.");
-            }
-
-            var publicInstance = new List<MethodInfo>();
-            for (int i = 0; i < allMethods.Count; i++) {
-                var m = allMethods[i];
-                if (m.IsPublic && !m.IsStatic) {
-                    publicInstance.Add(m);
-                }
-            }
-            var candidates = new List<MethodInfo>();
-            string firstError = null;
-
-            foreach (var m in publicInstance) {
-                if (m.IsGenericMethod || m.ContainsGenericParameters) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is generic. Generic methods are not supported.";
-                    continue;
-                }
-
-                if (m.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() != null) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' is async void. Commands must be synchronous.";
-                    continue;
-                }
-
-                if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType) ||
-                    m.ReturnType.Name == "ValueTask" || m.ReturnType.Name == "ValueTask`1" ||
-                    typeof(System.Collections.IEnumerator).IsAssignableFrom(m.ReturnType)) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must be synchronous with void return.";
-                    continue;
-                }
-
-                if (m.ReturnType != typeof(void)) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' returns '{m.ReturnType.Name}'. Commands must return void.";
-                    continue;
-                }
-
-                var parameters = m.GetParameters();
-                if (parameters.Length != 0) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Click commands must have zero parameters.";
-                    continue;
-                }
-
-                candidates.Add(m);
-            }
-
-            if (candidates.Count == 0) {
-                return (null, firstError ?? $"Method '{commandName}' on '{logicType.Name}' does not have the expected signature.");
-            }
-
-            if (candidates.Count > 1) {
-                var filtered = new List<MethodInfo>();
-                for (int i = 0; i < candidates.Count; i++) {
-                    var c = candidates[i];
-                    bool hasDerivedOverride = false;
-                    for (int j = 0; j < candidates.Count; j++) {
-                        var other = candidates[j];
-                        if (!ReferenceEquals(other, c) && other.DeclaringType != c.DeclaringType && c.DeclaringType.IsAssignableFrom(other.DeclaringType)) {
-                            hasDerivedOverride = true;
-                            break;
-                        }
-                    }
-                    if (!hasDerivedOverride) {
-                        filtered.Add(c);
-                    }
-                }
-                if (filtered.Count == 1) {
-                    return (filtered[0], null);
-                }
-                return (null, $"Ambiguous matches found for command '{commandName}' on '{logicType.Name}'.");
-            }
-
-            return (candidates[0], null);
-        }
+        private static (MethodInfo method, string error) ResolveClickCommandMethod(Type logicType, string commandName) =>
+            ResolveCommandMethodCore(logicType, commandName, valueType: null, isClickCommand: true);
 
         [NoAutoStaticsCleanup]
         private static readonly Dictionary<(Type, string, Type), (MethodInfo method, string error)> _commandMethodCache =
@@ -710,7 +622,15 @@ namespace SavableObservable {
             return methodInfo != null;
         }
 
-        private static (MethodInfo method, string error) ResolveCommandMethod(Type logicType, string commandName, Type valueType) {
+        private static (MethodInfo method, string error) ResolveCommandMethod(Type logicType, string commandName, Type valueType) =>
+            ResolveCommandMethodCore(logicType, commandName, valueType: valueType, isClickCommand: false);
+
+        private static (MethodInfo method, string error) ResolveCommandMethodCore(
+            Type logicType,
+            string commandName,
+            Type valueType,
+            bool isClickCommand)
+        {
             var methods = logicType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
             var allMethods = new List<MethodInfo>();
             for (int i = 0; i < methods.Length; i++) {
@@ -779,20 +699,27 @@ namespace SavableObservable {
                 }
 
                 var parameters = m.GetParameters();
-                if (parameters.Length != 1) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Commands must have exactly one parameter matching the value type '{valueType.Name}'.";
-                    continue;
-                }
+                if (isClickCommand) {
+                    if (parameters.Length != 0) {
+                        firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Click commands must have zero parameters.";
+                        continue;
+                    }
+                } else {
+                    if (parameters.Length != 1) {
+                        firstError ??= $"Method '{commandName}' on '{logicType.Name}' has {parameters.Length} parameters. Commands must have exactly one parameter matching the value type '{valueType.Name}'.";
+                        continue;
+                    }
 
-                var p = parameters[0];
-                if (p.ParameterType.IsByRef || p.IsOut) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter '{p.Name}' has ref/out modifier. By-ref parameters are not supported.";
-                    continue;
-                }
+                    var p = parameters[0];
+                    if (p.ParameterType.IsByRef || p.IsOut) {
+                        firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter '{p.Name}' has ref/out modifier. By-ref parameters are not supported.";
+                        continue;
+                    }
 
-                if (p.ParameterType != valueType) {
-                    firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter type '{p.ParameterType.Name}' does not match expected value type '{valueType.Name}'.";
-                    continue;
+                    if (p.ParameterType != valueType) {
+                        firstError ??= $"Method '{commandName}' on '{logicType.Name}' parameter type '{p.ParameterType.Name}' does not match expected value type '{valueType.Name}'.";
+                        continue;
+                    }
                 }
 
                 candidates.Add(m);

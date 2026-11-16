@@ -324,10 +324,41 @@ namespace SavableObservable.Tests {
 
                 LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
                 p.EnsureInitialized();
-                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
+                // Rebind on same presenter must not log the duplicate error
                 Observable.SetListeners(p, go.GetComponent<TestModel>());
             } finally {
                 UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void ClickCommand_InvalidField_LogsOncePerPresenterInstance_AndLogsForNewInstance() {
+            var go1 = new GameObject("NonButtonHost1");
+            var go2 = new GameObject("NonButtonHost2");
+            try {
+                go1.SetActive(false);
+                go1.AddComponent<TestModel>();
+                go1.AddComponent<NonButtonLogic>();
+                var p1 = go1.GetComponent<NonButtonFieldPresenter>() ?? go1.AddComponent<NonButtonFieldPresenter>();
+                go1.SetActive(true);
+
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
+                p1.EnsureInitialized();
+                // Rebinding p1 does not log again
+                Observable.SetListeners(p1, go1.GetComponent<TestModel>());
+
+                // A separate presenter instance logs once when initialized
+                go2.SetActive(false);
+                go2.AddComponent<TestModel>();
+                go2.AddComponent<NonButtonLogic>();
+                var p2 = go2.GetComponent<NonButtonFieldPresenter>() ?? go2.AddComponent<NonButtonFieldPresenter>();
+                go2.SetActive(true);
+
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Invalid \\[ClickCommand\\] on field 'notAButton'"));
+                p2.EnsureInitialized();
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go1);
+                UnityEngine.Object.DestroyImmediate(go2);
             }
         }
 

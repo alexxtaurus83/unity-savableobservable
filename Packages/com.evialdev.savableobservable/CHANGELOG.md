@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.2] - 2026-11-16
+
+### Changed
+- Extracted shared command method resolution pipeline between `ResolveClickCommandMethod` and `ResolveCommandMethod` while preserving reflection compatibility and error diagnostics.
+- Clarified `AssertMainThread` build configuration assertions with comments regarding standalone player development symbols.
+- Documented manual subscription tracking differences between `.Add(handler, this)` and `operator +=`.
+
+### Fixed
+- `Observable.WireClickCommands` now tracks invalid declaration diagnostics per presenter instance, preventing duplicate error logs on presenter rebind.
+- `[ObservableHandler]` binding now uses the most-derived field by name (`ObservableFieldsByName.Values`), aligning with `[AutoBind]` and preventing duplicate subscriptions or false `StrictBinding` warnings when a derived model shadows an observable field with `new`.
+- Persistence `TryGetMemberValue` now prioritizes exact-case properties and fields across the type hierarchy before falling back to case-insensitive matching, disambiguates case collisions by target type, and avoids `AmbiguousMatchException` when source DTOs contain multiple members differing only in casing.
+
 ## [2.1.1] - 2026-11-11
 
 ### Changed
