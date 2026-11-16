@@ -1,0 +1,630 @@
+using System;
+using System.Text.RegularExpressions;
+using NUnit.Framework;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.TestTools;
+using TMPro;
+using SavableObservable;
+using SavableObservable.Samples;
+
+namespace SavableObservable.Tests {
+    [TestFixture]
+    public class ObservableBindingTests {
+        private GameObject _host;
+        private SamplePlayerModel _model;
+        private DummySubscriber _subscriber;
+
+        private class DummySubscriber : MonoBehaviour {
+            [AutoBind("playerName")]
+            public TextMeshProUGUI nameDisplay;
+
+            [AutoBind("missingField")]
+            public TextMeshProUGUI missingDisplay;
+
+            public int ZeroParamCount;
+            public int OneParamValue;
+            public int TwoParamCurrent;
+            public int TwoParamPrev;
+
+            [ObservableHandler("health")]
+            public void OnHealthChanged0() {
+                ZeroParamCount++;
+            }
+
+            [ObservableHandler("health")]
+            public void OnHealthChanged1(int current) {
+                OneParamValue = current;
+            }
+
+            [ObservableHandler("health")]
+            public void OnHealthChanged2(int current, int prev) {
+                TwoParamCurrent = current;
+                TwoParamPrev = prev;
+            }
+        }
+
+        private class InvalidSubscriber : MonoBehaviour {
+            [ObservableHandler("health")]
+            public void OnInvalidSignature(int a, int b, int c) {
+                // Invalid: 3 parameters
+            }
+        }
+
+        private class BaseVirtualSubscriber : MonoBehaviour {
+            public int Calls;
+            [ObservableHandler("health")]
+            protected virtual void Render(int value) { Calls++; }
+        }
+
+        private class OverrideOtherFieldSubscriber : BaseVirtualSubscriber {
+            [ObservableHandler("score")]
+            protected override void Render(int value) { Calls++; }
+        }
+
+        private class InheritedAttributeSubscriber : BaseVirtualSubscriber {
+            protected override void Render(int value) { Calls++; }
+        }
+
+        [Test]
+        public void VirtualHandler_DifferentOverrideAttribute_PreservesBaseBinding() {
+            var subscriber = _host.AddComponent<OverrideOtherFieldSubscriber>();
+            Observable.SetListeners(subscriber, _model);
+            _model.health.Value = 37;
+            Assert.AreEqual(1, subscriber.Calls);
+        }
+
+        [Test]
+        public void VirtualHandler_InheritedAttribute_InvokesOverrideOnce() {
+            var subscriber = _host.AddComponent<InheritedAttributeSubscriber>();
+            Observable.SetListeners(subscriber, _model);
+            _model.health.Value = 37;
+            Assert.AreEqual(1, subscriber.Calls);
+        }
+
+        [SetUp]
+        public void SetUp() {
+            _host = new GameObject("TestHost");
+            _model = _host.AddComponent<SamplePlayerModel>();
+            _model.InitializeDefaults();
+            _subscriber = _host.AddComponent<DummySubscriber>();
+
+            var textObj = new GameObject("TextObj", typeof(TextMeshProUGUI));
+            textObj.transform.SetParent(_host.transform, false);
+            _subscriber.nameDisplay = textObj.GetComponent<TextMeshProUGUI>();
+
+            var missingObj = new GameObject("MissingObj", typeof(TextMeshProUGUI));
+            missingObj.transform.SetParent(_host.transform, false);
+            _subscriber.missingDisplay = missingObj.GetComponent<TextMeshProUGUI>();
+        }
+
+        [TearDown]
+        public void TearDown() {
+            if (_host != null) {
+                UnityEngine.Object.DestroyImmediate(_host);
+            }
+        }
+
+        [Test]
+        public void Observable_SetListeners_InvalidSignature_LogsError() {
+            var invalidSub = _host.AddComponent<InvalidSubscriber>();
+            LogAssert.Expect(LogType.Error, new Regex(@"Method 'OnInvalidSignature' has an invalid number of parameters"));
+
+            Observable.SetListeners(invalidSub, _model);
+        }
+
+        [Test]
+        public void Observable_SetListeners_Wires0_1_2_ParameterHandlers() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+
+            Observable.SetListeners(_subscriber, _model);
+
+            _model.health.Value = 45;
+
+            Assert.AreEqual(1, _subscriber.ZeroParamCount);
+            Assert.AreEqual(45, _subscriber.OneParamValue);
+            Assert.AreEqual(45, _subscriber.TwoParamCurrent);
+            Assert.AreEqual(100, _subscriber.TwoParamPrev);
+        }
+
+        [Test]
+        public void Observable_SetListeners_IsIdempotent_DoesNotDuplicateHandlers() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
+
+            // Call SetListeners first time
+            Observable.SetListeners(_subscriber, _model);
+
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
+
+            // Call SetListeners second time: existing subscriptions should be removed before re-adding
+            Observable.SetListeners(_subscriber, _model);
+
+            _model.health.Value = 80;
+
+            Assert.AreEqual(1, _subscriber.ZeroParamCount, "Handlers should be invoked exactly once, not duplicated");
+        }
+
+        [Test]
+        public void Observable_RemoveListeners_DetachesAllTrackedHandlers() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
+
+            Observable.SetListeners(_subscriber, _model);
+
+            _model.health.Value = 70;
+            Assert.AreEqual(1, _subscriber.ZeroParamCount);
+
+            Observable.RemoveListeners(_model, _subscriber);
+
+            _model.health.Value = 30;
+            Assert.AreEqual(1, _subscriber.ZeroParamCount, "Handler count should not increase after RemoveListeners");
+        }
+
+        [Test]
+        public void AutoBind_PropagatesModelValueToUI() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay'"));
+
+            Observable.SetListeners(_subscriber, _model);
+
+            _model.playerName.Value = "Aragorn";
+            Assert.AreEqual("Aragorn", _subscriber.nameDisplay.text);
+        }
+
+        [Test]
+        public void AutoBind_TwoWayBinding_CleansUpOnRemoveListeners() {
+            var toggleObj = new GameObject("Toggle", typeof(Toggle));
+            toggleObj.transform.SetParent(_host.transform, false);
+            var toggle = toggleObj.GetComponent<Toggle>();
+
+            var presenter = _host.AddComponent<SamplePlayerPresenter>();
+            presenter.shieldToggle = toggle;
+
+            Observable.SetListeners(presenter, _model);
+
+            // Toggle change should update model (UI -> Model two-way)
+            toggle.isOn = true;
+            Assert.IsTrue(_model.isShieldActive.Value);
+
+            // Remove listeners
+            Observable.RemoveListeners(_model, presenter);
+
+            // Subsequent toggle change should no longer mutate model
+            toggle.isOn = false;
+            Assert.IsTrue(_model.isShieldActive.Value, "Model should retain value after RemoveListeners detaches two-way UI listener");
+        }
+
+        private static void ExpectMissingFieldWarning() {
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+        }
+
+        private class OtherSubscriber : MonoBehaviour {
+            public int HealthCalls;
+
+            [ObservableHandler("health")]
+            public void OnHealth() { HealthCalls++; }
+        }
+
+        [Test]
+        public void RemoveListeners_RemovesOnlyThatSubscribersRecords() {
+            var other = _host.AddComponent<OtherSubscriber>();
+            ExpectMissingFieldWarning();
+            {
+                Observable.SetListeners(_subscriber, _model);
+                Observable.SetListeners(other, _model);
+
+                _model.health.Value = 50;
+                Assert.AreEqual(1, _subscriber.ZeroParamCount);
+                Assert.AreEqual(1, other.HealthCalls);
+
+                Observable.RemoveListeners(_model, _subscriber);
+
+                _model.health.Value = 40;
+                Assert.AreEqual(1, _subscriber.ZeroParamCount, "Removed subscriber must not be notified.");
+                Assert.AreEqual(2, other.HealthCalls, "Other subscribers must be unaffected.");
+            }
+        }
+
+        [Test]
+        public void SetListeners_ReplacesManagedBindings_ButKeepsManualSubscriptions() {
+            int manual = 0;
+            ExpectMissingFieldWarning();
+            {
+                _model.EnsureFieldsInitialized(); // links the field to its model, as Awake does in play mode
+                _model.health.OnValueChanged.Add(_ => manual++, _subscriber);
+
+                Observable.SetListeners(_subscriber, _model);
+                Observable.SetListeners(_subscriber, _model);
+
+                _model.health.Value = 33;
+
+                Assert.AreEqual(1, manual, "Manual subscription survives rebinds and fires once.");
+                Assert.AreEqual(1, _subscriber.ZeroParamCount, "Managed handler is replaced, not duplicated.");
+            }
+        }
+
+        [Test]
+        public void RemoveListeners_RemovesManualSubscriptionsToo() {
+            int manual = 0;
+            ExpectMissingFieldWarning();
+            {
+                _model.EnsureFieldsInitialized(); // links the field to its model, as Awake does in play mode
+                _model.health.OnValueChanged.Add(_ => manual++, _subscriber);
+                Observable.SetListeners(_subscriber, _model);
+
+                Observable.RemoveListeners(_model, _subscriber);
+                _model.health.Value = 12;
+
+                Assert.AreEqual(0, manual);
+            }
+        }
+
+        [Test]
+        public void TwoWayUiListener_IsRemoved_WhenModelIsDestroyed() {
+            var toggleObj = new GameObject("Toggle", typeof(Toggle));
+            toggleObj.transform.SetParent(_host.transform, false);
+            var toggle = toggleObj.GetComponent<Toggle>();
+            var presenter = _host.AddComponent<SamplePlayerPresenter>();
+            presenter.shieldToggle = toggle;
+
+            Observable.SetListeners(presenter, _model);
+
+            toggle.isOn = true;
+            Assert.IsTrue(_model.isShieldActive.Value, "Two-way UI listener works before destruction.");
+
+            var shield = _model.isShieldActive;
+            Observable.CleanupSubscriptions(_model);
+
+            toggle.isOn = false;
+            Assert.IsTrue(shield.Value, "UI listener token must be removed on model cleanup/destroy.");
+        }
+
+        [Test]
+        public void UnboundObservableField_NoWarningByDefault_WarningWhenStrictBinding() {
+            Assert.IsFalse(ObservableSettings.StrictBinding, "StrictBinding defaults to false.");
+
+            // Default: only the genuine [AutoBind] mismatch is reported.
+            LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+            Observable.SetListeners(_subscriber, _model);
+            LogAssert.NoUnexpectedReceived();
+
+            ObservableSettings.StrictBinding = true;
+            try {
+                LogAssert.Expect(LogType.Warning, new Regex(@"\[AutoBind\] on 'missingDisplay' could not find ObservableVariable 'missingField'"));
+                Observable.SetListeners(_subscriber, _model);
+            } finally {
+                ObservableSettings.StrictBinding = false;
+            }
+        }
+
+        private class ListSubscriber : MonoBehaviour {
+            public int ZeroCount, OneListCount, OneObservableCount, TwoCount;
+
+            [ObservableHandler("items")] public void Zero() { ZeroCount++; }
+            [ObservableHandler("items")] public void OneList(System.Collections.Generic.List<string> v) { OneListCount++; }
+            [ObservableHandler("items")] public void OneObservable(ObservableList<string> v) { OneObservableCount++; }
+            [ObservableHandler("items")] public void Two(System.Collections.Generic.List<string> cur, System.Collections.Generic.IReadOnlyList<string> prev) { TwoCount++; }
+        }
+
+        private class ListHandlerModel : BaseObservableDataModel {
+            public ObservableList<string> items = new ObservableList<string>();
+        }
+
+        [Test]
+        public void ObservableList_0_1_2_ParameterHandlers_WireViaSetListeners() {
+            var go = new GameObject("ListBinding");
+            try {
+                var model = go.AddComponent<ListHandlerModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ListSubscriber>();
+
+                Observable.SetListeners(sub, model);
+                model.items.Add("a");
+
+                Assert.AreEqual(1, sub.ZeroCount);
+                Assert.AreEqual(1, sub.OneListCount);
+                Assert.AreEqual(1, sub.OneObservableCount);
+                Assert.AreEqual(1, sub.TwoCount);
+
+                Observable.RemoveListeners(model, sub);
+                model.items.Add("b");
+                Assert.AreEqual(1, sub.ZeroCount, "List handlers are removed by RemoveListeners.");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        public abstract class BaseModalPresenter<M, L> : BaseObservablePresenter<M>
+            where M : BaseObservableDataModel
+            where L : BaseLogic
+        {
+            [AutoBind("title")]
+            private TextMeshProUGUI _titleText;
+
+            public int BasePrivateHandlerCount { get; private set; }
+
+            [ObservableHandler("isOpen")]
+            private void OnIsOpenChanged(bool open) {
+                BasePrivateHandlerCount++;
+            }
+
+            public TextMeshProUGUI GetTitleText() => _titleText;
+            public void SetTitleText(TextMeshProUGUI text) => _titleText = text;
+        }
+
+        public class ConcreteModalModel : BaseObservableDataModel {
+            public ObservableVariable<bool> isOpen = new ObservableVariable<bool>();
+            public ObservableVariable<string> title = new ObservableVariable<string>();
+        }
+
+        public class ConcreteModalLogic : BaseLogic<ConcreteModalModel, ConcreteModalPresenter> { }
+
+        public class ConcreteModalPresenter : BaseModalPresenter<ConcreteModalModel, ConcreteModalLogic> {
+            public int DerivedHandlerCount { get; private set; }
+
+            [ObservableHandler("isOpen")]
+            private void OnDerivedIsOpen(bool open) {
+                DerivedHandlerCount++;
+            }
+        }
+
+        [Test]
+        public void Observable_SetListeners_DiscoversPrivateBaseClassHandlersAndAutoBindFields() {
+            var modalHost = new GameObject("ModalHost");
+            try {
+                var model = modalHost.AddComponent<ConcreteModalModel>();
+                model.EnsureFieldsInitialized();
+
+                var presenter = modalHost.AddComponent<ConcreteModalPresenter>();
+                var textObj = new GameObject("TitleText", typeof(TextMeshProUGUI));
+                textObj.transform.SetParent(modalHost.transform, false);
+                var textComp = textObj.GetComponent<TextMeshProUGUI>();
+                presenter.SetTitleText(textComp);
+
+                Observable.SetListeners(presenter, model);
+
+                // AutoBind on private base field should populate the UI text when model changes
+                model.title.Value = "Initial Title";
+                Assert.AreEqual("Initial Title", textComp.text);
+
+                // Changing isOpen should invoke both private base handler and derived handler
+                model.isOpen.Value = true;
+                Assert.AreEqual(1, presenter.BasePrivateHandlerCount, "Private [ObservableHandler] on generic base presenter must be invoked");
+                Assert.AreEqual(1, presenter.DerivedHandlerCount, "Handler on derived presenter must be invoked");
+
+                // AutoBind UI updates when title changes again
+                model.title.Value = "Updated Title";
+                Assert.AreEqual("Updated Title", textComp.text);
+            } finally {
+                UnityEngine.Object.DestroyImmediate(modalHost);
+            }
+        }
+
+        #region SyncOnBind / InvokeOnBind (replay of the current state on bind)
+
+        private class ReplaySubscriber : MonoBehaviour {
+            [AutoBind("playerName")] public TextMeshProUGUI nameLabel;
+            [AutoBind("energy")] public Slider energySlider;
+
+            public int RenderCalls;
+            public int RenderValue = -1;
+            public int RenderCurrent = -1;
+            public int RenderPrevious = -1;
+            public int SideEffectCalls;
+
+            // Pure render handler: replayed on bind.
+            [ObservableHandler("health", InvokeOnBind = true)]
+            public void RenderHealth(int current, int previous) {
+                RenderCalls++;
+                RenderValue = current;
+                RenderCurrent = current;
+                RenderPrevious = previous;
+            }
+
+            // Side-effect handler (sound, tween): must NOT be replayed.
+            [ObservableHandler("health")]
+            public void PlayHealthSound(int current) {
+                SideEffectCalls++;
+            }
+        }
+
+        private ReplaySubscriber AddReplaySubscriber() {
+            var sub = _host.AddComponent<ReplaySubscriber>();
+
+            var label = new GameObject("Label", typeof(TextMeshProUGUI));
+            label.transform.SetParent(_host.transform, false);
+            sub.nameLabel = label.GetComponent<TextMeshProUGUI>();
+
+            var slider = new GameObject("Slider", typeof(RectTransform), typeof(Slider));
+            slider.transform.SetParent(_host.transform, false);
+            sub.energySlider = slider.GetComponent<Slider>();
+            return sub;
+        }
+
+        [Test]
+        public void SetListeners_SyncOnBind_PushesCurrentValueToAutoBindLabel() {
+            Assert.IsTrue(ObservableSettings.SyncOnBind, "SyncOnBind defaults to true.");
+            var sub = AddReplaySubscriber();
+            Assert.IsTrue(string.IsNullOrEmpty(sub.nameLabel.text), "Precondition: nothing painted before binding.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual("Player", sub.nameLabel.text, "Binding shows the current model value without a manual first paint.");
+        }
+
+        [Test]
+        public void SetListeners_SyncOnBind_TwoWaySlider_DoesNotWriteBackToModel() {
+            var sub = AddReplaySubscriber();
+            _model.energy.Value = 0.5f;
+            _model.EnsureFieldsInitialized();
+            int energyNotifications = 0;
+            _model.energy.OnValueChanged.Add(_ => energyNotifications++, this);
+            Assert.AreEqual(0f, sub.energySlider.value, "Precondition: slider starts at its own default.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(0.5f, sub.energySlider.value, "Slider shows the model value after bind.");
+            Assert.AreEqual(0.5f, _model.energy.Value, "The replay must not write the slider value back to the model.");
+            Assert.AreEqual(0, energyNotifications, "The replay is not a change: other subscribers are not notified.");
+
+            // The two-way path still works afterwards.
+            sub.energySlider.value = 0.25f;
+            Assert.AreEqual(0.25f, _model.energy.Value, 1e-6f, "UI -> model keeps working after the replay.");
+        }
+
+        [Test]
+        public void ObservableHandler_InvokeOnBind_CalledOnceWithCurrentValue() {
+            var sub = AddReplaySubscriber();
+            Assert.AreEqual(100, _model.health.Value);
+            Assert.AreEqual(0, _model.health.PreviousValue, "Precondition: InitializeDefaults changed health from 0 to 100.");
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(1, sub.RenderCalls, "InvokeOnBind handler is called exactly once on bind.");
+            Assert.AreEqual(100, sub.RenderCurrent);
+            Assert.AreEqual(0, sub.RenderPrevious, "A replay is not a change: PreviousValue is untouched.");
+            Assert.AreEqual(0, _model.health.PreviousValue);
+        }
+
+        [Test]
+        public void ObservableHandler_DefaultNoInvokeOnBind() {
+            var sub = AddReplaySubscriber();
+
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(0, sub.SideEffectCalls, "A handler without InvokeOnBind is never replayed.");
+
+            ExpectMissingFieldWarning();
+            Observable.SetListeners(_subscriber, _model);
+            Assert.AreEqual(0, _subscriber.ZeroParamCount, "Existing handlers keep their behavior: no call on bind.");
+            Assert.AreEqual(0, _subscriber.OneParamValue);
+        }
+
+        [Test]
+        public void Rebind_DoesNotDoubleInvoke() {
+            var sub = AddReplaySubscriber();
+
+            Observable.SetListeners(sub, _model);
+            Observable.SetListeners(sub, _model);
+
+            Assert.AreEqual(2, sub.RenderCalls, "One replay per bind, nothing more.");
+
+            _model.health.Value = 55;
+
+            Assert.AreEqual(3, sub.RenderCalls, "After a rebind a change still reaches the handler exactly once (no duplicate subscriptions).");
+            Assert.AreEqual(55, sub.RenderCurrent);
+            Assert.AreEqual(1, sub.SideEffectCalls, "The side-effect handler fires once for the real change only.");
+        }
+
+        [Test]
+        public void SyncOnBind_False_KeepsOldBehavior() {
+            var sub = AddReplaySubscriber();
+            ObservableSettings.SyncOnBind = false;
+            try {
+                Observable.SetListeners(sub, _model);
+
+                Assert.IsTrue(string.IsNullOrEmpty(sub.nameLabel.text), "AutoBind is not replayed when SyncOnBind is off.");
+                Assert.AreEqual(0, sub.RenderCalls, "InvokeOnBind is ignored when SyncOnBind is off.");
+
+                _model.health.Value = 70;
+                Assert.AreEqual(1, sub.RenderCalls, "Normal change notifications still work.");
+            } finally {
+                ObservableSettings.SyncOnBind = true;
+            }
+        }
+
+        private class DestroyedAutoBindSubscriber : MonoBehaviour {
+            [AutoBind("playerName")]
+            public TextMeshProUGUI nameDisplay;
+
+            [AutoBind("energy")]
+            public Slider energySlider;
+        }
+
+        [Test]
+        public void AutoBind_DestroyedUnityObject_DoesNotLogErrorsOrWarnings() {
+            var sub = _host.AddComponent<DestroyedAutoBindSubscriber>();
+            var tmpGo = new GameObject("TMP", typeof(TextMeshProUGUI));
+            tmpGo.transform.SetParent(_host.transform, false);
+            sub.nameDisplay = tmpGo.GetComponent<TextMeshProUGUI>();
+
+            var sliderGo = new GameObject("Slider", typeof(RectTransform), typeof(Slider));
+            sliderGo.transform.SetParent(_host.transform, false);
+            sub.energySlider = sliderGo.GetComponent<Slider>();
+
+            // Destroy components immediately, leaving Unity fake-null wrappers in the fields
+            UnityEngine.Object.DestroyImmediate(sub.nameDisplay);
+            UnityEngine.Object.DestroyImmediate(sub.energySlider);
+
+            Assert.IsNotNull((object)sub.nameDisplay, "CLR reference must be non-null");
+            Assert.IsTrue(sub.nameDisplay == null, "Unity equality must be null");
+
+            // SetListeners and subsequent model value mutations should not throw or log any errors/warnings
+            Observable.SetListeners(sub, _model);
+
+            _model.playerName.Value = "Hero";
+            _model.energy.Value = 0.8f;
+        }
+
+        private class BaseShadowedFieldModel : BaseObservableDataModel {
+            public ObservableVariable<int> score = new ObservableVariable<int>();
+        }
+
+        private class DerivedShadowedFieldModel : BaseShadowedFieldModel {
+            public new ObservableVariable<int> score = new ObservableVariable<int>();
+        }
+
+        private class ShadowedFieldSubscriber : MonoBehaviour {
+            public int observedDerivedScore = -1;
+            public int handlerCallCount;
+
+            [ObservableHandler(nameof(DerivedShadowedFieldModel.score))]
+            private void OnScoreChanged(int value) {
+                observedDerivedScore = value;
+                handlerCallCount++;
+            }
+        }
+
+        [Test]
+        public void SetListeners_ShadowedModelField_BindsMostDerivedFieldOnly() {
+            var go = new GameObject("ShadowedHost");
+            try {
+                var model = go.AddComponent<DerivedShadowedFieldModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ShadowedFieldSubscriber>();
+
+                Observable.SetListeners(sub, model);
+
+                // Derived score mutation should trigger handler
+                model.score.Value = 42;
+                Assert.AreEqual(42, sub.observedDerivedScore);
+                Assert.AreEqual(1, sub.handlerCallCount);
+
+                // Mutating shadowed base field directly must NOT trigger the subscriber
+                ((BaseShadowedFieldModel)model).score.Value = 999;
+                Assert.AreEqual(42, sub.observedDerivedScore, "Mutating shadowed base field should not affect subscriber");
+                Assert.AreEqual(1, sub.handlerCallCount, "Handler must only be bound to most-derived field");
+            } finally {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void SetListeners_ShadowedModelField_StrictBinding_DoesNotWarnForShadowedBaseField() {
+            var go = new GameObject("ShadowedStrictHost");
+            var prevStrict = ObservableSettings.StrictBinding;
+            try {
+                ObservableSettings.StrictBinding = true;
+                var model = go.AddComponent<DerivedShadowedFieldModel>();
+                model.EnsureFieldsInitialized();
+                var sub = go.AddComponent<ShadowedFieldSubscriber>();
+
+                // Should not log any warnings about shadowed base score field
+                Assert.DoesNotThrow(() => Observable.SetListeners(sub, model));
+            } finally {
+                ObservableSettings.StrictBinding = prevStrict;
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        #endregion
+    }
+}
