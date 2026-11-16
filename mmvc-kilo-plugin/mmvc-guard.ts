@@ -8,6 +8,7 @@ type Diagnostic = { rule: string; identity: string; line: number; reason: string
 function scan(source: string): Diagnostic[] {
   // Mask entire literals, including interpolation expressions. They are deliberately not linted.
   const masked = source.split("")
+  const comments: { start: number; end: number; text: string }[] = []
   const erase = (start: number, end: number) => { for (let n = start; n < end; n++) if (source[n] !== "\n" && source[n] !== "\r") masked[n] = " " }
   const literal = (start: number): number => {
     let p = start
@@ -46,8 +47,8 @@ function scan(source: string): Diagnostic[] {
     return source.length
   }
   for (let p = 0; p < source.length;) {
-    if (source.startsWith("//", p)) { const end = source.indexOf("\n", p); const next = end < 0 ? source.length : end; erase(p, next); p = next; continue }
-    if (source.startsWith("/*", p)) { const end = source.indexOf("*/", p + 2); const next = end < 0 ? source.length : end + 2; erase(p, next); p = next; continue }
+    if (source.startsWith("//", p)) { const end = source.indexOf("\n", p); const next = end < 0 ? source.length : end; comments.push({ start: p, end: next, text: source.slice(p, next) }); erase(p, next); p = next; continue }
+    if (source.startsWith("/*", p)) { const end = source.indexOf("*/", p + 2); const next = end < 0 ? source.length : end + 2; comments.push({ start: p, end: next, text: source.slice(p, next) }); erase(p, next); p = next; continue }
     const end = literal(p)
     if (end !== p) { erase(p, end); p = end } else p++
   }
@@ -133,10 +134,54 @@ function scan(source: string): Diagnostic[] {
     for (let n = start; n < index; n++) if (tokens[n].value === "=>" || tokens[n].value === "=") { end = n; break }
     return values(start, end)
   }
+  const attributesSuppress = (start: number, end: number) => {
+    for (let n = start; n < end; n++) if (tokens[n].value === "[" && pairs.has(n)) {
+      const close = pairs.get(n)!
+      if (tokens.slice(n + 1, close).some(t => /^(?:StaticByDesign|StaticByDesignAttribute)$/.test(t.value))) return true
+      n = close
+    }
+    return false
+  }
+  const commentSuppress = (start: number, end: number) => comments.some(c => c.start >= start && c.end <= end && /mmvc-guard:\s*allow\s+MMVC006\b/.test(c.text))
   for (const declaration of declarations) {
-    const singleton = declaration.bases.some(base => base === "SavableObservable.ISharedSingleton" || (base === "ISharedSingleton" && imported && !ownNames.has(base) && !aliases.has(base)))
+    const singleton = declaration.bases.some(base => base.replace(/^global::/, "") === "SavableObservable.ISharedSingleton" || (base === "ISharedSingleton" && imported && !ownNames.has(base) && !aliases.has(base)))
     if (["model", "presenter"].includes(declaration.role ?? "") && singleton) report("MMVC001", declaration.identity, declaration.start, "Model/Presenter directly implements ISharedSingleton.", "Remove ISharedSingleton; expose the unit through Logic or a plain MonoBehaviour service.")
     if (!declaration.role && declaration.bases.length) report("MMVC-REVIEW", declaration.identity, declaration.start, "Custom or external inheritance is not resolved by this file-local scanner.", "Review inherited MMVC roles, presenter access and lifecycle against mmvc-unity.", "warning")
+    let classStart = declaration.start
+    while (classStart > 0 && ![";", "{", "}"].includes(tokens[classStart - 1].value)) classStart--
+    const classSuppressed = attributesSuppress(classStart, declaration.start)
+    let start = declaration.open + 1
+    while (start < declaration.close) {
+      let head = start
+      while (tokens[head]?.value === "[" && pairs.has(head)) head = pairs.get(head)! + 1
+      let end = head, paren = false
+      while (end < declaration.close && !["{", ";", "=>", "="].includes(tokens[end].value)) {
+        if (tokens[end].value === "(" && pairs.has(end)) { paren = true; end = pairs.get(end)! }
+        end++
+      }
+      const delimiter = tokens[end]?.value
+      let next = end + 1, bodyEnd = end
+      if (delimiter === "{" && pairs.has(end)) { bodyEnd = pairs.get(end)!; next = bodyEnd + 1 }
+      else if (delimiter === "=>" || delimiter === "=") {
+        while (next < declaration.close && tokens[next].value !== ";") {
+          if (["{", "(", "["].includes(tokens[next].value) && pairs.has(next)) next = pairs.get(next)!
+          next++
+        }
+        bodyEnd = next; next++
+      }
+      const header = tokens.slice(head, end).map(t => t.value)
+      const modifiers = new Set<string>()
+      let modifierEnd = head
+      while (/^(?:public|internal|private|protected|static|new|virtual|override|sealed|abstract|extern|unsafe|async|partial|readonly)$/.test(tokens[modifierEnd]?.value ?? "")) modifiers.add(tokens[modifierEnd++].value)
+      const member = (delimiter === "{" || delimiter === "=>") && !header.some(v => ["class", "struct", "interface", "enum", "record", "event"].includes(v)) && (paren || !header.includes("this"))
+      const body = tokens.slice(end + 1, bodyEnd)
+      const resolves = body.some((t, n) => t.value === "Services" && body[n + 1]?.value === "." && ["Get", "GetModel"].includes(body[n + 2]?.value) && body[n + 3]?.value === "<")
+      const previous = start === declaration.open + 1 ? tokens[declaration.open].position + 1 : tokens[start - 1].position + tokens[start - 1].value.length
+      if (member && modifiers.has("static") && (modifiers.has("public") || modifiers.has("internal")) && (singleton || declaration.role === "logic" || resolves) && !classSuppressed && !attributesSuppress(start, head) && !commentSuppress(previous, tokens[head]?.position ?? source.length)) {
+        report("MMVC006", `${declaration.identity}/${values(head, end)}`, head, "Static member on a shared singleton / Services-resolving type.", "Make it an instance member and call it through Services.Get<T>().")
+      }
+      start = Math.max(next, start + 1)
+    }
   }
   const eventPattern = "Write Model observables; for one-shot view commands use [NonSaved] latestEvent plus eventToken.Value++ and a Presenter ObservableHandler (see mmvc-unity)."
   for (let i = 0; i < tokens.length; i++) {
@@ -194,6 +239,177 @@ function scan(source: string): Diagnostic[] {
     const name = tokens[typeEnd]?.value
     if (/^@?[A-Za-z_]\w*$/.test(name ?? "") && [";", "=", ","].includes(tokens[typeEnd + 1]?.value)) report("MMVC003", `${owner.identity}/field:${name}/${target.identity}`, typeEnd, `Logic stores known Presenter ${target.name} in a field.`, eventPattern)
   }
+  const unityBuiltins = new Set([
+    "Object", "UnityEngine.Object",
+    "GameObject", "Component", "Behaviour", "MonoBehaviour", "ScriptableObject", "StateMachineBehaviour",
+    "Transform", "RectTransform",
+    "Camera", "Light", "AudioSource", "AudioListener", "AudioClip", "AudioMixer", "AudioMixerGroup",
+    "Collider", "Collider2D", "BoxCollider", "BoxCollider2D", "CircleCollider2D", "SphereCollider", "CapsuleCollider", "CapsuleCollider2D", "MeshCollider",
+    "Rigidbody", "Rigidbody2D", "Joint", "Joint2D",
+    "Renderer", "MeshRenderer", "SkinnedMeshRenderer", "SpriteRenderer", "CanvasRenderer", "BillboardRenderer",
+    "Material", "Shader", "Mesh", "Texture", "Texture2D", "Texture3D", "Cubemap", "RenderTexture", "Sprite",
+    "TextAsset", "ComputeShader",
+    "Animation", "AnimationClip", "Animator", "RuntimeAnimatorController", "AnimatorOverrideController",
+    "ParticleSystem", "TrailRenderer", "LineRenderer",
+    "Canvas", "CanvasGroup", "GraphicRaycaster",
+    "UIBehaviour", "Graphic", "MaskableGraphic", "Image", "RawImage", "Text", "TextMeshPro", "TextMeshProUGUI",
+    "Selectable", "Button", "Toggle", "Slider", "Scrollbar", "Dropdown", "TMP_Dropdown", "InputField", "TMP_InputField", "ScrollRect",
+    "Font", "TMP_FontAsset",
+    "BaseObservablePresenter", "ObservablePresenterWithLogic", "BaseLogic", "ModalWindow", "ModalWindowLogic",
+  ])
+  const isUnityType = (raw: string): boolean => {
+    const t = raw.replace(/^global::/, "").replace(/^(?:UnityEngine\.(?:UI\.)?|TMPro\.)/, "").trim()
+    const simple = t.split("<")[0].replace(/\[\]$/, "").trim()
+    if (unityBuiltins.has(simple)) return true
+    if (/(?:Logic|Presenter)$/.test(simple)) return true
+    const decl = resolve(simple)
+    if (decl) {
+      if (decl.role === "presenter" || decl.role === "logic") return true
+      if (decl.bases.some(b => isUnityType(b))) return true
+    }
+    return false
+  }
+  const isUnityCollection = (raw: string): boolean => {
+    const t = raw.replace(/^global::/, "").replace(/^(?:UnityEngine\.(?:UI\.)?|TMPro\.)/, "").trim()
+    if (t.endsWith("[]")) return isUnityType(t.slice(0, -2))
+    const gen = /^(?:List|IList|IReadOnlyList|IEnumerable|HashSet|Queue|Stack)<([\w.]+)>$/.exec(t)
+    if (gen) return isUnityType(gen[1])
+    return false
+  }
+  const unityVars = new Set<string>()
+  const unityCols = new Set<string>()
+  for (let k = 0; k < tokens.length; k++) {
+    if (/^@?[A-Za-z_]\w*$/.test(tokens[k].value) && !["class", "struct", "interface", "enum", "namespace", "using", "return", "throw", "new", "public", "private", "protected", "internal", "static", "readonly", "const", "override", "virtual", "partial"].includes(tokens[k].value)) {
+      let tStart = k, tEnd = k + 1
+      if (tokens[tEnd]?.value === "<") {
+        let depth = 1; tEnd++
+        while (tEnd < tokens.length && depth > 0) {
+          if (tokens[tEnd].value === "<") depth++
+          if (tokens[tEnd].value === ">") depth--
+          tEnd++
+        }
+      }
+      while (tokens[tEnd]?.value === "[" && tokens[tEnd + 1]?.value === "]") tEnd += 2
+      if (tokens[tEnd]?.value === "?") tEnd++
+      const typeStr = values(tStart, tEnd)
+      const uType = isUnityType(typeStr)
+      const uCol = isUnityCollection(typeStr)
+      if (uType || uCol) {
+        const nameTok = tokens[tEnd]
+        if (nameTok && /^@?[A-Za-z_]\w*$/.test(nameTok.value) && [";", "=", ",", ")", "}", "in"].includes(tokens[tEnd + 1]?.value ?? "")) {
+          if (uType) unityVars.add(nameTok.value)
+          if (uCol) unityCols.add(nameTok.value)
+        }
+      }
+    }
+    if (tokens[k].value === "var" && /^@?[A-Za-z_]\w*$/.test(tokens[k + 1]?.value ?? "") && tokens[k + 2]?.value === "=") {
+      const varName = tokens[k + 1].value
+      const rhs = tokens[k + 3]?.value ?? ""
+      if (/^(?:GetComponent|GetComponentInChildren|GetComponentInParent|FindObjectOfType|FindFirstObjectByType|FindAnyObjectByType|Instantiate|GetLogic|GetPresenter)$/.test(rhs)) {
+        unityVars.add(varName)
+      } else if (rhs === "Services" && tokens[k + 4]?.value === "." && tokens[k + 5]?.value === "Get" && tokens[k + 6]?.value === "<") {
+        let gEnd = k + 7
+        while (gEnd < tokens.length && tokens[gEnd].value !== ">") gEnd++
+        const serviceType = values(k + 7, gEnd)
+        if (isUnityType(serviceType) || /^(?:BaseLogic|.*Logic|.*Presenter|.*Service)$/.test(serviceType)) {
+          unityVars.add(varName)
+        }
+      } else if (/^(?:GetComponents|GetComponentsInChildren|GetComponentsInParent|FindObjectsOfType|FindObjectsByType)$/.test(rhs)) {
+        unityCols.add(varName)
+      }
+    }
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const isNullDot = tokens[i].value === "?" && tokens[i + 1]?.value === "." && tokens[i + 1].position === tokens[i].position + 1
+    const isNullBracket = tokens[i].value === "?" && tokens[i + 1]?.value === "[" && tokens[i + 1].position === tokens[i].position + 1
+    if (!isNullDot && !isNullBracket) continue
+    const lineStart = source.lastIndexOf("\n", tokens[i].position)
+    const prevLineStart = lineStart > 0 ? source.lastIndexOf("\n", lineStart - 1) : 0
+    const nextLineEnd = source.indexOf("\n", tokens[i].position)
+    const lineEnd = nextLineEnd < 0 ? source.length : nextLineEnd
+    if (comments.some(c => c.start >= prevLineStart && c.end <= lineEnd && /mmvc-guard:\s*allow\s+MMVC007\b/.test(c.text))) continue
+    let isUnity = false
+    let target = ""
+    const prev = i - 1
+    if (isNullDot) {
+      const nextMember = tokens[i + 2]?.value ?? ""
+      if (/^(?:gameObject|transform|GetComponent|GetComponentInChildren|GetComponentInParent|GetComponents|GetComponentsInChildren|GetComponentsInParent|SetActive|CompareTag)$/.test(nextMember)) {
+        isUnity = true
+        target = tokens[prev]?.value ?? "target"
+      }
+    }
+    if (!isUnity && prev >= 0) {
+      const prevVal = tokens[prev].value
+      if (prevVal === "gameObject" || prevVal === "transform") {
+        isUnity = true
+        target = prevVal
+      } else if (prevVal === "this" || prevVal === "base") {
+        const owner = ownerAt(i)
+        if (owner && (owner.role === "presenter" || owner.role === "logic" || isUnityType(owner.name) || owner.bases.some(isUnityType))) {
+          isUnity = true
+          target = prevVal
+        }
+      } else if (prevVal === ")") {
+        const parenOpen = pairs.get(prev)
+        if (parenOpen !== undefined) {
+          for (let n = parenOpen + 1; n < prev; n++) {
+            if (tokens[n].value === "as" && isUnityType(tokens[n + 1]?.value ?? "")) {
+              isUnity = true
+              target = values(parenOpen, prev + 1)
+              break
+            }
+          }
+          if (!isUnity) {
+            const beforeParen = tokens[parenOpen - 1]?.value
+            if (beforeParen === ">") {
+              let gOpen = parenOpen - 1
+              while (gOpen > 0 && tokens[gOpen].value !== "<") gOpen--
+              const mName = tokens[gOpen - 1]?.value
+              const tArg = values(gOpen + 1, parenOpen - 1)
+              if (/^(?:GetComponent(?:InChildren|InParent)?|GetComponents(?:InChildren|InParent)?|FindObjectOfType|FindObjectsOfType|FindFirstObjectByType|FindAnyObjectByType|FindObjectsByType|Instantiate)$/.test(mName ?? "")) {
+                isUnity = true
+                target = `${mName}<${tArg}>()`
+              } else if (mName === "Get" && tokens[gOpen - 2]?.value === "." && tokens[gOpen - 3]?.value === "Services") {
+                if (isUnityType(tArg) || /^(?:BaseLogic|.*Logic|.*Presenter|.*Service)$/.test(tArg)) {
+                  isUnity = true
+                  target = `Services.Get<${tArg}>()`
+                }
+              }
+            } else if (beforeParen === "GetLogic" || beforeParen === "GetPresenter" || beforeParen === "Instantiate") {
+              isUnity = true
+              target = `${beforeParen}()`
+            } else if (beforeParen === "Find" && tokens[parenOpen - 2]?.value === ".") {
+              isUnity = true
+              target = "Find()"
+            }
+          }
+        }
+      } else if (isNullBracket && unityCols.has(prevVal)) {
+        isUnity = true
+        target = prevVal
+      } else if (prevVal === "]") {
+        const brOpen = pairs.get(prev)
+        if (brOpen !== undefined && unityCols.has(tokens[brOpen - 1]?.value ?? "")) {
+          isUnity = true
+          target = tokens[brOpen - 1].value
+        }
+      } else if (unityVars.has(prevVal) || isUnityType(prevVal)) {
+        isUnity = true
+        target = prevVal
+      }
+    }
+    if (isUnity) {
+      const owner = ownerAt(i)
+      const cleanTarget = target.replace(/\s+/g, " ").slice(0, 40)
+      report(
+        "MMVC007",
+        `${owner ? owner.identity : "global"}/${owner ? memberAt(owner, i) : "member"}/${cleanTarget}`,
+        i,
+        `Null propagation (?.) used on Unity object '${cleanTarget}'. Unity overrides == and != operators for UnityEngine.Object, which is incompatible with null propagation.`,
+        `Use explicit != null check (if (${cleanTarget} != null) or ternary ${cleanTarget} != null ? ... : null) or implicit bool (if (${cleanTarget})). Standard C# classes (POCOs) may safely use ??.`
+      )
+    }
+  }
   return diagnostics
 }
 
@@ -224,7 +440,7 @@ const MMVCGuard: Plugin = async ({ directory, worktree }, options = {}) => {
         if (key === "scriptExtensions" && (item as string[]).some(ext => !/^\.[a-z0-9]+$/i.test(ext))) throw new Error("scriptExtensions entries must be extensions such as .ps1")
         if (key === "rules") {
           if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("rules must be an object")
-          for (const [rule, level] of Object.entries(item)) if (!["MMVC001", "MMVC002", "MMVC003", "MMVC004", "MMVC005", "MMVC-REVIEW"].includes(rule) || !["error", "warn", "off"].includes(String(level))) throw new Error(`invalid rule/level ${rule}: ${String(level)}`)
+          for (const [rule, level] of Object.entries(item)) if (!["MMVC001", "MMVC002", "MMVC003", "MMVC004", "MMVC005", "MMVC006", "MMVC007", "MMVC-REVIEW"].includes(rule) || !["error", "warn", "off"].includes(String(level))) throw new Error(`invalid rule/level ${rule}: ${String(level)}`)
         }
       }
       config = value

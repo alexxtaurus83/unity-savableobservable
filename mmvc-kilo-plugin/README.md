@@ -83,7 +83,7 @@ Supported JSON keys:
 | `excludedDirectories` | Unmonitored directory subtrees, default `[".kilo/temp"]` |
 | `scriptExtensions` | Extensions checked by MMVC005 (leading dot); see example for full defaults |
 | `commandDirectories` | MMVC005 command subtrees, default `[".kilo/command", ".kilo/commands"]` |
-| `rules` | Partial map of MMVC001 through MMVC005 to `error`, `warn`, `off`; MMVC-REVIEW supports warn/off (error does not promote uncertain findings to hard errors) |
+| `rules` | Partial map of MMVC001 through MMVC007 to `error`, `warn`, `off`; MMVC-REVIEW supports warn/off (error does not promote uncertain findings to hard errors) |
 
 Lists **replace**, rather than extend, defaults. Paths are literal directories, not globs; relative paths use the project root, not the config file directory. No `%VAR%`, `$VAR` or tilde expansion: use resolved paths. Per-rule settings merge with built-in rule defaults. Global warn downgrades all hard errors; per-rule off removes that rule only. Gate/cache/reconstruction checks remain separate. Treat changes as operator policy changes: agents must not weaken settings without approval. JSON contains data only; new semantic rules still require TypeScript and regression tests. Adding a helper extension or another excluded/command directory requires only JSON.
 
@@ -99,9 +99,9 @@ The plugin also checks environment variables (or plugin options passed at initia
 
 ---
 
-## 6. The 4 Conservative Linting Rules
+## 6. Conservative Linting Rules
 
-The plugin implements a lexical C# scanner that masks comments and literal strings (regular, verbatim, interpolated, raw strings) and parses class boundaries and generic base arguments. It enforces 4 conservative, syntactically provable rules:
+The plugin implements a lexical C# scanner that masks comments and literal strings (regular, verbatim, interpolated, raw strings) and parses class boundaries and generic base arguments. Its architectural rules are:
 
 1. **`MMVC001` (Singleton Model or Presenter):**
    - *Rule:* Blocks application classes deriving directly from known framework models (`BaseObservableDataModel`) or presenters (`BaseObservablePresenter`, `ObservablePresenterWithLogic`) while implementing `ISharedSingleton`.
@@ -120,6 +120,20 @@ The plugin implements a lexical C# scanner that masks comments and literal strin
    - *Rule:* Blocks overrides of `InitializePresenter()` that fail to invoke `base.InitializePresenter()`.
    - *Warning:* Warns if `base.InitializePresenter()` is invoked late or conditionally within control flow.
    - *Fix:* Place `base.InitializePresenter();` at the beginning of the override.
+
+5. **`MMVC006` (Static Service Entry Points):**
+   - *Rule:* Blocks new public or internal static methods and properties on classes directly implementing framework `ISharedSingleton` or deriving from framework `BaseLogic`, and static methods or properties whose bodies contain `Services.Get<T>` or `Services.GetModel<T>`. Fields are not checked.
+   - *Fix:* Make the member an instance member and call it through `Services.Get<T>()`.
+   - *Exceptions:* Annotate the member or class with `[StaticByDesign("reason")]`, or place a `// mmvc-guard: allow MMVC006` comment immediately before the member (attributes may intervene). The attribute must be defined by the consuming project or framework.
+   - *Limits:* Framework bases are recognized when qualified or unqualified with `using SavableObservable;`; custom and cross-file inheritance is not resolved. Service calls are matched lexically, not semantically. Comments and literals, including interpolated expressions, are masked.
+
+6. **`MMVC007` (No Null Propagation on Unity Objects):**
+   - *Rule:* Blocks null propagation (`?.` or `?[]`) on types inheriting from `UnityEngine.Object` (`MonoBehaviour`, `GameObject`, `Component`, `Transform`, `Logic`, `Presenter`, etc.). Unity overrides the null comparison operators (`==`, `!=`, and implicit `bool`) for `UnityEngine.Object` to handle destroyed native C++ objects. C#'s `?.` operator checks only raw CLR reference null and bypasses Unity's custom operator, which causes `MissingReferenceException` or missed null checks on destroyed objects.
+   - *Fix:*
+     - **Explicit `!= null` checks:** Use `if (myObj != null)` or a ternary expression like `myObj != null ? myObj.transform : null` to properly invoke Unity's custom operator.
+     - **Implicit boolean conversion:** Unity objects implicitly convert to bool, allowing concise checks like `if (myObj)`.
+   - *Exemptions:* Standard C# classes (POCOs) or structs that do not inherit from `UnityEngine.Object` may safely use `?.` and `??`. Delegate/event invocations (`onComplete?.Invoke()`) and plain model reads are safe and permitted.
+   - *Suppression:* Precede the statement or line with `// mmvc-guard: allow MMVC007`.
 
 *No Semantic Promises:* The plugin does not perform full semantic AST compilation, global cross-file symbol resolution, or type-inference across assemblies. Ambiguous or multi-declaration names are not hard-blocked. Custom inheritance and late base calls receive bounded review warnings; other uncertain constructs remain covered by the injected review guidance.
 

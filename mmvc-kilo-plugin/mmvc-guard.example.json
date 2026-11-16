@@ -12,6 +12,8 @@
     "MMVC003": "error",
     "MMVC004": "error",
     "MMVC005": "error",
+    "MMVC006": "error",
+    "MMVC007": "error",
     "MMVC-REVIEW": "warn"
   }
 }

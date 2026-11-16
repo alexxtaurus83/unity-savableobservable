@@ -47,7 +47,11 @@ namespace SavableObservable {
         public static RegistrationResult TryRegister(object service, string name = null) =>
             instance != null ? instance.TryRegister(service, name) : RegistrationResult.Rejected;
 
-        public static void Unregister(ISharedSingleton service, string name = null) => instance?.Unregister(service, name);
+        public static void Unregister(ISharedSingleton service, string name = null) {
+            if (instance != null) {
+                instance.Unregister(service, name);
+            }
+        }
 
         /// <summary>Registers and binds all scene shared singletons and presenters.</summary>
         public static bool InitializeSharedSingletons() => instance != null && instance.InitializeSharedSingletons();

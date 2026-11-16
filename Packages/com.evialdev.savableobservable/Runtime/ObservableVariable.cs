@@ -90,7 +90,9 @@ namespace SavableObservable {
                 }
 
                 if (!_notifyOnSameValue && AreEqual(_value, value)) return;
-                ApplyAndNotify(value, force: false);
+                var previousValue = _value;
+                _value = value;
+                ApplyAndNotify(previousValue);
             }
         }
 
@@ -104,16 +106,13 @@ namespace SavableObservable {
                 return;
             }
 
-            ApplyAndNotify(_value, force: true);
+            ApplyAndNotify(_value);
         }
 
-        private void ApplyAndNotify(T newValue, bool force) {
+        private void ApplyAndNotify(T previousValue) {
             _isNotifying = true;
             try {
-                PreviousValue = _value;
-                if (!force) {
-                    _value = newValue;
-                }
+                PreviousValue = previousValue;
 #if UNITY_EDITOR
                 _lastValidatedValue = _value;
                 _hasLastValidatedValue = true;

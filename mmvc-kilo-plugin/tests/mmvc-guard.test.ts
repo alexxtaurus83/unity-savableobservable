@@ -183,6 +183,77 @@ char ch = '\\'';
   } finally { f.close() }
 })
 
+test("MMVC006 detects static service methods and properties with precise suppressions", async () => {
+  const f = await fixture({}, true, { rules: { MMVC006: "error" } }); try {
+    await f.load()
+    for (const content of [
+      "using SavableObservable; class S : ISharedSingleton { public static void F() {} }",
+      "class S : global::SavableObservable.ISharedSingleton { internal static int P => 1; }",
+      "using SavableObservable; class S : BaseLogic<M,P> { public static int P { get { return 1; } } }",
+      "class S : SavableObservable.BaseLogic<M,P> { internal static void F() {} }",
+      "class Utility { public static object F() { return Services.Get<T>(); } }",
+      "class Utility { internal static object P => Services.GetModel<T>(); }",
+      "using SavableObservable; class S : ISharedSingleton { [Other(\"// mmvc-guard: allow MMVC006\")] public static void F() {} }",
+      "class Utility { public static object P { get { return Services.Get<T>(); } } }",
+      "using SavableObservable; class S : ISharedSingleton { public static int field; public static void F() {} }",
+      "using SavableObservable; class S : ISharedSingleton { /* mmvc-guard: allow MMVC006 */ public static void F() {} public static void G() {} }",
+    ]) await assert.rejects(f.before("write", { filePath: "Static.cs", content }), /MMVC006/)
+    for (const content of [
+      "class Utility { public static int F() => 1; public static int P { get; set; } }",
+      "using SavableObservable; class S : ISharedSingleton { private static void F() {} public static int field; }",
+      "using SavableObservable; [StaticByDesign(\"reason\")] class S : ISharedSingleton { public static void F() {} }",
+      "using SavableObservable; class S : ISharedSingleton { [Other, StaticByDesignAttribute(\"reason\")] public static void F() {} }",
+      "using SavableObservable; class S : ISharedSingleton { // mmvc-guard: allow MMVC006\n [Other] public static void F() {} }",
+      "class Utility { public static string F() => \"Services.Get<T>()\"; }",
+      "class Utility { public static void F() { /* Services.Get<T>() */ } }",
+      "class ISharedSingleton {} class S : ISharedSingleton { public static void F() {} }",
+      "class BaseLogic<M,P> {} class S : BaseLogic<M,P> { public static void F() {} }",
+    ]) await f.before("write", { filePath: "Static.cs", content })
+    const existing = "using SavableObservable; class S : ISharedSingleton { public static void F() {} }"
+    writeFileSync(path.join(f.root, "Static.cs"), existing)
+    await f.before("write", { filePath: "Static.cs", content: "\n" + existing })
+    await assert.rejects(f.before("write", { filePath: "Static.cs", content: existing.replace("} }", "} public static void G() {} }") }), /MMVC006/)
+  } finally { f.close() }
+})
+
+test("MMVC007 detects null propagation on Unity objects while allowing POCOs and explicit checks", async () => {
+  const f = await fixture({}, true, { rules: { MMVC007: "error" } }); try {
+    await f.load()
+    for (const content of [
+      "class C { void F(GameObject go) { go?.SetActive(true); } }",
+      "class C { void F(Transform tr) { var x = tr?.position; } }",
+      "class C { void F(Component c) { var g = c?.gameObject; } }",
+      "class C { void F() { GetComponent<Image>()?.color = Color.white; } }",
+      "class C { void F() { Services.Get<AudioService>()?.Play(); } }",
+      "class C { void F(object obj) { (obj as GameObject)?.SetActive(false); } }",
+      "class C { void F(object obj) { obj?.transform; } }",
+      "class C { void F(object obj) { obj?.gameObject; } }",
+      "class C { void F(object obj) { obj?.GetComponent<Image>(); } }",
+      "class C : MonoBehaviour { void F() { this?.gameObject; } }",
+      "class C { PlayerChipPresenter[] markers; void F(int i) { markers[i]?.Reset(); } }",
+    ]) await assert.rejects(f.before("write", { filePath: "NullProp.cs", content }), /MMVC007/)
+
+    for (const content of [
+      "class C { Action onDone; void F() { onDone?.Invoke(); } }",
+      "class C { void F(Poco poco) { poco?.DoSomething(); } }",
+      "class C { void F(string s) { var l = s?.Length; } }",
+      "class C { void F(List<int> list) { var c = list?.Count; } }",
+      "class C { void F(GameObject go) { if (go != null) go.SetActive(true); } }",
+      "class C { void F(GameObject go) { var x = go != null ? go.transform : null; } }",
+      "class C { void F(GameObject go) { if (go) go.SetActive(true); } }",
+      "class C { void F(Poco poco) { var x = poco ?? fallback; } }",
+      "class C { void F(GameObject go) { // mmvc-guard: allow MMVC007\n go?.SetActive(true); } }",
+      "class C { void F(GameObject go) { go?.SetActive(true); /* mmvc-guard: allow MMVC007 */ } }",
+      "class C { void F() { Services.GetModel<ScoreDataModel>()?.Score; } }",
+    ]) await f.before("write", { filePath: "NullProp.cs", content })
+
+    const existing = "class C { void F(GameObject go) { go?.SetActive(true); } }"
+    writeFileSync(path.join(f.root, "NullProp.cs"), existing)
+    await f.before("write", { filePath: "NullProp.cs", content: "\n" + existing })
+    await assert.rejects(f.before("write", { filePath: "NullProp.cs", content: existing.replace("}", "void G(Transform t) { t?.position; } }") }), /MMVC007/)
+  } finally { f.close() }
+})
+
 test("adding another occurrence in the same member cannot hide behind baseline", async () => {
   const f = await fixture(); try {
     await f.load()
@@ -195,9 +266,9 @@ test("adding another occurrence in the same member cannot hide behind baseline",
 test("skill body without frontmatter and read preview metadata are accepted only with complete content", async () => {
   const f = await fixture(); try {
     await f.after("skill", { name: "mmvc-unity" }, "# MMVC Unity\n\nUse observable models.\n")
-    await f.before("write", { filePath: "Body.cs", content: "class Fine {}" })
+    await assert.doesNotReject(f.before("write", { filePath: "Body.cs", content: "class Fine {}" }))
     await f.after("read", { path: path.join(f.skillDir, "SKILL.md") }, skill, { preview: "---" }, "reader")
-    await f.before("write", { filePath: "Body.cs", content: "class Fine {}" }, "reader")
+    await assert.doesNotReject(f.before("write", { filePath: "Body.cs", content: "class Fine {}" }, "reader"))
   } finally { f.close() }
 })
 

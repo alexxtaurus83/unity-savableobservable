@@ -111,6 +111,13 @@ Docs are user-facing. Keep them accurate and short, put development-only notes i
 - Graph limits for C#: property bodies, lambdas and method groups produce no call edges. Zero callers does not prove dead code; confirm with a content search.
 - Read only the line ranges you need. Delegate wide exploration to the `explore` subagent.
 
+## Questions and Subagents
+
+- Use foreground subagents (`task` with `background: false`) whenever work may require user clarification or approval.
+- Collect all outstanding subagent results before calling `question`. Do not call `question` while background tasks are still running, and do not launch background tasks while waiting for an answer.
+- A dismissed, interrupted, or unanswered question is not user approval. Do not infer an answer or continue the blocked action; ask again after outstanding tasks have completed.
+- These rules apply even in auto-approve mode. Tool permissions do not replace an explicit user answer.
+
 ## Working Rules
 
 - Stop and ask the user when a design choice is unclear, the plan conflicts with the code or the docs above, or a behavior change is not covered by an existing decision. Do not guess or leave `TODO`s.
