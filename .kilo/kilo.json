@@ -1,0 +1,11 @@
+{
+  "mcp": {
+    "CodeGraphContext": {
+      "environment": {
+        "FALKORDB_HOST": "192.168.0.42",
+        "FALKORDB_PORT": "6379",
+        "FALKORDB_GRAPH_NAME": "unity_savableobservable"
+      }
+    }
+  }
+}
