@@ -76,9 +76,13 @@ private void OnEventTokenChanged(int token) {
 ### Justified Component Shapes (No Dummy Components)
 
 Never create an empty model or presenter just to obtain a singleton or complete a trio:
-- **Coordination, operations, or service only (no observable model or view needed):** A plain `MonoBehaviour` implementing `ISharedSingleton` when global access is needed. Do not derive from `BaseLogic<M, P>` with dummy types.
-- **Observable/persisted state and logic without a view:** A meaningful model (`BaseObservableDataModel`) and a plain `MonoBehaviour, ISharedSingleton` service exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.
-- **Real MMVC view unit:** Model (`BaseObservableDataModel`), Presenter (`BaseObservablePresenter<M>`), and primary Logic (`BaseLogic<M, P>`).
+- **Coordination, operations, or service only (no observable model or view needed):** A plain `MonoBehaviour` implementing `ISharedSingleton`, named `*Service` (e.g., `AudioService`, `ResourceStoreService`). Do not derive from `BaseLogic<M, P>` with dummy types.
+- **Observable/persisted state and logic without a view:** A meaningful model (`BaseObservableDataModel`) and a plain `MonoBehaviour, ISharedSingleton` service named `*Service` exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.
+- **Real MMVC view unit:** Model (`*DataModel` : `BaseObservableDataModel`), Presenter (`*Presenter` : `BaseObservablePresenter<M>`), and primary Logic (`*Logic` : `BaseLogic<M, P>`).
+
+**Naming Convention Rule (`*Logic` vs `*Service`):**
+- Reserve the `*Logic` suffix exclusively for classes deriving from `BaseLogic<M, P>` (paired with `*DataModel` and `*Presenter`).
+- Always suffix standalone `MonoBehaviour, ISharedSingleton` services (both class and `.cs` file) with `*Service` so `Services.Get<*Service>()` vs `Services.Get<*Logic>()` immediately communicates whether the target is a standalone service or an MMVC view unit.
 
 | Component | Responsibility |
 | --- | --- |
