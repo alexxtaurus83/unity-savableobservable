@@ -15,6 +15,7 @@
 ### Changed (breaking)
 - `ObservableEvent<T>` is a supported observable field type: `GetCachedObservableFields()` and binding include it; persistence and the `Tests/Shared` contract helpers (`ObservableAccess`) handle it. Consumer code that walks `GetCachedObservableFields()` and expects only variables and lists must skip events or use `GetSavableObservableFields()`.
 - Bootstrap hooks run inside `ServiceLocator.InitializeSharedSingletons()` (first call per locator). `Services.InitializeSharedSingletons()` called again only re-registers and re-binds.
+- `ServiceLocator` guards against duplicate components on the same `GameObject` in `Awake()` (logs an error, disables and destroys the extra component) and skips `BootstrapStart` with an error log if a second active `ServiceLocator` superseded it in `Start()`.
 - Analyzer rules `MMVC016`-`MMVC019` (event bus roles, null guards on required references, `Set` instead of compare-then-assign, `ObservableEvent` instead of counter tokens) live in `F:\github\repo\AttaxAnaliser` and run through `Attax.AnalyzerCli`; `MMVC011` accepts `ObservableEvent<T>` handlers.
 
 ## [2.1.2] - 2026-11-16

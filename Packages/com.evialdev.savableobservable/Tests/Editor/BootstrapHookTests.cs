@@ -201,5 +201,19 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(2, loader.LoadCalls, "A fresh locator (next Play session) runs the hooks once more.");
             Assert.AreEqual(1, loader.StartCalls);
         }
+
+        [Test]
+        public void DuplicateFlaggedLocator_SkipsInitializeAndBootstrapStart() {
+            var loader = CreateLoader("a", 0);
+            var flag = typeof(ServiceLocator).GetField("_isDuplicate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert.IsNotNull(flag);
+            flag.SetValue(_locator, true);
+
+            Assert.IsFalse(_locator.InitializeSharedSingletons());
+            _locator.RunBootstrapStart();
+
+            Assert.AreEqual(0, loader.LoadCalls);
+            Assert.AreEqual(0, loader.StartCalls);
+        }
     }
 }

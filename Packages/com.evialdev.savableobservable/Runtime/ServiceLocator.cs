@@ -57,20 +57,39 @@ namespace SavableObservable {
         public MmvcEventBus EventBus { get; } = new MmvcEventBus();
 
         // Bootstrap phases run once per locator instance (instance fields: Domain-Reload safe).
+        private bool _isDuplicate;
         private bool _bootstrapLoadDone;
         private bool _bootstrapStartDone;
         private List<IBootstrapStart> _bootstrapStarts;
 
         private void Awake() {
+            var primary = GetComponent<ServiceLocator>();
+            if (primary != null && primary != this) {
+                _isDuplicate = true;
+                if (enableLogging) {
+                    Debug.LogError($"[ServiceLocator] Duplicate ServiceLocator component on GameObject '{gameObject.name}'. Destroying duplicate component.", primary);
+                }
+                enabled = false;
+                Destroy(this);
+                return;
+            }
             instance = this;
             InitializeSharedSingletons();
         }
 
         private void Start() {
+            if (_isDuplicate) return;
+            if (instance != null && !ReferenceEquals(instance, this)) {
+                if (enableLogging) {
+                    Debug.LogError($"[ServiceLocator] Duplicate active ServiceLocator on '{gameObject.name}'; '{instance.gameObject.name}' is active. Skipping BootstrapStart on duplicate.", this);
+                }
+                return;
+            }
             RunBootstrapStart();
         }
 
         private void OnDestroy() {
+            if (_isDuplicate) return;
             _services.Clear();
             _defaultKeyCache.Clear();
             _reportedDuplicates.Clear();
@@ -354,6 +373,7 @@ namespace SavableObservable {
         /// Calling it again re-registers and re-binds (idempotent) without re-running the bootstrap hooks.
         /// </summary>
         public bool InitializeSharedSingletons() {
+            if (_isDuplicate) return false;
             ValidateSharedSingletonTypes();
 
             var allMonoBehaviours = new List<MonoBehaviour>();
@@ -430,7 +450,7 @@ namespace SavableObservable {
         /// sorted by order, once per locator. Called from <c>Start</c>; destroyed hooks are skipped; exceptions are not caught.
         /// </summary>
         internal void RunBootstrapStart() {
-            if (_bootstrapStartDone || _bootstrapStarts == null) return;
+            if (_isDuplicate || _bootstrapStartDone || _bootstrapStarts == null) return;
             _bootstrapStartDone = true;
             var starts = _bootstrapStarts;
             _bootstrapStarts = null;

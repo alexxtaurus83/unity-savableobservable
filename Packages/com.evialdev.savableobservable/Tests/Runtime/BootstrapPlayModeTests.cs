@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -125,6 +126,20 @@ namespace SavableObservable.Tests {
             Assert.AreEqual(2, service.startCalls, "One start per locator session.");
             Assert.AreSame(service, Services.Get<BootPlayService>());
             Assert.AreSame(second, ServiceLocator.instance);
+        }
+
+        [UnityTest]
+        public IEnumerator DuplicateActiveLocatorsInScene_LogsErrorAndRunsBootstrapStartOnce() {
+            var (_, service) = CreateSceneObjects();
+            var first = CreateLocator();
+            var second = CreateLocator();
+
+            LogAssert.Expect(LogType.Error, new Regex(@"\[ServiceLocator\] Duplicate active ServiceLocator"));
+            yield return null;
+
+            Assert.AreSame(second, ServiceLocator.instance);
+            Assert.AreEqual(1, service.startCalls, "Superseded duplicate locator must not run BootstrapStart a second time.");
+            Assert.IsTrue(first != null);
         }
     }
 }
