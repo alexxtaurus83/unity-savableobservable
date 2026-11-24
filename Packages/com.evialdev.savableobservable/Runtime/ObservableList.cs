@@ -118,6 +118,21 @@ namespace SavableObservable {
             }
         }
 
+        /// <summary>
+        /// Subscribes <paramref name="handler"/> to list changes and returns a handle whose <c>Dispose</c> removes it
+        /// (idempotent). With <paramref name="replay"/> the handler is called once immediately with the current items.
+        /// Mutate the list through <see cref="ObservableList{T}"/> methods, never through the handler argument.
+        /// </summary>
+        public IDisposable Subscribe(Action<IReadOnlyList<T>> handler, bool replay = true) {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            Action<ObservableList<T>> wrapper = v => handler(v.Items);
+            var action = OnChanged;
+            action.Add(wrapper, null);
+            var subscription = new Subscription(() => action.Remove(wrapper));
+            if (replay) handler(Items);
+            return subscription;
+        }
+
         public int Count => Items.Count;
 
         public bool IsReadOnly => false;

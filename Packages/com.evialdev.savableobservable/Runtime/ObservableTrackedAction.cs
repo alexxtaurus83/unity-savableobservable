@@ -205,7 +205,7 @@ namespace SavableObservable {
             if (currentThreadId != mainThreadId) {
                 string message = $"[SavableObservable] ObservableTrackedAction<{typeof(T).Name}> accessed from non-main thread (thread {currentThreadId}). All ObservableTrackedAction operations must be called from the Unity main thread.";
                 
-#if UNITY_EDITOR || DEBUG || UNITY_ENABLE_CHECKS || DEVELOPMENT_BUILD
+#if UNITY_EDITOR || DEBUG || UNITY_ENABLE_CHECKS
                 throw new InvalidOperationException(message);
 #else
                 // In standalone player development builds where preprocessor symbols might be omitted,

@@ -18,6 +18,7 @@ namespace SavableObservable.Tests.Contracts {
                 var def = t.GetGenericTypeDefinition();
                 if (def == typeof(ObservableVariable<>)) return nameof(ObservableVariable<int>.OnValueChanged);
                 if (def == typeof(ObservableList<>)) return nameof(ObservableList<int>.OnChanged);
+                if (def == typeof(ObservableEvent<>)) return nameof(ObservableEvent<int>.OnFired);
             }
             return null;
         }

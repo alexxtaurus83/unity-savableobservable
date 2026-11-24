@@ -138,7 +138,7 @@ test("malformed and ambiguous in-scope mutations fail closed", async () => {
   } finally { f.close() }
 })
 
-test("all four canonical scanner rules have positive and negative fixtures", async () => {
+test("all three canonical scanner rules have positive and negative fixtures", async () => {
   const f = await fixture(); try {
     await f.load()
     const prelude = "using SavableObservable; class M : BaseObservableDataModel {} class P : BaseObservablePresenter<M> {} "
@@ -148,7 +148,6 @@ test("all four canonical scanner rules have positive and negative fixtures", asy
       [prelude + "class L : BaseLogic<M,P> { private P view; }", "MMVC003"],
       [prelude + "class L : BaseLogic<M,P> { void F() { new P(); } }", "MMVC003"],
       [prelude + "class L : BaseLogic<M,P> { void F() { GetComponent<P>(); } }", "MMVC003"],
-      ["using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { Setup(); } }", "MMVC004"],
       ["class P : SavableObservable.BaseObservablePresenter<M>, SavableObservable.ISharedSingleton {}", "MMVC001"],
     ]) await assert.rejects(f.before("write", { filePath: "Rule.cs", content }), new RegExp(rule))
     for (const content of [
@@ -183,41 +182,28 @@ char ch = '\\'';
   } finally { f.close() }
 })
 
-test("MMVC006 detects static service methods and properties with precise suppressions", async () => {
-  const f = await fixture({}, true, { rules: { MMVC006: "error" } }); try {
+test("stripped rules (MMVC004, MMVC005, MMVC-REVIEW) and unknown inheritance are not blocked or warned", async () => {
+  const f = await fixture(); try {
     await f.load()
     for (const content of [
+      "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { Setup(); } }",
+      "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { if (ready) { base.InitializePresenter(); } } }",
       "using SavableObservable; class S : ISharedSingleton { public static void F() {} }",
-      "class S : global::SavableObservable.ISharedSingleton { internal static int P => 1; }",
       "using SavableObservable; class S : BaseLogic<M,P> { public static int P { get { return 1; } } }",
-      "class S : SavableObservable.BaseLogic<M,P> { internal static void F() {} }",
       "class Utility { public static object F() { return Services.Get<T>(); } }",
-      "class Utility { internal static object P => Services.GetModel<T>(); }",
-      "using SavableObservable; class S : ISharedSingleton { [Other(\"// mmvc-guard: allow MMVC006\")] public static void F() {} }",
-      "class Utility { public static object P { get { return Services.Get<T>(); } } }",
-      "using SavableObservable; class S : ISharedSingleton { public static int field; public static void F() {} }",
-      "using SavableObservable; class S : ISharedSingleton { /* mmvc-guard: allow MMVC006 */ public static void F() {} public static void G() {} }",
-    ]) await assert.rejects(f.before("write", { filePath: "Static.cs", content }), /MMVC006/)
-    for (const content of [
-      "class Utility { public static int F() => 1; public static int P { get; set; } }",
-      "using SavableObservable; class S : ISharedSingleton { private static void F() {} public static int field; }",
-      "using SavableObservable; [StaticByDesign(\"reason\")] class S : ISharedSingleton { public static void F() {} }",
-      "using SavableObservable; class S : ISharedSingleton { [Other, StaticByDesignAttribute(\"reason\")] public static void F() {} }",
-      "using SavableObservable; class S : ISharedSingleton { // mmvc-guard: allow MMVC006\n [Other] public static void F() {} }",
-      "class Utility { public static string F() => \"Services.Get<T>()\"; }",
-      "class Utility { public static void F() { /* Services.Get<T>() */ } }",
-      "class ISharedSingleton {} class S : ISharedSingleton { public static void F() {} }",
-      "class BaseLogic<M,P> {} class S : BaseLogic<M,P> { public static void F() {} }",
-    ]) await f.before("write", { filePath: "Static.cs", content })
-    const existing = "using SavableObservable; class S : ISharedSingleton { public static void F() {} }"
-    writeFileSync(path.join(f.root, "Static.cs"), existing)
-    await f.before("write", { filePath: "Static.cs", content: "\n" + existing })
-    await assert.rejects(f.before("write", { filePath: "Static.cs", content: existing.replace("} }", "} public static void G() {} }") }), /MMVC006/)
+      "class Foo : MonoBehaviour { void Start() {} }",
+      "class Broken { void F() { ",
+    ]) {
+      await f.before("write", { filePath: "Allowed.cs", content })
+      const output = { title: "", output: "written", metadata: {} }
+      await f.hooks["tool.execute.after"]!({ tool: "write", sessionID: "parent", callID: String(call), args: {} }, output)
+      assert.doesNotMatch(output.output, /MMVC004|MMVC005|MMVC-REVIEW/)
+    }
   } finally { f.close() }
 })
 
-test("MMVC007 detects null propagation on Unity objects while allowing POCOs and explicit checks", async () => {
-  const f = await fixture({}, true, { rules: { MMVC007: "error" } }); try {
+test("Unity null propagation is owned by the project guard", async () => {
+  const f = await fixture(); try {
     await f.load()
     for (const content of [
       "class C { void F(GameObject go) { go?.SetActive(true); } }",
@@ -231,7 +217,7 @@ test("MMVC007 detects null propagation on Unity objects while allowing POCOs and
       "class C { void F(object obj) { obj?.GetComponent<Image>(); } }",
       "class C : MonoBehaviour { void F() { this?.gameObject; } }",
       "class C { PlayerChipPresenter[] markers; void F(int i) { markers[i]?.Reset(); } }",
-    ]) await assert.rejects(f.before("write", { filePath: "NullProp.cs", content }), /MMVC007/)
+    ]) await f.before("write", { filePath: "NullProp.cs", content })
 
     for (const content of [
       "class C { Action onDone; void F() { onDone?.Invoke(); } }",
@@ -250,7 +236,7 @@ test("MMVC007 detects null propagation on Unity objects while allowing POCOs and
     const existing = "class C { void F(GameObject go) { go?.SetActive(true); } }"
     writeFileSync(path.join(f.root, "NullProp.cs"), existing)
     await f.before("write", { filePath: "NullProp.cs", content: "\n" + existing })
-    await assert.rejects(f.before("write", { filePath: "NullProp.cs", content: existing.replace("}", "void G(Transform t) { t?.position; } }") }), /MMVC007/)
+    await f.before("write", { filePath: "NullProp.cs", content: existing.replace("}", "void G(Transform t) { t?.position; } }") })
   } finally { f.close() }
 })
 
@@ -279,22 +265,11 @@ test("explicit opt-in activates unusual layouts and nested Unity directory wins 
   } finally { f.close() }
 })
 
-test("late or conditional presenter base calls warn rather than hard-block", async () => {
-  const f = await fixture(); try {
-    await f.load()
-    await f.before("write", { filePath: "P.cs", content: "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() { if (ready) { base.InitializePresenter(); } } }" })
-    const output = { title: "", output: "written", metadata: {} }
-    await f.hooks["tool.execute.after"]!({ tool: "write", sessionID: "parent", callID: String(call), args: {} }, output)
-    assert.match(output.output, /MMVC-REVIEW/)
-    assert.match(output.output, /conditional\/late/)
-  } finally { f.close() }
-})
-
-test("new project scripts and commands redirect to explicit temporary locations", async () => {
+test("standalone script creation is owned by the project guard", async () => {
   const f = await fixture(); try {
     await f.load()
     for (const filePath of ["helper.ps1", "scripts/helper.py", "tools/unity.ts", "helper.csx", ".kilo/command/unity.md", ".kilo/temp-other/helper.js"]) {
-      await assert.rejects(f.before("write", { filePath, content: "unity run" }), /MMVC005[\s\S]*outside the project[\s\S]*NOT monitored/)
+      await f.before("write", { filePath, content: "unity run" })
       assert.equal(existsSync(path.join(f.root, filePath)), false)
     }
     await f.before("write", { filePath: "Assets/New.cs", content: "class New {}" })
@@ -312,7 +287,7 @@ test("scratch subtree and OS temp locations are unmonitored for CSharp and scrip
       await f.before("write", { filePath, content: bad })
     }
     await f.before("apply_patch", { patchText: `*** Begin Patch\n*** Add File: .kilo/temp/Bad.cs\n+${bad.trim()}\n*** Add File: .kilo/temp/helper.py\n+print('helper')\n*** End Patch` })
-    await assert.rejects(f.before("write", { filePath: ".kilo/temp/../../helper.ps1", content: "" }), /MMVC005/)
+    await f.before("write", { filePath: ".kilo/temp/../../helper.ps1", content: "" })
     const system = { system: [] as string[] }
     await f.hooks["experimental.chat.system.transform"]!({ model: {} as never }, system)
     assert.match(system.system[0], /\.kilo.temp/)
@@ -326,9 +301,9 @@ test("new script patches and moves reject whole operations while existing script
     await f.before("write", { filePath: "existing.py", content: "print('new')" })
     await f.before("edit", { filePath: "existing.py", oldString: "old", newString: "new" })
     const patchText = "*** Begin Patch\n*** Update File: existing.py\n@@\n-print('old')\n+print('changed')\n*** Add File: helper.ps1\n+unity run\n*** End Patch"
-    await assert.rejects(f.before("apply_patch", { patchText }), /MMVC005/)
+    await f.before("apply_patch", { patchText })
     assert.equal(readFileSync(path.join(f.root, "existing.py"), "utf8"), "print('old')\n")
-    await assert.rejects(f.before("patch", { patch: "*** Begin Patch\n*** Update File: existing.py\n*** Move to: scripts/moved.py\n@@\n-print('old')\n+print('old')\n*** End Patch" }), /MMVC005/)
+    await f.before("patch", { patch: "*** Begin Patch\n*** Update File: existing.py\n*** Move to: scripts/moved.py\n@@\n-print('old')\n+print('old')\n*** End Patch" })
   } finally { f.close() }
 })
 
@@ -337,35 +312,34 @@ test("warn mode reports helper creation without silently disabling checks", asyn
     await f.before("write", { filePath: "helper.ps1", content: "unity run" })
     const output = { title: "", output: "written", metadata: {} }
     await f.hooks["tool.execute.after"]!({ tool: "write", sessionID: "parent", callID: String(call), args: {} }, output)
-    assert.match(output.output, /MMVC005/)
-    assert.match(output.output, /\.kilo.temp/)
+    assert.doesNotMatch(output.output, /MMVC005/)
   } finally { f.close() }
 })
 
 test("JSON config controls individual rules and skill gate independently", async () => {
-  const f = await fixture({}, true, { requireSkill: false, rules: { MMVC001: "off", MMVC005: "warn" } }); try {
+  const f = await fixture({}, true, { requireSkill: false, rules: { MMVC001: "off" } }); try {
     await f.before("write", { filePath: "Model.cs", content: bad })
     await f.before("write", { filePath: "helper.ps1", content: "" })
     const output = { title: "", output: "written", metadata: {} }
     await f.hooks["tool.execute.after"]!({ tool: "write", sessionID: "parent", callID: String(call), args: {} }, output)
-    assert.match(output.output, /MMVC005/)
-    await assert.rejects(f.before("write", { filePath: "P.cs", content: "using SavableObservable; class P : BaseObservablePresenter<M> { protected override void InitializePresenter() {} }" }), /MMVC004/)
+    assert.doesNotMatch(output.output, /MMVC005/)
+    await assert.rejects(f.before("write", { filePath: "UseModel.cs", content: "using SavableObservable; class M : BaseObservableDataModel {} class C { void F() { Services.Get<M>(); } }" }), /MMVC002/)
   } finally { f.close() }
 })
 
 test("JSON lists replace defaults and directories use subtree boundaries", async () => {
-  const f = await fixture({}, true, { excludedDirectories: ["scratch"], scriptExtensions: [".custom"], commandDirectories: ["commands"] }); try {
+  const f = await fixture({}, true, { excludedDirectories: ["scratch"] }); try {
     await f.before("write", { filePath: "scratch/Bad.cs", content: bad })
     await assert.rejects(f.before("write", { filePath: "scratch-other/Bad.cs", content: bad }), /skill/)
     await assert.rejects(f.before("write", { filePath: ".kilo/temp/Bad.cs", content: bad }), /skill/)
     await f.before("write", { filePath: "helper.ps1", content: "" })
-    await assert.rejects(f.before("write", { filePath: "helper.custom", content: "" }), /MMVC005/)
-    await assert.rejects(f.before("write", { filePath: "commands/run.md", content: "" }), /MMVC005/)
+    await f.before("write", { filePath: "helper.custom", content: "" })
+    await f.before("write", { filePath: "commands/run.md", content: "" })
   } finally { f.close() }
 })
 
 test("malformed configs retain blocking hooks instead of disappearing on load", async () => {
-  for (const config of ["{", { unknown: true }, { rules: { MMVC999: "off" } }, { rules: { MMVC001: "ignore" } }, { requireSkill: "false" }, { scriptExtensions: ["*"] }, { excludedDirectories: ["."] }]) {
+  for (const config of ["{", { unknown: true }, { rules: { MMVC999: "off" } }, { rules: { MMVC004: "error" } }, { rules: { MMVC005: "error" } }, { rules: { "MMVC-REVIEW": "warn" } }, { rules: { MMVC001: "ignore" } }, { requireSkill: "false" }, { scriptExtensions: ["*"] }, { excludedDirectories: ["."] }]) {
     const f = await fixture({}, true, config); try { await assert.rejects(f.before("write", { filePath: "Anything.txt", content: "" }), /Invalid configuration/) } finally { f.close() }
   }
 })

@@ -13,7 +13,7 @@ namespace SavableObservable {
     /// </summary>
     internal sealed class ModelDescriptor {
 
-        /// <summary>All supported observable fields (<see cref="ObservableVariable{T}"/> / <see cref="ObservableList{T}"/>), including <c>[NonSaved]</c> ones.</summary>
+        /// <summary>All supported observable fields (<see cref="ObservableVariable{T}"/> / <see cref="ObservableList{T}"/> / <see cref="ObservableEvent{T}"/>), including <c>[NonSaved]</c> ones.</summary>
         public readonly FieldInfo[] ObservableFields;
 
         /// <summary>Supported observable fields by name (first declaration in the hierarchy wins).</summary>
@@ -31,6 +31,9 @@ namespace SavableObservable {
         /// <summary>Saved non-observable fields copied by <c>LoadDataFromModel</c>.</summary>
         public readonly FieldInfo[] LoadPlainFields;
 
+        /// <summary>The fields of <see cref="LoadObservableFields"/>: saved observables, without <c>[NonSaved]</c> and <see cref="ObservableEvent{T}"/>.</summary>
+        public readonly FieldInfo[] SavedObservableFields;
+
         private ModelDescriptor(Type modelType) {
             var supported = new List<FieldInfo>();
             var byName = new Dictionary<string, FieldInfo>(StringComparer.Ordinal);
@@ -45,6 +48,13 @@ namespace SavableObservable {
             const BindingFlags Declared = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
 
             foreach (var t in TypeUtil.GetUserHierarchy(modelType)) {
+                foreach (var method in t.GetMethods(Declared)) {
+                    if (method.IsDefined(typeof(EventHandlerAttribute), false)) {
+                        // Logged once per model type: descriptors are cached. Never bound.
+                        Debug.LogError($"[SavableObservable] [EventHandler] '{modelType.Name}.{method.Name}' is ignored: models neither publish nor subscribe to the event bus. Move the handler to the unit's Logic or Presenter.");
+                    }
+                }
+
                 foreach (var prop in t.GetProperties(Declared)) {
                     if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
                     if (IsUnityComponentProperty(prop)) continue;
@@ -77,6 +87,8 @@ namespace SavableObservable {
                     if (field.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute), false)) continue;
 
                     if (isObservable) {
+                        // Events carry no state: bound like observables, never saved.
+                        if (typeof(IObservableEvent).IsAssignableFrom(field.FieldType)) continue;
                         var valueProp = field.FieldType.GetProperty("Value");
                         if (valueProp != null && valueProp.CanRead && valueProp.CanWrite) {
                             loadObs.Add((field, valueProp, valueProp.PropertyType));
@@ -95,6 +107,7 @@ namespace SavableObservable {
             LoadProperties = props.ToArray();
             LoadObservableFields = loadObs.ToArray();
             LoadPlainFields = loadPlain.ToArray();
+            SavedObservableFields = Array.ConvertAll(LoadObservableFields, t => t.field);
         }
 
         [NoAutoStaticsCleanup]
