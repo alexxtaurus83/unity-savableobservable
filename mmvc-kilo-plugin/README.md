@@ -7,14 +7,13 @@ Reusable Kilo plugin providing workflow enforcement, context guidance, and conse
 ## 1. Rationale and Client Target
 
 ### Why This Plugin Exists
-When AI agents implement or refactor features in Unity MMVC projects, they frequently repeat specific structural mistakes:
+When AI agents implement or refactor features in Unity MMVC projects, they frequently repeat high-impact structural mistakes:
 - Implementing `ISharedSingleton` on Presenters or Models to bypass architecture boundaries.
 - Attempting to retrieve Models or Presenters directly via `Services.Get<T>()`.
 - Directly referencing, instantiating, or looking up Presenters from inside `BaseLogic<M, P>`.
-- Overriding `InitializePresenter()` in custom presenters without invoking `base.InitializePresenter()`.
 - Modifying C# gameplay code without loading the `mmvc-unity` skill and its architecture references.
 
-The `mmvc-guard` plugin intercepts tool execution inside Kilo to enforce mandatory skill loading before C# mutations and reject newly introduced, syntactically unambiguous violations before changes touch disk.
+The `mmvc-guard` plugin intercepts tool execution inside Kilo to enforce mandatory skill loading before C# mutations and reject newly introduced, syntactically unambiguous `MMVC001`–`MMVC003` violations before changes touch disk. Remaining MMVC Roslyn rules (`MMVC004`, `MMVC006`–`MMVC015`) are enforced by `Attax.AnalyzerCli` in `F:\github\repo\AttaxAnaliser`.
 
 ### Target Environment & Client Specificity
 - **Target Client:** Designed specifically for the **Kilo Code** client runtime exposing `@kilocode/plugin` extension hooks (`experimental.chat.system.transform`, `experimental.session.compacting`, `tool.execute.before`, `tool.execute.after`).
@@ -66,7 +65,7 @@ Precedence for mode, opt-in and skill path: **environment > existing plugin opti
 {
   "mode": "enforce",
   "excludedDirectories": [".kilo/temp", "scratch"],
-  "rules": { "MMVC003": "warn", "MMVC005": "error" }
+  "rules": { "MMVC003": "warn" }
 }
 ```
 
@@ -81,11 +80,9 @@ Supported JSON keys:
 | `protectPackageCache` | Boolean, default true |
 | `excludeOsTemp` | Boolean, default true; a temp ancestor never exempts a whole project residing under temp |
 | `excludedDirectories` | Unmonitored directory subtrees, default `[".kilo/temp"]` |
-| `scriptExtensions` | Extensions checked by MMVC005 (leading dot); see example for full defaults |
-| `commandDirectories` | MMVC005 command subtrees, default `[".kilo/command", ".kilo/commands"]` |
-| `rules` | Partial map of MMVC001 through MMVC007 to `error`, `warn`, `off`; MMVC-REVIEW supports warn/off (error does not promote uncertain findings to hard errors) |
+| `rules` | Partial map of `MMVC001`–`MMVC003` to `error`, `warn`, `off` |
 
-Lists **replace**, rather than extend, defaults. Paths are literal directories, not globs; relative paths use the project root, not the config file directory. No `%VAR%`, `$VAR` or tilde expansion: use resolved paths. Per-rule settings merge with built-in rule defaults. Global warn downgrades all hard errors; per-rule off removes that rule only. Gate/cache/reconstruction checks remain separate. Treat changes as operator policy changes: agents must not weaken settings without approval. JSON contains data only; new semantic rules still require TypeScript and regression tests. Adding a helper extension or another excluded/command directory requires only JSON.
+Lists **replace**, rather than extend, defaults. Paths are literal directories, not globs; relative paths use the project root, not the config file directory. No `%VAR%`, `$VAR` or tilde expansion: use resolved paths. Per-rule settings merge with built-in rule defaults. Global warn downgrades all hard errors; per-rule off removes that rule only. Gate/cache/reconstruction checks remain separate. Treat changes as operator policy changes: agents must not weaken settings without approval. JSON contains data only; new semantic rules still require TypeScript and regression tests.
 
 The plugin also checks environment variables (or plugin options passed at initialization):
 
@@ -116,26 +113,7 @@ The plugin implements a lexical C# scanner that masks comments and literal strin
    - *Exemption:* The required generic presenter parameter in `BaseLogic<M, P>` is explicitly exempted.
    - *Fix:* Logic communicates to Presenters strictly through Model observable variables or one-shot event tokens (`eventToken.Value++`).
 
-4. **`MMVC004` (Missing `base.InitializePresenter()`):**
-   - *Rule:* Blocks overrides of `InitializePresenter()` that fail to invoke `base.InitializePresenter()`.
-   - *Warning:* Warns if `base.InitializePresenter()` is invoked late or conditionally within control flow.
-   - *Fix:* Place `base.InitializePresenter();` at the beginning of the override.
-
-5. **`MMVC006` (Static Service Entry Points):**
-   - *Rule:* Blocks new public or internal static methods and properties on classes directly implementing framework `ISharedSingleton` or deriving from framework `BaseLogic`, and static methods or properties whose bodies contain `Services.Get<T>` or `Services.GetModel<T>`. Fields are not checked.
-   - *Fix:* Make the member an instance member and call it through `Services.Get<T>()`.
-   - *Exceptions:* Annotate the member or class with `[StaticByDesign("reason")]`, or place a `// mmvc-guard: allow MMVC006` comment immediately before the member (attributes may intervene). The attribute must be defined by the consuming project or framework.
-   - *Limits:* Framework bases are recognized when qualified or unqualified with `using SavableObservable;`; custom and cross-file inheritance is not resolved. Service calls are matched lexically, not semantically. Comments and literals, including interpolated expressions, are masked.
-
-6. **`MMVC007` (No Null Propagation on Unity Objects):**
-   - *Rule:* Blocks null propagation (`?.` or `?[]`) on types inheriting from `UnityEngine.Object` (`MonoBehaviour`, `GameObject`, `Component`, `Transform`, `Logic`, `Presenter`, etc.). Unity overrides the null comparison operators (`==`, `!=`, and implicit `bool`) for `UnityEngine.Object` to handle destroyed native C++ objects. C#'s `?.` operator checks only raw CLR reference null and bypasses Unity's custom operator, which causes `MissingReferenceException` or missed null checks on destroyed objects.
-   - *Fix:*
-     - **Explicit `!= null` checks:** Use `if (myObj != null)` or a ternary expression like `myObj != null ? myObj.transform : null` to properly invoke Unity's custom operator.
-     - **Implicit boolean conversion:** Unity objects implicitly convert to bool, allowing concise checks like `if (myObj)`.
-   - *Exemptions:* Standard C# classes (POCOs) or structs that do not inherit from `UnityEngine.Object` may safely use `?.` and `??`. Delegate/event invocations (`onComplete?.Invoke()`) and plain model reads are safe and permitted.
-   - *Suppression:* Precede the statement or line with `// mmvc-guard: allow MMVC007`.
-
-*No Semantic Promises:* The plugin does not perform full semantic AST compilation, global cross-file symbol resolution, or type-inference across assemblies. Ambiguous or multi-declaration names are not hard-blocked. Custom inheritance and late base calls receive bounded review warnings; other uncertain constructs remain covered by the injected review guidance.
+*No Semantic Promises:* The plugin does not perform full semantic AST compilation, global cross-file symbol resolution, or type-inference across assemblies. Ambiguous or multi-declaration names are not hard-blocked. Authoritative Roslyn enforcement for `MMVC001`–`MMVC004` and `MMVC006`–`MMVC015` runs via `Attax.AnalyzerCli`.
 
 ---
 
@@ -193,7 +171,7 @@ if ($hash1 -eq $hash2) {
 ```
 
 ### Independent Attax Guard Coexistence
-- `F:\Unity_projects\AttaxUnity\.kilo\plugin\attax-guard.ts` remains independent and unmodified.
+- `F:\Unity_projects\AttaxUnity\.kilo\plugin\attax-guard.ts` remains independent and enforces Attax workflow gates (`Plan`, `Context`, `Grep`), `ATTAX010` standalone script creation, and `ATTAX002`/`ATTAX004`/`ATTAX008`/`ATTAX009`.
 - Both plugins load side-by-side in Kilo with distinct IDs (`attax-guard` and `mmvc-guard`).
 
 ### Session Reload Gate
@@ -220,13 +198,13 @@ If rollback is necessary:
 
 ## Temporary Support Files
 
-`MMVC005` checks new destinations through `write`, patch `Add File`, and patch `Move to` before C# reconstruction. New PowerShell, shell, batch, Python, JavaScript/TypeScript, Lua, Ruby, Perl, notebook and `.csx` scripts, and files under `.kilo/command/` or `.kilo/commands/`, are rejected in the monitored project. Mixed-file patches are rejected before any part executes. This is a conservative location policy, not a semantic determination that a script is temporary. Existing scripts remain editable. Ordinary Unity `.cs` source retains the MMVC gate/lint behavior rather than being blanket-blocked; arbitrary text/data files are not blocked solely for being new.
+Standalone script creation is enforced by Attax guard under `Assets/Scripts`, not by this reusable framework guard.
 
 Put one-off Unity CLI helpers and support files outside the project in standard OS temporary directories (Windows: `%LOCALAPPDATA%\Temp`, `%TEMP%`, or `C:\Users\<user>\AppData\Local\Temp\kilo`; Linux: `/tmp`, `/var/tmp`, or `$XDG_RUNTIME_DIR`), or use the exact project subtree **`.kilo/temp/`**. The guard announces both choices in system guidance, compaction reminders and rejection messages. Prefer a direct Unity CLI command when a wrapper is unnecessary.
 
 **Standard OS temporary directories and `.kilo/temp/` are not monitored by this guard, including C# files, skill gating and MMVC lint.** Only this exact project subtree is exempt: `.kilo/temp-other/` is not. Paths are normalized and symlinks resolved before checking scope. Do not place production source or permanent commands in scratch storage. This exemption does not disable other plugins or change filesystem permissions. External tools and shell writes still bypass this plugin entirely.
 
-For intentionally permanent tooling, obtain explicit operator authorization for `MMVC_GUARD_MODE=warn` while creating it, then restore enforcement. The plugin never grants that approval or changes the mode itself. No scratch folder is created automatically, and `.gitignore` is not modified; add an ignore entry when appropriate under the project's own rules.
+No scratch folder is created automatically, and `.gitignore` is not modified; add an ignore entry when appropriate under the project's own rules.
 
 ## 10. Development and Testing Commands
 

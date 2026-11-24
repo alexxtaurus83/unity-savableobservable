@@ -35,6 +35,10 @@ namespace SavableObservable {
         /// </summary>
         public M GetModel() => ComponentCache.GetModel(this, ref _model);
 
+        /// <summary>
+        /// Scene presenters are already bound by <see cref="ServiceLocator"/> (after <see cref="IBootstrapLoad"/>), so this is a no-op
+        /// for them. Runtime-instantiated presenters and presenters in a scene without a locator bind here.
+        /// </summary>
         protected virtual void Awake() {
             EnsureInitialized();
         }
@@ -71,7 +75,8 @@ namespace SavableObservable {
         /// <summary>
         /// Override to configure static UI controls (slider min/max, dropdown options, button listeners,
         /// initial CanvasGroup state). Guaranteed to run once BEFORE <see cref="Observable.SetListeners"/>
-        /// and AFTER <see cref="ServiceLocator"/> has registered all scene <see cref="ISharedSingleton"/> services.
+        /// and, for scene presenters, AFTER <see cref="ServiceLocator"/> has registered all scene <see cref="ISharedSingleton"/> services
+        /// and run every <see cref="IBootstrapLoad"/> hook.
         /// An exception thrown here does not latch: the next <see cref="EnsureInitialized"/> retries.
         /// </summary>
         protected virtual void InitializePresenter() { }

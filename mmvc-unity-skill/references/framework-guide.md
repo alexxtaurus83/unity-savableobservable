@@ -32,53 +32,37 @@ public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
 }
 ```
 
-#### One-Shot Command Pattern (Event Tokens)
+#### One-Shot Notifications (`ObservableEvent<T>`)
 
-When Logic needs to trigger a transient, one-shot visual command (animations, VFX, node repaints) rather than steady state:
-1. Add an `[NonSaved] public ObservableVariable<int> eventToken;` and an event payload struct/field `[NonSaved] public MyEvent latestEvent;` to the Model.
-2. In Logic, write the payload to `model.latestEvent` and increment `model.eventToken.Value++`.
-3. In Presenter, decorate a handler with `[ObservableHandler(nameof(MyDataModel.eventToken))]` to switch on `model.latestEvent.Kind` and execute the view action.
+When Logic needs to trigger a transient, one-shot visual command on its own Presenter (animations, VFX, cell flashes) rather than steady state, use `ObservableEvent<T>` on the Model instead of `[NonSaved][NotifyOnSameValue]` counter tokens:
+1. Add a `public ObservableEvent<T>` field to the Model (automatically skipped by `LoadDataFromModel`, `GetSavableObservableFields()`, and serialization).
+2. In Logic, call `GetModel().myEvent.Fire(payload)`. Every `Fire` notifies (equal payloads included).
+3. In Presenter, handle it with `[ObservableHandler(nameof(MyDataModel.myEvent))]` using 0 or 1 parameter of type `T`. Never set `InvokeOnBind = true` (logs an error and is ignored). For unit -> unit notifications across GameObjects, use the typed event bus (`Services.Publish` / `[EventHandler]`), not an `ObservableEvent<T>` on a foreign model.
 
 ```csharp
 // Model
-public class BoardGraphDataModel : BaseObservableDataModel {
-    [NonSaved] public ObservableVariable<int> eventToken;
-    [NonSaved] public BoardGraphEvent latestEvent;
+public class BoardDataModel : BaseObservableDataModel {
+    public ObservableEvent<int> cellFlashed = new ObservableEvent<int>();
 }
 
-// Logic: publishes the event
-public void SetNodeVisual(int row, int col, PlayerColor owner, bool animate) {
-    var model = GetModel();
-    model.latestEvent = new BoardGraphEvent {
-        Kind = BoardGraphEventKind.NodeVisual,
-        Row = row,
-        Col = col,
-        Owner = owner,
-        Animate = animate
-    };
-    model.eventToken.Value++;
-}
+// Logic
+GetModel().cellFlashed.Fire(index);
 
-// Presenter: reacts via [ObservableHandler]
-[ObservableHandler(nameof(BoardGraphDataModel.eventToken))]
-private void OnEventTokenChanged(int token) {
-    if (token <= 0) return;
-    var model = GetModel();
-    if (model == null) return;
-    switch (model.latestEvent.Kind) {
-        case BoardGraphEventKind.NodeVisual:
-            SetNodeVisual(model.latestEvent.Row, model.latestEvent.Col, model.latestEvent.Owner, model.latestEvent.Animate);
-            break;
-    }
-}
+// Presenter: 0 or 1 parameter of type T; never InvokeOnBind = true
+[ObservableHandler(nameof(BoardDataModel.cellFlashed))]
+private void OnCellFlashed(int index) { ... }
 ```
 
 ### Justified Component Shapes (No Dummy Components)
 
 Never create an empty model or presenter just to obtain a singleton or complete a trio:
-- **Coordination, operations, or service only (no observable model or view needed):** A plain `MonoBehaviour` implementing `ISharedSingleton` when global access is needed. Do not derive from `BaseLogic<M, P>` with dummy types.
-- **Observable/persisted state and logic without a view:** A meaningful model (`BaseObservableDataModel`) and a plain `MonoBehaviour, ISharedSingleton` service exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.
-- **Real MMVC view unit:** Model (`BaseObservableDataModel`), Presenter (`BaseObservablePresenter<M>`), and primary Logic (`BaseLogic<M, P>`).
+- **Coordination, operations, or service only (no observable model or view needed):** A plain `MonoBehaviour` implementing `ISharedSingleton`, named `*Service` (e.g., `AudioService`, `ResourceStoreService`). Do not derive from `BaseLogic<M, P>` with dummy types.
+- **Observable/persisted state and logic without a view:** A meaningful model (`BaseObservableDataModel`) and a plain `MonoBehaviour, ISharedSingleton` service named `*Service` exposing `GetModel()`. Do not invent a model-only `BaseLogic` or empty presenter.
+- **Real MMVC view unit:** Model (`*DataModel` : `BaseObservableDataModel`), Presenter (`*Presenter` : `BaseObservablePresenter<M>`), and primary Logic (`*Logic` : `BaseLogic<M, P>`).
+
+**Naming Convention Rule (`*Logic` vs `*Service`):**
+- Reserve the `*Logic` suffix exclusively for classes deriving from `BaseLogic<M, P>` (paired with `*DataModel` and `*Presenter`).
+- Always suffix standalone `MonoBehaviour, ISharedSingleton` services (both class and `.cs` file) with `*Service` so `Services.Get<*Service>()` vs `Services.Get<*Logic>()` immediately communicates whether the target is a standalone service or an MMVC view unit.
 
 | Component | Responsibility |
 | --- | --- |
@@ -124,17 +108,17 @@ public class PlayerDataModel : BaseObservableDataModel {
 
 Choose ordinary fields for state that does not require change notifications. Do not expect mutations of an ordinary list or fields inside a referenced object to update bound UI automatically. Use observable fields at the granularity that consumers actually observe.
 
-Use `ForceNotify()` deliberately when a current value must be redisplayed without a value change. Do not toggle a value to a dummy value just to provoke UI updates. Treat previous values as change context, not an undo history.
+Use `model.field.Set(value)` when you want to assign and know whether the value changed: it assigns like `Value = value` and returns `true` when it notified (`false` when unchanged), collapsing compare-then-assign to a single call (`if (!GetModel().volume.Set(v)) return;`). Use `ForceNotify()` deliberately when a current value must be redisplayed without a value change. Do not toggle a value to a dummy value just to provoke UI updates. Treat previous values as change context, not an undo history.
 
 ## Initialization and Binding
 
 The framework uses a two-stage execution order synchronized by `MMVCExecutionOrderSynchronizer`:
-1. `ServiceLocator` (`-200`): Registers all scene `ISharedSingleton` instances in Pass 1, then calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive) in Pass 2.
+1. `ServiceLocator` (`-200`): In `Awake()`, Pass 1 registers all eligible scene `ISharedSingleton` instances, then runs every scene `IBootstrapLoad.BootstrapLoad()` hook synchronously (sorted by `BootstrapOrder`, once per locator) to fill bind-time data, then Pass 2 calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active or inactive). In `Start()`, it runs every scene `IBootstrapStart.BootstrapStart()` hook (sorted by `BootstrapOrder`, once per locator) for long or async work.
 2. `BaseObservablePresenter<M>` (`-150`): `Awake()` calls `EnsureInitialized()`, which is an idempotent no-op once bound and binds dynamically instantiated prefabs automatically.
 
 Models, loaders and `BaseLogic<M, P>` have no ordering requirement: `GetModel()` initializes the model's fields lazily, so the model's own `Awake()` is not relied upon. The synchronizer preserves explicit execution orders declared by user classes.
 
-Because `ServiceLocator` registers all services in Pass 1 before initializing presenters in Pass 2, `Services.Get<T>()` is guaranteed non-null inside `InitializePresenter()`.
+Because `ServiceLocator` finishes Pass 1 registration and all `IBootstrapLoad` hooks before initializing presenters in Pass 2, `Services.Get<T>()` is guaranteed non-null for unique scene services inside `InitializePresenter()`, and data loaded in `BootstrapLoad` is visible on `InvokeOnBind` replay. Each hook runs once per locator (a new Play session has a new locator), and `BootstrapLoad` exceptions are not caught (a failing hook stops startup before presenters bind).
 
 Calling `EnsureInitialized()` on `BaseObservablePresenter<M>` is strictly idempotent after binding: subsequent calls will not destructively re-bind or duplicate listeners. Loaders do not rebind: `LoaderWithModel.LoadDataFromModel` fills the model and the presenter observes the loaded values through its existing binding (equal values are silent unless the field uses `[NotifyOnSameValue]`). An explicit `Observable.SetListeners(subscriber, model)` replaces existing framework bindings cleanly.
 
@@ -188,7 +172,7 @@ private Button okButton;
 - **Zero-Argument, Synchronous:** Targets a `public void Method()` on paired `BaseLogic`. Async methods are rejected (use `Listeners.Listen`).
 - **IL2CPP Stripping:** Mark the target logic method with `[UnityEngine.Scripting.Preserve]`.
 - **Framework Lifecycle:** Wired after `InitializePresenter()` and refreshed on `Observable.SetListeners` rebind through an internal `ListenerSet`; survives consumer `Listeners.Clear()`.
-- **Render-Only Handlers:** `[ObservableHandler]` is strictly render-only. The framework deliberately provides no model-to-logic handler attribute.
+- **Observable Handlers:** Use `[ObservableHandler(nameof(Model.field))]` for custom view reactions (presenters may call `GetLogic()` from handlers when needed; leave `InvokeOnBind = false` for handlers with side effects).
 
 ### Scoped ListenerSet (`Listeners`)
 Use the lazy `Listeners` property on `BaseObservablePresenter<M>` for explicit UnityEvent subscriptions:
@@ -249,6 +233,8 @@ Do not hide the virtual `Awake()` or `OnDestroy()` methods on models, presenters
 
 Call `Observable.RemoveListeners(model, subscriber)` to remove tracked model callbacks and UI listener tokens for one subscriber.
 
+Alternatively, use `field.Subscribe(handler, replay)` (`ObservableVariable<T>`, `ObservableList<T>`, `ObservableEvent<T>`) or `Services.Subscribe<TEvent>(this, handler)`, which return an `IDisposable` (`Dispose` unsubscribes idempotently). Because these handles are not owned by a model subscriber, collect them in an instance `SubscriptionSet` field (never static) and call `Clear()` in `OnDisable()` (or when the subscriber goes away).
+
 ## Persistence
 
 Decorate transient `ObservableVariable<T>`, `ObservableList<T>`, or plain fields and properties with `[NonSaved]`. `BaseObservableDataModel.LoadDataFromModel` automatically skips these members when applying saved state, respects read-only properties, and supports plain DTO objects as source. Setting `ObservableList<T>.Value` (such as during `LoadDataFromModel`) is silent when the new list is element-wise equal to the current list.
@@ -265,6 +251,12 @@ Use `SavableObservable.ServiceLocator`, `SavableObservable.Services`, and `Savab
 - Presenters and Models must **never** implement `ISharedSingleton` or register in `ServiceLocator`.
 - Access units via `Services.Get<TLogic>()` or `Services.GetModel<TModel>()`.
 - Multiple instances of the same Logic class require distinct `singletonName` values on `BaseLogic`. A duplicate key logs an error and is not registered (the first instance keeps the key) while local presentation remains bound; multi-instance units that are not global services override `RegisterAsSharedSingleton => false`.
+- **Typed Event Bus (`IMmvcEvent`, `Services.Publish`, `[EventHandler]`, `Services.Subscribe`):**
+  - Units notify each other without references using `readonly struct` events implementing `IMmvcEvent`.
+  - **Roles:** Logic and services publish (`Services.Publish(new MyEvent(...))`) and subscribe (`[EventHandler] void M(TEvent e)` or `Services.Subscribe<TEvent>(this, handler)`); presenters only subscribe; models never publish or subscribe (enforced by Roslyn `MMVC016`; a model subscription logs an error and is ignored).
+  - **Delivery & Lifetime:** Handler order is subscription order and not a contract (keep ordered steps as direct calls). Throwing handlers are logged while others still run; destroyed subscribers are pruned; re-entrant publishes are queued (at most 32 per outer publish). `ServiceLocator.EventBus` is per `ServiceLocator` instance (no statics) and cleared on destroy, so each Play session starts empty.
+- **Optional References (`[AllowNullGuard]`):**
+  - Required references (`GetModel()`, `Services.Get<T>()`, `Services.GetModel<M>()`, `[SerializeField]` fields) are never null-checked: missing references should throw (enforced by Roslyn `MMVC017`; `OnDisable`/`OnDestroy`/`OnApplicationQuit` are exempt). Mark genuinely optional service classes, fields, or methods with `[AllowNullGuard("reason")]`.
 - **Domain Reload Disabled (Fast Play Mode):**
   - When Enter Play Mode options disable Domain Reload, C# statics persist across Play Mode sessions.
   - Framework registries provide `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` hooks to clear statics (`ServiceLocator.instance`, `Services.instance`, `Observable`, `UIAdapterRegistry`).

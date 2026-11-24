@@ -112,55 +112,38 @@ public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
 }
 ```
 
-### Do: Event-Token Pattern for One-Shot View Commands
+### Do: ObservableEvent<T> for One-Shot View Commands
 
-For transient view triggers (such as VFX, animations, or one-shot audio), publish an event token via the Model:
+For transient view triggers (such as VFX, animations, or one-shot audio), fire an `ObservableEvent<T>` on the Model. It is never saved and never replayed on bind, and every `Fire` notifies (equal payloads included):
 
 ```csharp
-using System;
 using SavableObservable;
-using UnityEngine;
 
 public enum PlayerFxKind { None = 0, Hit = 1, LevelUp = 2 }
 
-[Serializable]
-public struct PlayerFxEvent {
-    public PlayerFxKind Kind;
-    public int Intensity;
+public readonly struct PlayerFxEvent {
+    public readonly PlayerFxKind Kind;
+    public readonly int Intensity;
+    public PlayerFxEvent(PlayerFxKind kind, int intensity) { Kind = kind; Intensity = intensity; }
 }
 
 public class PlayerDataModel : BaseObservableDataModel {
-    [NonSaved] public ObservableVariable<int> eventToken;
-    [NonSaved] public PlayerFxEvent latestEvent;
-
-    public override void EnsureFieldsInitialized() {
-        base.EnsureFieldsInitialized();
-        if (eventToken == null) eventToken = new ObservableVariable<int> { Value = 0 };
-    }
+    public ObservableEvent<PlayerFxEvent> fx = new ObservableEvent<PlayerFxEvent>();
 }
 
 public class PlayerLogic : BaseLogic<PlayerDataModel, PlayerPresenter> {
     public void PlayHitEffect(int intensity) {
-        var model = GetModel();
-        if (model == null) return;
-        model.latestEvent = new PlayerFxEvent {
-            Kind = PlayerFxKind.Hit,
-            Intensity = intensity
-        };
-        model.eventToken.Value++;
+        GetModel().fx.Fire(new PlayerFxEvent(PlayerFxKind.Hit, intensity));
     }
 }
 
 public class PlayerPresenter : BaseObservablePresenter<PlayerDataModel> {
-    [ObservableHandler(nameof(PlayerDataModel.eventToken))]
-    private void OnEventTokenChanged(int token) {
-        if (token <= 0) return;
-        var model = GetModel();
-        if (model == null) return;
-
-        switch (model.latestEvent.Kind) {
+    // 0 parameters or 1 parameter of the payload type; never InvokeOnBind.
+    [ObservableHandler(nameof(PlayerDataModel.fx))]
+    private void OnFx(PlayerFxEvent e) {
+        switch (e.Kind) {
             case PlayerFxKind.Hit:
-                FlashDamage(model.latestEvent.Intensity);
+                FlashDamage(e.Intensity);
                 break;
             case PlayerFxKind.LevelUp:
                 PlayCelebrationFx();

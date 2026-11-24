@@ -20,7 +20,7 @@ Only two framework types depend on execution order. `MMVCExecutionOrderSynchroni
 
 | Order | Class | Primary Role | Lifecycle & Operational Details |
 |---|---|---|---|
-| **`-200`** | `ServiceLocator` | Scene Discovery | `Awake()` scans **its own scene**. Carries explicit `[DefaultExecutionOrder(-200)]` attribute in code and synchronized to `.meta` via `MMVCExecutionOrderSynchronizer`. **Pass 1:** Registers eligible `ISharedSingleton` services (a Logic's model is resolved through its registered Logic). **Pass 2:** Calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active and inactive). |
+| **`-200`** | `ServiceLocator` | Scene Discovery | `Awake()` scans **its own scene**. Carries explicit `[DefaultExecutionOrder(-200)]` attribute in code and synchronized to `.meta` via `MMVCExecutionOrderSynchronizer`. **Pass 1:** Registers eligible `ISharedSingleton` services (a Logic's model is resolved through its registered Logic) -> runs `IBootstrapLoad.BootstrapLoad()` hooks (sorted by `BootstrapOrder`, once per locator) -> **Pass 2:** Calls `EnsureInitialized()` on all scene `IObservablePresenter` components (active and inactive). `Start()` runs `IBootstrapStart.BootstrapStart()` hooks (sorted by `BootstrapOrder`, once per locator). |
 | **`-150`** | `BaseObservablePresenter<M>` | Presentation Layer | `Awake()` calls `EnsureInitialized()`, which executes `InitializePresenter()` once and then binds `Observable.SetListeners()`. Subclasses overriding `Awake()` or `OnDestroy()` **must** call base methods, or prefer `InitializePresenter()`. |
 | **`0`** (default) | `BaseObservableDataModel`, `LoaderWithModel<M>`, `BaseLogic<M, P>` | Data, Persistence, Business Logic | No ordering requirement. The model's `Awake()` calls `EnsureFieldsInitialized()`, and every reader (presenter, logic, loader, `ServiceLocator`) also initializes the fields lazily through `GetModel()`, so it does not matter whether the model's `Awake()` has run. `LoaderWithModel<M>` has no `Awake()` or `Start()` of its own and never loads automatically. `BaseLogic<M, P>` has no `Start()` in the base class; its `Awake()` registers it as an `ISharedSingleton` if not already discovered by `ServiceLocator`. Subclasses overriding `Awake()` or `OnDestroy()` **must** call base methods. |
 
@@ -31,7 +31,7 @@ Only two framework types depend on execution order. `MMVCExecutionOrderSynchroni
 flowchart TD
     subgraph ExecutionOrder ["Callback Priorities (Awake)"]
         direction TB
-        SL["ServiceLocator (-200)<br/>Awake(): Scan scene<br/>Pass 1: Register eligible ISharedSingleton & BaseLogic<br/>Pass 2: EnsureInitialized() on IObservablePresenters"]
+        SL["ServiceLocator (-200)<br/>Awake(): Scan scene<br/>Pass 1: Register eligible ISharedSingleton & BaseLogic<br/>IBootstrapLoad.BootstrapLoad() (sorted, once per locator)<br/>Pass 2: EnsureInitialized() on IObservablePresenters<br/>Start(): IBootstrapStart.BootstrapStart() (sorted, once per locator)"]
         P["BaseObservablePresenter (-150)<br/>Awake(): EnsureInitialized()<br/>(Applies to scene objects & instantiated active prefabs)"]
         D["Model / Loader / Logic (0, default)<br/>Model: EnsureFieldsInitialized(); Logic: fallback registration<br/>(No ordering dependency: fields initialize lazily via GetModel())"]
 
@@ -57,6 +57,7 @@ A `BaseObservablePresenter<M>` initializes once and binds its listeners once; re
    - **Ordering guarantees:**
      - `InitializePresenter()` always completes **before** `Observable.SetListeners()` attaches handlers, including when it calls `GetLogic().GetModel()`.
      - For scene-resident objects initialized during `ServiceLocator` Pass 2, `InitializePresenter()` runs **after** Pass 1 service registration. Note, however, that service availability inside `InitializePresenter()` depends strictly on those services being present in the scanned scene, eligible, and unique (a duplicate key is an error and the second instance is not registered).
+     - For scene presenters, `InitializePresenter()` and `InvokeOnBind` replay run **after** every `IBootstrapLoad` hook, so data loaded there is visible on bind; runtime-instantiated presenters still bind in their own `Awake()` (`-150`).
 
 ```mermaid
 sequenceDiagram
@@ -105,6 +106,8 @@ flowchart TD
         P1_Check -- Excluded --> P1_Skip
     end
 
+    BL["IBootstrapLoad.BootstrapLoad() (sorted by BootstrapOrder, once per locator)"]
+
     subgraph Pass2 ["Pass 2: Presenter Initialization & Binding"]
         P2_Scan["Scan ServiceLocator's own scene (including inactive GameObjects)"]
         P2_Check{"Is IObservablePresenter?"}
@@ -116,7 +119,7 @@ flowchart TD
         P2_Check -- No --> P2_Skip
     end
 
-    Pass1 --> Pass2
+    Pass1 --> BL --> Pass2
 ```
 
 ### Discovery Scope & Boundaries
@@ -270,6 +273,7 @@ foreignModel.score.OnValueChanged.Add(OnScoreChanged, this);
 - **Minimum Supported Version:** Unity 6000.5+ is the minimum supported version. Native `Unity.Scripting.LifecycleManagement` attributes (`[AutoStaticsCleanup]`, `[NoAutoStaticsCleanup]`) are unconditionally active without legacy preprocessor shims.
 - Mutable runtime static state across `Observable._instanceData`, `ObservableSettings`, `ServiceLocator.instance`, and `UIAdapterRegistry` is cleaned up automatically via `[AutoStaticsCleanup]` and explicit `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` hooks.
 - Immutable reflection caches and locks (`ModelDescriptor._cache`, `Observable._subscriberMetadataCache`, `ObservableTrackedAction._mainThreadId`, `UIAdapterRegistry._lock`, `UIAdapterRegistry._customAdapters`) are preserved across domain reloads using `[NoAutoStaticsCleanup]`.
+- The event bus (`ServiceLocator.EventBus`) and bootstrap flags are per `ServiceLocator` instance (no statics), so a new Play session starts with an empty bus and runs the bootstrap hooks once again.
 
 ---
 

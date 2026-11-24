@@ -34,6 +34,15 @@ namespace SavableObservable {
         }
 
         /// <summary>
+        /// Observable fields a save system should persist: every <see cref="ObservableVariable{T}"/> / <see cref="ObservableList{T}"/>
+        /// except <c>[NonSaved]</c> ones; <see cref="ObservableEvent{T}"/> fields are never included. Same list <see cref="LoadDataFromModel"/> copies.
+        /// Cached per model type; do not modify the returned array.
+        /// </summary>
+        public FieldInfo[] GetSavableObservableFields() {
+            return ModelDescriptor.Get(GetType()).SavedObservableFields;
+        }
+
+        /// <summary>
         /// Ensures all observable fields are initialized and linked to this data model.
         /// </summary>
         public void EnsureFieldsInitialized() {

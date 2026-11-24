@@ -62,6 +62,13 @@ void OnRoll(int value, int previous) {
 }
 ```
 
+* **`Set(value)`** assigns like `Value = value` and returns `true` when it notified, so compare-then-assign collapses to one call:
+  ```csharp
+  public void SetVolume(float v) {
+      if (!GetModel().volume.Set(v)) return; // unchanged: nothing to save
+      SaveSettings();
+  }
+  ```
 * `ForceNotify()` always fires. `ObservableList<T>` notifies on every mutation; `[NotifyOnSameValue]` on a list (or on a non-observable field) logs a one-time warning and has no effect.
 * **Gotchas:**
   * Reference types are compared by reference: mutating an object and re-assigning the same reference is silent. Call `ForceNotify()`.
@@ -92,6 +99,42 @@ public class PlayerPresenter : ObservablePresenterWithLogic<PlayerDataModel, Pla
     private void OnHealthChanged(int health) => Sfx.Play(HitSound);
 }
 ```
+
+### ObservableEvent<T>: one-shot notifications
+
+Use `ObservableEvent<T>` on a model for a Logic -> own Presenter notification that has no state (play an animation, flash a cell). It replaces counter tokens (`[NonSaved][NotifyOnSameValue] ObservableVariable<int>` + `Value++`).
+
+```csharp
+public class BoardDataModel : BaseObservableDataModel {
+    public ObservableEvent<int> cellFlashed = new ObservableEvent<int>();
+}
+// Logic
+GetModel().cellFlashed.Fire(cellIndex);
+// Presenter: 0 parameters or 1 parameter of type T
+[ObservableHandler(nameof(BoardDataModel.cellFlashed))]
+private void OnCellFlashed(int cellIndex) => fx.Flash(cellIndex);
+```
+
+* Never replayed on bind: `InvokeOnBind = true` on its handler logs an error and is ignored.
+* Never saved: skipped by `LoadDataFromModel`, `GetSavableObservableFields()` and serialization.
+* Every `Fire` notifies, equal payloads included. Listeners run on a snapshot; a throwing listener is logged and the others still run; a `Fire` from inside a handler is queued (at most 32 in a row). `ForceNotify()` fires `default(T)`.
+* Between units use the event bus (below), not an `ObservableEvent` on a foreign model.
+
+### Manual subscriptions: Subscribe and SubscriptionSet
+
+`ObservableVariable<T>.Subscribe(Action<T>, bool replay = true)`, `ObservableList<T>.Subscribe(Action<IReadOnlyList<T>>, bool replay = true)` and `ObservableEvent<T>.Subscribe(Action<T>)` return an `IDisposable`; `Dispose` unsubscribes (idempotent). `replay` calls the handler once with the current value. Collect handles in a `SubscriptionSet` and clear it when the subscriber goes away:
+
+```csharp
+private readonly SubscriptionSet _subs = new SubscriptionSet();
+private void OnEnable()  => _subs.Add(Services.GetModel<ScoreDataModel>().score.Subscribe(OnScore));
+private void OnDisable() => _subs.Clear();
+```
+
+These handles are not owned by a model subscriber (unlike `OnValueChanged.Add(handler, this)`), so always dispose them. Keep the set in an instance field, never in a static.
+
+### Saved fields
+
+`BaseObservableDataModel.GetSavableObservableFields()` returns the observable fields a save system should persist: every `ObservableVariable<T>` / `ObservableList<T>` except `[NonSaved]` ones, never `ObservableEvent<T>`. It is the same list `LoadDataFromModel` copies.
 
 ### ObservableList<T>
 
@@ -220,7 +263,7 @@ private Button okButton;
 * **Zero-Argument, Synchronous:** Method on paired `BaseLogic` must be `public void MethodName()`. `async void`, `Task`, `ValueTask`, and coroutine methods are not supported (use `Listeners.Listen` for async button actions).
 * **IL2CPP Stripping:** Because `nameof()` does not preserve methods under IL2CPP code stripping, decorate target logic methods with `[UnityEngine.Scripting.Preserve]`.
 * **Separate Framework Lifecycle:** Wired after `InitializePresenter()` runs and refreshed on `Observable.SetListeners` rebind, through an internal framework-owned `ListenerSet`. Consumers calling `Listeners.Clear()` do not remove `[ClickCommand]` listeners. Unassigned or destroyed button fields are skipped silently.
-* **No Model -> Logic Handler:** MMVC data flow is strictly `Logic -> Model -> Presenter`. The framework deliberately rejects any attribute calling Logic on model change: `[ObservableHandler]` remains render-only.
+* **Observable Handlers:** Use `[ObservableHandler(nameof(Model.field))]` to react to model changes in the Presenter (including calling `GetLogic()` when needed). Mark pure-render handlers `InvokeOnBind = true` to repaint on bind, and leave it off for handlers with side effects.
 
 ##### 3. Generic `ListenerSet` (`Listeners`)
 
@@ -445,15 +488,57 @@ The framework includes built-in service locator and singleton support via `Savab
 - May be implemented by custom non-MMVC `MonoBehaviour` services (such as `AudioService`).
 - **Never implement `ISharedSingleton` on Presenters or Models.** Presenters and Models are strictly rejected by `ServiceLocator`.
 
-### 2. Two-Stage Execution Order
+### 2. Startup Order and Bootstrap Hooks
 
 `MMVCExecutionOrderSynchronizer` automatically synchronizes script execution order in the Unity Editor:
-1. `ServiceLocator` (`-200`): Discovers and registers all scene `ISharedSingleton` instances in Pass 1, then initializes and binds all scene `IObservablePresenter` components in Pass 2.
-2. `BaseObservablePresenter<M>` (`-150`): Initializes dynamically instantiated prefabs.
+1. `ServiceLocator` (`-200`), in its `Awake`: **Register** every scene `ISharedSingleton` (Pass 1) -> run every scene **`IBootstrapLoad.BootstrapLoad()`** -> **Bind** every scene `IObservablePresenter` (Pass 2). In its `Start`: run every scene **`IBootstrapStart.BootstrapStart()`**.
+2. `BaseObservablePresenter<M>` (`-150`): binds presenters that were not bound by the locator (dynamically instantiated prefabs); for scene presenters its `Awake` is a no-op.
 
 Models, loaders, `BaseLogic<M, P>` and services run at the default order (`0`): they have no ordering requirement because every reader initializes the model's fields lazily through `GetModel()`.
 
-Because Pass 1 finishes before Pass 2 starts, `Services.Get<T>()` resolves every scene-resident, eligible (not opted out) and uniquely keyed service inside `InitializePresenter()` of scene presenters. Dynamically instantiated prefabs and components initialized before `ServiceLocator.Awake()` are not covered by Pass 1 (see the Unity Lifecycle guide).
+Because registration and `BootstrapLoad` finish before binding starts, `Services.Get<T>()` resolves every scene-resident, eligible (not opted out) and uniquely keyed service inside `InitializePresenter()` of scene presenters, and data loaded by `BootstrapLoad` is replayed on bind. Dynamically instantiated prefabs and components initialized before `ServiceLocator.Awake()` are not covered (see the Unity Lifecycle guide).
+
+```csharp
+public class SettingsService : MonoBehaviour, ISharedSingleton, IBootstrapLoad, IBootstrapStart {
+    public int BootstrapOrder => 0;                       // ascending; ties keep scene order
+    public void BootstrapLoad() => LoadSettingsFromDisk(); // synchronous, before presenters bind
+    public void BootstrapStart() => StartCoroutine(PreloadAudio()); // long or async work
+}
+```
+
+* `BootstrapLoad` is synchronous and fills only what presenters need at bind time. Long or async work starts from `BootstrapStart`.
+* Each hook runs once per locator (a new Play session has a new locator). Calling `Services.InitializeSharedSingletons()` again re-registers and re-binds but does not re-run the hooks.
+* Hooks are collected from every `MonoBehaviour` in the locator's scene, including inactive ones; destroyed ones are skipped. Exceptions are not caught: a failing `BootstrapLoad` stops startup before presenters bind.
+
+### Typed event bus
+
+Units notify each other without references through the locator's event bus. An event is a `readonly struct` implementing `IMmvcEvent`:
+
+```csharp
+public readonly struct MatchFinishedEvent : IMmvcEvent {
+    public readonly PlayerColor Winner;
+    public MatchFinishedEvent(PlayerColor winner) { Winner = winner; }
+}
+
+// Logic or service: publish
+Services.Publish(new MatchFinishedEvent(winner));
+
+// Logic, service or presenter: subscribe with an attribute (bound and unbound automatically) ...
+[EventHandler] private void OnMatchFinished(MatchFinishedEvent e) => GetModel().winner.Value = e.Winner;
+
+// ... or explicitly, with a handle
+_subs.Add(Services.Subscribe<MatchFinishedEvent>(this, OnMatchFinished));
+```
+
+* **Roles:** Logic and services publish and subscribe; presenters only subscribe; models do neither (a model subscription logs an error and is ignored).
+* **`[EventHandler]`:** `void M(TEvent e)` (or `in TEvent`). Bound when a Logic or service is registered by the locator and when a presenter binds to its model; removed when it unregisters, unbinds or is destroyed. It derives from `[Preserve]`, so IL2CPP keeps the method.
+* **Delivery:** handler order is subscription order and is **not** a contract; use events only for order-independent notifications and keep ordered steps as direct calls. A throwing handler is logged and the others still run. Destroyed subscribers are pruned. A publish from inside a handler is delivered after the current dispatch (at most 32 per outer publish, then an error).
+* **Lifetime:** the bus belongs to the `ServiceLocator` instance (no statics); it is cleared when the locator is destroyed, so a new Play session starts empty. Publishing without a locator does nothing.
+* `ObservableEvent<T>` is for Logic -> own Presenter; the bus is for unit -> unit.
+
+### Optional references: `[AllowNullGuard]`
+
+Required references (`GetModel()`, `Services.Get<T>()`, `Services.GetModel<M>()`, `[SerializeField]` fields) are not null-checked: a missing reference should throw. Mark a genuinely optional service class, field or method with `[AllowNullGuard("reason")]`. The rule is enforced by the `MMVC017` analyzer (run through `Attax.AnalyzerCli`); `OnDisable`/`OnDestroy`/`OnApplicationQuit` are exempt.
 
 ### 3. Duplicate Registration Rule (duplicate = error, first wins)
 
@@ -478,6 +563,18 @@ A `(type, key)` pair is held by one live instance. The key is the Logic's `singl
 - **Unnamed duplicates that still register** (the opt-out was forgotten) log a `Debug.LogError` at registration time that names the type, the key and both GameObjects. The second instance is **not** registered; the first keeps the key, so `Services.Get<T>()` returns the first instance. Local binding of the second unit is unaffected.
 - `Services.GetModel<M>()` is derived from the registered Logic units: with several Logic units owning the same model type, pass the Logic name; without one it logs an ambiguity error and returns `null`.
 
+## Editor Scaffolding
+
+Hierarchy menu **GameObject > MMVC > Create Unit**:
+
+| Item | Generates |
+|---|---|
+| View Unit | `<Name>DataModel`, `<Name>Presenter` |
+| Model + Logic | `<Name>DataModel`, `<Name>Presenter`, `<Name>Logic : BaseLogic<M, P>` |
+| Service | `<Name>Service : MonoBehaviour, ISharedSingleton` |
+
+Each item asks for a folder under `Assets/` and a unit name, writes empty classes (no sample members) and, after the compile, adds the components to a new GameObject (under the right-clicked one, if any). The namespace is copied from the first `.cs` file in the folder. An existing file is never overwritten; nothing is written then.
+
 ## Architectural Guides & Technical Documentation
 
 For in-depth explanations, execution-order diagrams, and runtime patterns, see:
@@ -497,4 +594,4 @@ From this repository, `pwsh -File Tools/Invoke-UnityTests.ps1 -Suite All` runs a
 The MMVC framework provides a clean, reactive, and decoupled architecture for Unity:
 * **Decoupled Components**: Models hold state, Logic holds rules, Presenters render and delegate input.
 * **Logic-First Services**: Access foreign units via `Services.Get<Logic>()` or `Services.GetModel<Model>()`, never through Presenters.
-* **Predictable Lifecycle**: `ServiceLocator` registers services, then presenters initialize and bind; models initialize lazily through `GetModel()`, so nothing depends on their `Awake()` order.
+* **Predictable Lifecycle**: `ServiceLocator` registers services, runs `IBootstrapLoad`, then presenters initialize and bind, and `IBootstrapStart` runs from its `Start`; models initialize lazily through `GetModel()`, so nothing depends on their `Awake()` order.

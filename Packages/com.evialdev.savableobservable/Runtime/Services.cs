@@ -55,5 +55,42 @@ namespace SavableObservable {
 
         /// <summary>Registers and binds all scene shared singletons and presenters.</summary>
         public static bool InitializeSharedSingletons() => instance != null && instance.InitializeSharedSingletons();
+
+        /// <summary>
+        /// Publishes <paramref name="evt"/> on the active locator's event bus (see <see cref="MmvcEventBus"/>).
+        /// Call it from Logic or services only; presenters and models never publish (analyzer <c>MMVC016</c>).
+        /// Without a live locator nothing is subscribed, so nothing happens.
+        /// </summary>
+        public static void Publish<TEvent>(in TEvent evt) where TEvent : struct, IMmvcEvent {
+            var locator = instance;
+            if (locator != null) locator.EventBus.Publish(in evt);
+        }
+
+        /// <summary>
+        /// Subscribes <paramref name="handler"/> on behalf of <paramref name="subscriber"/> (Logic, service or presenter; never a model).
+        /// Dispose the returned handle (e.g. through a <see cref="SubscriptionSet"/>) to unsubscribe; the subscription also ends when
+        /// <paramref name="subscriber"/> is destroyed or the locator is destroyed. Without a live locator an error is logged and a
+        /// no-op handle is returned.
+        /// </summary>
+        public static IDisposable Subscribe<TEvent>(UnityEngine.Component subscriber, Action<TEvent> handler) where TEvent : struct, IMmvcEvent {
+            var locator = instance;
+            if (locator == null) {
+                UnityEngine.Debug.LogError($"[Services] Subscribe<{typeof(TEvent).Name}> called without a live ServiceLocator; the subscription was not created.", subscriber);
+                return new Subscription(null);
+            }
+            return locator.EventBus.Subscribe(subscriber, handler);
+        }
+
+        /// <summary>Removes every subscription of <paramref name="handler"/> to <typeparamref name="TEvent"/>.</summary>
+        public static void Unsubscribe<TEvent>(Action<TEvent> handler) where TEvent : struct, IMmvcEvent {
+            var locator = instance;
+            if (locator != null) locator.EventBus.Unsubscribe(handler);
+        }
+
+        /// <summary>Removes every event-bus subscription of <paramref name="subscriber"/>, including its <see cref="EventHandlerAttribute"/> bindings.</summary>
+        public static void Unsubscribe(UnityEngine.Component subscriber) {
+            var locator = instance;
+            if (locator != null) locator.EventBus.Unsubscribe(subscriber);
+        }
     }
 }
