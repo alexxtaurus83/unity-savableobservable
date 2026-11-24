@@ -71,9 +71,12 @@ namespace SavableObservable {
             public readonly HashSet<string> AutoBindTargetNames = new HashSet<string>(StringComparer.Ordinal);
             public readonly List<(FieldInfo field, string commandName)> ClickCommandFields = new List<(FieldInfo, string)>();
             public readonly List<string> InvalidClickCommandErrors = new List<string>();
+            /// <summary>Valid <see cref="EventHandlerAttribute"/> methods (most-derived override only) and their event type.</summary>
+            public readonly List<(MethodInfo method, Type eventType)> EventHandlers = new List<(MethodInfo, Type)>();
 
             public SubscriberMetadata(Type subscriberType) {
                 var seenVirtualBaseDefs = new HashSet<(MethodInfo, string)>();
+                var seenEventBaseDefs = new HashSet<MethodInfo>();
 
                 foreach (var t in TypeUtil.GetUserHierarchy(subscriberType)) {
                     var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly);
@@ -81,6 +84,16 @@ namespace SavableObservable {
                         MethodInfo baseDef = null;
                         if (method.IsVirtual) {
                             baseDef = method.GetBaseDefinition();
+                        }
+
+                        if (method.IsDefined(typeof(EventHandlerAttribute), false)
+                            && (baseDef == null || seenEventBaseDefs.Add(baseDef))) {
+                            var eventType = GetEventHandlerType(method, out var error);
+                            if (eventType != null) {
+                                EventHandlers.Add((method, eventType));
+                            } else {
+                                Debug.LogError($"[SavableObservable] [EventHandler] '{subscriberType.Name}.{method.Name}' is ignored: {error} Expected 'void {method.Name}(TEvent e)' where TEvent is a struct implementing IMmvcEvent.");
+                            }
                         }
 
                         var attr = method.GetCustomAttribute<ObservableHandlerAttribute>(false);
@@ -143,6 +156,52 @@ namespace SavableObservable {
 
         private static ModelDescriptor GetModelMetadata(Type type) => ModelDescriptor.Get(type);
 
+        // Returns the event type of a valid [EventHandler] method (void M(TEvent), TEvent : struct, IMmvcEvent), else null and a reason.
+        internal static Type GetEventHandlerType(MethodInfo method, out string error) {
+            error = null;
+            var parameters = method.GetParameters();
+            if (method.ReturnType != typeof(void)) { error = "it must return void."; return null; }
+            if (method.IsGenericMethodDefinition) { error = "it must not be generic."; return null; }
+            if (parameters.Length != 1) { error = $"it has {parameters.Length} parameters; exactly one is required."; return null; }
+            var parameter = parameters[0];
+            var eventType = parameter.ParameterType;
+            if (eventType.IsByRef) {
+                if (!parameter.IsIn) { error = "the parameter must not be ref or out."; return null; }
+                eventType = eventType.GetElementType();
+            }
+            if (!eventType.IsValueType || !typeof(IMmvcEvent).IsAssignableFrom(eventType)) {
+                error = $"parameter type '{eventType.Name}' is not a struct implementing IMmvcEvent.";
+                return null;
+            }
+            return eventType;
+        }
+
+        /// <summary>
+        /// Binds the <see cref="EventHandlerAttribute"/> methods of <paramref name="subscriber"/> to the active locator's event bus,
+        /// replacing its earlier attributed bindings. No-op without a live <see cref="ServiceLocator"/>.
+        /// </summary>
+        internal static void BindEventHandlers(object subscriber, MmvcEventBus bus = null) {
+            if (subscriber == null || subscriber is BaseObservableDataModel) return;
+            if (bus == null) {
+                var locator = ServiceLocator.instance;
+                if (locator == null) return;
+                bus = locator.EventBus;
+            }
+            var handlers = GetSubscriberMetadata(subscriber.GetType()).EventHandlers;
+            if (handlers.Count == 0) return;
+            bus.BindAttributed(subscriber, handlers);
+        }
+
+        /// <summary>Removes the <see cref="EventHandlerAttribute"/> bindings of <paramref name="subscriber"/> from the active locator's bus.</summary>
+        internal static void UnbindEventHandlers(object subscriber) {
+            if (subscriber == null) return;
+            // Attributed bindings exist only for types that declare [EventHandler] methods.
+            if (GetSubscriberMetadata(subscriber.GetType()).EventHandlers.Count == 0) return;
+            var locator = ServiceLocator.instance;
+            if (locator == null) return;
+            locator.EventBus.RemoveSubscriber(subscriber, attributedOnly: true);
+        }
+
         #endregion
 
         #region Binding
@@ -202,6 +261,11 @@ namespace SavableObservable {
             }
 
             BindAutoBinds(monoBehaviour, subscriber, model, subMetadata, descriptor, replay);
+
+            // Presenters may subscribe to the event bus with [EventHandler] (they never publish).
+            if (subMetadata.EventHandlers.Count > 0) {
+                BindEventHandlers(subscriber);
+            }
 
             if (subscriber is IPresenterBindingState bindingState) {
                 bindingState.MarkBound();
@@ -292,9 +356,15 @@ namespace SavableObservable {
             // The observable records the subscription (managed) in the model's registry.
             observableVar.AddHandler(handler, subscriber);
 
-            if (replay != null && subMetadata.InvokeOnBindMethods.Contains(handlerMethod)) {
-                replay.Add((observableVar, handler));
+            if (!subMetadata.InvokeOnBindMethods.Contains(handlerMethod)) return;
+
+            if (observableVar is IObservableEvent) {
+                // An event has no current state: the flag is ignored, the handler stays subscribed.
+                Debug.LogError($"[SavableObservable] [ObservableHandler(\"{field.Name}\", InvokeOnBind = true)] on '{subscriber.GetType().Name}.{handlerMethod.Name}': '{field.Name}' is an ObservableEvent, which is never replayed on bind. Remove InvokeOnBind.", (MonoBehaviour)subscriber);
+                return;
             }
+
+            replay?.Add((observableVar, handler));
         }
 
         private static void BindAutoBinds(
@@ -782,6 +852,11 @@ namespace SavableObservable {
 
             if (subscriber is IPresenterBindingState bindingState) {
                 bindingState.MarkUnbound();
+                // [EventHandler] bus bindings belong to the presenter's own model binding; removing its
+                // subscriptions to a foreign model keeps them.
+                if (!(bindingState is Component component) || component == null || component.gameObject == dataModel.gameObject) {
+                    UnbindEventHandlers(subscriber);
+                }
             }
         }
 
@@ -800,6 +875,7 @@ namespace SavableObservable {
                         bindingState.MarkUnbound();
                         bindingState.CleanupPresenterLifetime();
                         PresenterLifetimeTracker.Untrack(bindingState);
+                        UnbindEventHandlers(bindingState);
                     }
                 }
                 all.AddRange(kvp.Value);
@@ -896,14 +972,14 @@ namespace SavableObservable {
         }
 
         /// <summary>
-        /// Determines whether field type is <see cref="ObservableVariable{T}" /> or <see cref="ObservableList{T}" /> (or a subclass of either).
+        /// Determines whether field type is <see cref="ObservableVariable{T}" />, <see cref="ObservableList{T}" /> (or a subclass of either) or <see cref="ObservableEvent{T}" />.
         /// </summary>
         /// <param name="field">The observable field of the <see cref="BaseObservableDataModel" /> model.</param>
         /// <returns>
         ///   <c>true</c> if the field is a supported observable; otherwise, <c>false</c>.</returns>
         internal static bool IsSupportedFieldType(FieldInfo field) {
             var genericDef = field.FieldType.IsGenericType ? field.FieldType.GetGenericTypeDefinition() : null;
-            if (genericDef == typeof(ObservableVariable<>) || genericDef == typeof(ObservableList<>)) {
+            if (genericDef == typeof(ObservableVariable<>) || genericDef == typeof(ObservableList<>) || genericDef == typeof(ObservableEvent<>)) {
                 return true;
             }
 

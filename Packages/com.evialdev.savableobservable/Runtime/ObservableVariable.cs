@@ -82,18 +82,54 @@ namespace SavableObservable {
         /// </summary>
         public T Value {
             get => _value;
-            set {
-                if (_isNotifying || (_onValueChanged != null && _onValueChanged.IsInvoking)) {
-                    if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
-                    _pendingTransitions.Enqueue((value, false));
-                    return;
-                }
+            set => Set(value);
+        }
 
-                if (!_notifyOnSameValue && AreEqual(_value, value)) return;
-                var previousValue = _value;
-                _value = value;
-                ApplyAndNotify(previousValue);
+        /// <summary>
+        /// Assigns <paramref name="value"/> and notifies subscribers when it differs from the current value
+        /// (or always, when <see cref="NotifyOnSameValue"/> is enabled). Returns <c>true</c> when a notification was sent.
+        /// Replaces the compare-then-assign pattern: <c>if (!model.field.Set(v)) return;</c>.
+        /// Called while this variable is notifying, the assignment is queued and applied after the current notification;
+        /// the result then tells whether it will notify, compared with the value the queue will hold before it.
+        /// </summary>
+        public bool Set(T value) {
+            if (_isNotifying || (_onValueChanged != null && _onValueChanged.IsInvoking)) {
+                if (_pendingTransitions == null) _pendingTransitions = new Queue<(T, bool)>();
+                var effective = EffectivePendingValue();
+                _pendingTransitions.Enqueue((value, false));
+                return _notifyOnSameValue || !AreEqual(effective, value);
             }
+
+            if (!_notifyOnSameValue && AreEqual(_value, value)) return false;
+            var previousValue = _value;
+            _value = value;
+            ApplyAndNotify(previousValue);
+            return true;
+        }
+
+        // The value after all queued assignments (force entries keep the value).
+        private T EffectivePendingValue() {
+            var effective = _value;
+            foreach (var (pendingValue, isForce) in _pendingTransitions) {
+                if (!isForce) effective = pendingValue;
+            }
+            return effective;
+        }
+
+        /// <summary>
+        /// Subscribes <paramref name="handler"/> to value changes and returns a handle whose <c>Dispose</c> removes it
+        /// (idempotent). With <paramref name="replay"/> the handler is called once immediately with the current value.
+        /// The subscription is not owned by a model subscriber: keep the handle (e.g. in a <see cref="SubscriptionSet"/>)
+        /// and dispose it when the subscriber is disabled or destroyed.
+        /// </summary>
+        public IDisposable Subscribe(Action<T> handler, bool replay = true) {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            Action<ObservableVariable<T>> wrapper = v => handler(v.Value);
+            var action = OnValueChanged;
+            action.Add(wrapper, null);
+            var subscription = new Subscription(() => action.Remove(wrapper));
+            if (replay) handler(_value);
+            return subscription;
         }
 
         /// <summary>

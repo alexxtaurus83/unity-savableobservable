@@ -1,9 +1,9 @@
 ﻿<Solution>
   <Project Path="com.evialdev.savableobservable.csproj" />
   <Project Path="com.evialdev.savableobservable.RuntimeTests.csproj" />
+  <Project Path="com.evialdev.savableobservable.EditorTests.csproj" />
   <Project Path="com.evialdev.savableobservable.Samples.csproj" />
   <Project Path="com.evialdev.savableobservable.Tests.Pipeline.csproj" />
-  <Project Path="com.evialdev.savableobservable.EditorTests.csproj" />
   <Project Path="com.evialdev.savableobservable.TestContracts.csproj" />
   <Project Path="com.evialdev.savableobservable.Editor.csproj" />
 </Solution>

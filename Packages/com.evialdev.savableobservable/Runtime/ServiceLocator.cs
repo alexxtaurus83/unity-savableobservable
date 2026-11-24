@@ -53,15 +53,29 @@ namespace SavableObservable {
         // Instances already reported as duplicates, so scene Pass 1 and the later Awake of the same unit log once.
         private readonly HashSet<object> _reportedDuplicates = new HashSet<object>();
 
+        /// <summary>The typed event bus of this locator (cleared when the locator is destroyed). Use it through <see cref="Services"/>.</summary>
+        public MmvcEventBus EventBus { get; } = new MmvcEventBus();
+
+        // Bootstrap phases run once per locator instance (instance fields: Domain-Reload safe).
+        private bool _bootstrapLoadDone;
+        private bool _bootstrapStartDone;
+        private List<IBootstrapStart> _bootstrapStarts;
+
         private void Awake() {
             instance = this;
             InitializeSharedSingletons();
+        }
+
+        private void Start() {
+            RunBootstrapStart();
         }
 
         private void OnDestroy() {
             _services.Clear();
             _defaultKeyCache.Clear();
             _reportedDuplicates.Clear();
+            _bootstrapStarts = null;
+            EventBus.Clear();
             if (ReferenceEquals(instance, this)) {
                 instance = null;
             }
@@ -232,6 +246,7 @@ namespace SavableObservable {
             if (_services.TryGetValue((type, key), out var stored)) {
                 if (ReferenceEquals(stored, instance)) {
                     _services.Remove((type, key));
+                    EventBus.RemoveSubscriber(instance, attributedOnly: true);
                 }
                 return;
             }
@@ -245,7 +260,10 @@ namespace SavableObservable {
                     break;
                 }
             }
-            if (match.HasValue) _services.Remove(match.Value);
+            if (match.HasValue) {
+                _services.Remove(match.Value);
+                EventBus.RemoveSubscriber(instance, attributedOnly: true);
+            }
         }
 
         /// <summary>
@@ -302,6 +320,8 @@ namespace SavableObservable {
             }
 
             _services[(type, key)] = service;
+            // Registered Logic and services get their [EventHandler] methods bound to this locator's bus.
+            Observable.BindEventHandlers(service, EventBus);
             return RegistrationResult.Added;
         }
 
@@ -326,10 +346,12 @@ namespace SavableObservable {
         }
 
         /// <summary>
-        /// Registers every scene <see cref="ISharedSingleton"/> in Pass 1 and then binds all scene
-        /// <see cref="IObservablePresenter"/> components in Pass 2.
-        /// Because Pass 1 finishes before Pass 2 starts, <see cref="Services.Get{T}"/> is guaranteed
-        /// ready inside every <see cref="BaseObservablePresenter{M}.InitializePresenter"/>.
+        /// Startup in three phases: Pass 1 registers every scene <see cref="ISharedSingleton"/>; then, on the first call for this
+        /// locator only, every scene <see cref="IBootstrapLoad"/> runs (sorted by order); Pass 2 binds all scene
+        /// <see cref="IObservablePresenter"/> components. So <see cref="Services.Get{T}"/> is ready and bind-time data is loaded
+        /// inside every <see cref="BaseObservablePresenter{M}.InitializePresenter"/> and replayed handler.
+        /// <see cref="IBootstrapStart"/> hooks run later, from this locator's <c>Start</c>.
+        /// Calling it again re-registers and re-binds (idempotent) without re-running the bootstrap hooks.
         /// </summary>
         public bool InitializeSharedSingletons() {
             ValidateSharedSingletonTypes();
@@ -376,6 +398,19 @@ namespace SavableObservable {
                 }
             }
 
+            // Bootstrap load: synchronous bind-time data, once per locator, between registration and binding.
+            // Exceptions are not caught (a failing load aborts startup loudly); after a failure the loads are not retried,
+            // presenters are not bound by this call and no BootstrapStart hook runs for this locator.
+            if (!_bootstrapLoadDone) {
+                _bootstrapLoadDone = true;
+                var starts = SortByBootstrapOrder<IBootstrapStart>(allMonoBehaviours, s => s.BootstrapOrder);
+                var loads = SortByBootstrapOrder<IBootstrapLoad>(allMonoBehaviours, l => l.BootstrapOrder);
+                for (int i = 0; i < loads.Count; i++) {
+                    if (IsLive(loads[i])) loads[i].BootstrapLoad();
+                }
+                _bootstrapStarts = starts; // only after every load succeeded
+            }
+
             // Pass 2: Initialize and bind all scene IObservablePresenter components SECOND.
             // The single-model / single-presenter rule is validated once, by Observable.SetListeners.
             for (int i = 0; i < allMonoBehaviours.Count; i++) {
@@ -388,6 +423,34 @@ namespace SavableObservable {
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Runs the scene <see cref="IBootstrapStart"/> hooks collected by the first <see cref="InitializeSharedSingletons"/>,
+        /// sorted by order, once per locator. Called from <c>Start</c>; destroyed hooks are skipped; exceptions are not caught.
+        /// </summary>
+        internal void RunBootstrapStart() {
+            if (_bootstrapStartDone || _bootstrapStarts == null) return;
+            _bootstrapStartDone = true;
+            var starts = _bootstrapStarts;
+            _bootstrapStarts = null;
+            for (int i = 0; i < starts.Count; i++) {
+                if (IsLive(starts[i])) starts[i].BootstrapStart();
+            }
+        }
+
+        // Stable sort: ascending order, ties keep scene (hierarchy) order.
+        private static List<T> SortByBootstrapOrder<T>(List<MonoBehaviour> candidates, Func<T, int> order) where T : class {
+            var keyed = new List<(T item, int order, int index)>();
+            for (int i = 0; i < candidates.Count; i++) {
+                if (candidates[i] != null && candidates[i] is T item) {
+                    keyed.Add((item, order(item), keyed.Count));
+                }
+            }
+            keyed.Sort((a, b) => a.order != b.order ? a.order.CompareTo(b.order) : a.index.CompareTo(b.index));
+            var result = new List<T>(keyed.Count);
+            for (int i = 0; i < keyed.Count; i++) result.Add(keyed[i].item);
+            return result;
         }
     }
 }

@@ -1,0 +1,17 @@
+{
+  "providers": ["unity-asmdef", "map"],
+  "sources": ["Packages/com.evialdev.savableobservable/Runtime/**/*.cs", "Packages/com.evialdev.savableobservable/Editor/**/*.cs", "Packages/com.evialdev.savableobservable/Samples/**/*.cs", "mmvc-kilo-plugin/*.ts"],
+  "tests": ["Packages/com.evialdev.savableobservable/Tests/**/*.cs", "mmvc-kilo-plugin/tests/**/*.ts"],
+  "ignore": ["**/*.md", "**/*.meta", "docsbackup/**", "docs/**", ".kilo/**", ".agents/**", "**/bin/**", "**/obj/**", "Library/**", "Temp/**", "mmvc-unity-skill/**"],
+  "map": {
+    "mmvc-kilo-plugin/*.ts": ["cmd: npm test --prefix mmvc-kilo-plugin"],
+    "mmvc-kilo-plugin/tests/**": ["cmd: npm test --prefix mmvc-kilo-plugin"],
+    "Tools/**": ["cmd: pwsh -File Tools/Test-RunnerUnitTests.ps1"],
+    "Packages/com.evialdev.savableobservable/Tools/**": ["cmd: pwsh -File Tools/Test-RunnerUnitTests.ps1"]
+  },
+  "run": {
+    "command": "pwsh",
+    "args": ["-File", "Tools/Invoke-UnityTests.ps1", "-Suite", "All", "-Filter", "{selection}"],
+    "join": ";"
+  }
+}

@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0] - 2026-11-24
+
+### Added
+- `ObservableVariable<T>.Set(T)`: assigns with the usual equality rule and returns `true` only when it notified (`[NotifyOnSameValue]` fields always notify). The `Value` setter delegates to it.
+- `Subscribe(...)` returning an idempotent `IDisposable` on `ObservableVariable<T>` (`Action<T>`, optional replay), `ObservableList<T>` (`Action<IReadOnlyList<T>>`, optional replay) and `ObservableEvent<T>`; `SubscriptionSet` disposes a group of handles (`Add`, `Clear`, `Dispose`).
+- `ObservableEvent<T>`: one-shot model notification (`Fire`, `Subscribe`, `ForceNotify` fires `default`). Bound by `[ObservableHandler]` (0 or 1 parameter), never replayed on bind (`InvokeOnBind = true` logs an error), never saved, nested `Fire` queued (cap 32), throwing listeners isolated.
+- `BaseObservableDataModel.GetSavableObservableFields()`: the saved observable fields (no `[NonSaved]`, no `ObservableEvent`), same list `LoadDataFromModel` copies.
+- Bootstrap hooks `IBootstrapLoad` / `IBootstrapStart` (`BootstrapOrder`, ascending, stable): `ServiceLocator.Awake` runs register -> `BootstrapLoad` -> bind; `ServiceLocator.Start` runs `BootstrapStart`. Once per locator; exceptions propagate.
+- Typed event bus owned by `ServiceLocator.EventBus` (`MmvcEventBus`, instance only): `IMmvcEvent`, `[EventHandler]` (derives from `[Preserve]`), `Services.Publish<T>(in T)`, `Services.Subscribe<T>(Component, Action<T>)`, `Services.Unsubscribe`. Array snapshots (no allocation per publish), dead subscribers pruned, nested publishes queued (cap 32), model subscriptions rejected. `[EventHandler]` methods bind on registration (Logic/services) and on presenter bind, and unbind on unregister/unbind/destroy. Verified in a Win64 IL2CPP development player.
+- `[AllowNullGuard("reason")]` for optional references (consumed by the `MMVC017` analyzer).
+- Editor scaffolding: **GameObject > MMVC > Create Unit** (View Unit, Model + Logic, Service) writes empty classes, copies the folder namespace, never overwrites, and adds the components after the compile (`SessionState`).
+
+### Changed (breaking)
+- `ObservableEvent<T>` is a supported observable field type: `GetCachedObservableFields()` and binding include it; persistence and the `Tests/Shared` contract helpers (`ObservableAccess`) handle it. Consumer code that walks `GetCachedObservableFields()` and expects only variables and lists must skip events or use `GetSavableObservableFields()`.
+- Bootstrap hooks run inside `ServiceLocator.InitializeSharedSingletons()` (first call per locator). `Services.InitializeSharedSingletons()` called again only re-registers and re-binds.
+- Analyzer rules `MMVC016`-`MMVC019` (event bus roles, null guards on required references, `Set` instead of compare-then-assign, `ObservableEvent` instead of counter tokens) live in `F:\github\repo\AttaxAnaliser` and run through `Attax.AnalyzerCli`; `MMVC011` accepts `ObservableEvent<T>` handlers.
+
 ## [2.1.2] - 2026-11-16
 
 ### Changed
